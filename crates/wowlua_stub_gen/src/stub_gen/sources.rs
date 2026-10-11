@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 /// Fetch the latest build string for a wago.tools product (e.g. "wow", "wow_classic").
 pub(in crate::stub_gen) fn fetch_wago_latest_build(product: &str) -> String {
@@ -39,37 +40,122 @@ pub(in crate::stub_gen) fn fetch_global_csvs() -> Result<GlobalCsvData, String> 
 }
 
 
+/// GET `url`, or POST `post_data` to it as a form, retrying transient failures.
 pub(in crate::stub_gen) fn fetch_url(url: &str, post_data: Option<&[(&str, &str)]>) -> Result<String, String> {
-    let result: Result<ureq::Response, ureq::Error> = if let Some(data) = post_data {
-        let body: String = data
-            .iter()
+    fetch_url_with(url, post_data, Ok)
+}
+
+
+/// [`fetch_url`], turning the body into a `T` with `parse`. A body `parse` rejects is
+/// retried like a transient failure: a server can end a response early, or answer with
+/// an error page, and still report success.
+pub(in crate::stub_gen) fn fetch_url_with<T>(
+    url: &str,
+    post_data: Option<&[(&str, &str)]>,
+    parse: impl Fn(String) -> Result<T, String>,
+) -> Result<T, String> {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| http_agent(HTTP_STALL_TIMEOUT, HTTP_BODY_TIMEOUT));
+    let form = post_data.map(|data| {
+        data.iter()
             .map(|(k, v)| format!("{}={}", urlencoding(k), urlencoding(v)))
             .collect::<Vec<_>>()
-            .join("&");
-        ureq::post(url)
-            .set("User-Agent", USER_AGENT)
-            .set("Content-Type", "application/x-www-form-urlencoded")
-            .send_string(&body)
-    } else {
-        ureq::get(url).set("User-Agent", USER_AGENT).call()
-    };
-    match result {
-        Ok(resp) => {
-            use std::io::Read;
-            // Special:Export returns tens of MB of wikitext for the full function set — well
-            // over ureq's 10 MB into_string() cap — so read via the response reader with a
-            // higher safety limit. 256 MB is many times the real export size, so it bounds a
-            // runaway/malformed response without truncating legitimate content.
-            const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
-            let mut buf = String::new();
-            resp.into_reader()
-                .take(MAX_RESPONSE_BYTES)
-                .read_to_string(&mut buf)
-                .map_err(|e| e.to_string())?;
-            Ok(buf)
-        }
-        Err(e) => Err(e.to_string()),
+            .join("&")
+    });
+    fetch_with_retries(agent, &HTTP_RETRY_DELAYS, url, form.as_deref(), parse)
+}
+
+
+/// An HTTP agent whose requests fail when the server takes longer than `stall` to accept
+/// the connection, take the request or start responding, or longer than `body` to send
+/// the whole response body. ureq waits forever by default.
+pub(in crate::stub_gen) fn http_agent(stall: Duration, body: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .user_agent(USER_AGENT)
+        .timeout_connect(Some(stall))
+        .timeout_send_request(Some(stall))
+        .timeout_send_body(Some(stall))
+        .timeout_recv_response(Some(stall))
+        .timeout_recv_body(Some(body))
+        .build()
+        .into()
+}
+
+
+/// Request `url` (a POST of the urlencoded `form`, if any) and `parse` the body, waiting
+/// each of `retry_delays` in turn before retrying a transient failure.
+pub(in crate::stub_gen) fn fetch_with_retries<T>(
+    agent: &ureq::Agent,
+    retry_delays: &[Duration],
+    url: &str,
+    form: Option<&str>,
+    parse: impl Fn(String) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut delays = retry_delays.iter();
+    loop {
+        let error = match fetch_once(agent, url, form) {
+            Ok(body) => match parse(body) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => format!("{url}: {e}"),
+            },
+            Err(FetchError::Transient(e)) => e,
+            Err(FetchError::Permanent(e)) => return Err(e),
+        };
+        let Some(delay) = delays.next() else {
+            return Err(format!("{error} (tried {} times)", retry_delays.len() + 1));
+        };
+        log::warn!("{error} — retrying in {}s", delay.as_secs());
+        std::thread::sleep(*delay);
     }
+}
+
+
+/// Why a single request failed, and whether retrying it can help.
+enum FetchError {
+    Transient(String),
+    Permanent(String),
+}
+
+
+fn fetch_once(agent: &ureq::Agent, url: &str, form: Option<&str>) -> Result<String, FetchError> {
+    let classify = |e: ureq::Error| {
+        let message = format!("{url}: {e}");
+        match e {
+            ureq::Error::StatusCode(408 | 429 | 500..)
+            | ureq::Error::Io(_)
+            | ureq::Error::Timeout(_)
+            | ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+            | ureq::Error::Protocol(_)
+            | ureq::Error::Decompress(..)
+            | ureq::Error::BodyStalled => FetchError::Transient(message),
+            _ => FetchError::Permanent(message),
+        }
+    };
+    let mut response = match form {
+        Some(body) => agent.post(url)
+            .content_type("application/x-www-form-urlencoded")
+            .send(body),
+        None => agent.get(url).call(),
+    }
+    .map_err(classify)?;
+    // ureq stops a body at 10 MB by default; 256 MB is many times any real response, so
+    // it still bounds a runaway one.
+    const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+    let body = response.body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES)
+        .read_to_vec()
+        .map_err(classify)?;
+    String::from_utf8(body).map_err(|e| {
+        let message = format!("{url}: {e}");
+        // A body that ends inside a character was cut short by the server.
+        if e.utf8_error().error_len().is_none() {
+            FetchError::Transient(message)
+        } else {
+            FetchError::Permanent(message)
+        }
+    })
 }
 
 
@@ -89,6 +175,54 @@ pub(in crate::stub_gen) fn urlencoding(s: &str) -> String {
 }
 
 
+impl ResourceCommits {
+    /// Look up the commit each of `RESOURCE_BRANCHES` points to now.
+    pub(in crate::stub_gen) fn resolve() -> Result<Self, String> {
+        let output = git_network_command(HTTP_STALL_TIMEOUT)
+            .args(["ls-remote", "--heads", BLIZZARD_RESOURCES_REPO])
+            .args(RESOURCE_BRANCHES)
+            .output()
+            .map_err(|e| format!("git ls-remote {BLIZZARD_RESOURCES_REPO}: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git ls-remote {BLIZZARD_RESOURCES_REPO} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ));
+        }
+        parse_ls_remote_heads(&String::from_utf8_lossy(&output.stdout), RESOURCE_BRANCHES).map(Self)
+    }
+
+    /// `(branch, commit)` for each of `RESOURCE_BRANCHES`, in order.
+    pub(in crate::stub_gen) fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(branch, commit)| (branch.as_str(), commit.as_str()))
+    }
+
+    /// Fetch `Resources/<file>` at `branch`'s commit.
+    pub(in crate::stub_gen) fn fetch(&self, branch: &str, file: &str) -> Result<String, String> {
+        let (_, commit) = self.0.iter()
+            .find(|(b, _)| b == branch)
+            .unwrap_or_else(|| panic!("{branch} is not one of RESOURCE_BRANCHES"));
+        fetch_url(&RESOURCE_URL_TEMPLATE.replace("{commit}", commit).replace("{file}", file), None)
+    }
+}
+
+
+/// `(branch, commit)` for each of `branches` in `git ls-remote --heads` output, which
+/// lists one `<commit>\trefs/heads/<branch>` line per matching branch.
+pub(in crate::stub_gen) fn parse_ls_remote_heads(output: &str, branches: &[&str]) -> Result<Vec<(String, String)>, String> {
+    branches.iter()
+        .map(|&branch| {
+            output.lines()
+                .find_map(|line| {
+                    let (commit, name) = line.split_once('\t')?;
+                    (name.strip_prefix("refs/heads/")? == branch).then(|| (branch.to_string(), commit.to_string()))
+                })
+                .ok_or_else(|| format!("{BLIZZARD_RESOURCES_REPO} has no branch {branch}"))
+        })
+        .collect()
+}
+
+
 /// Parse names from a BlizzardInterfaceResources Lua file.
 /// Supports both simple names ("Foo") and dotted names ("C_Bar.Baz").
 pub(in crate::stub_gen) fn parse_resource_names(text: &str) -> HashSet<String> {
@@ -99,11 +233,8 @@ pub(in crate::stub_gen) fn parse_resource_names(text: &str) -> HashSet<String> {
 }
 
 
-pub(in crate::stub_gen) fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
-    let url = RESOURCE_URL_TEMPLATE
-        .replace("{branch}", branch)
-        .replace("{file}", file);
-    match fetch_url(&url, None) {
+pub(in crate::stub_gen) fn fetch_resource(resources: &ResourceCommits, branch: &str, file: &str) -> HashSet<String> {
+    match resources.fetch(branch, file) {
         Ok(text) => parse_resource_names(&text),
         Err(e) => {
             log::error!("FAILED to fetch {file} from {branch}: {e} — flavor masks would be wrong, the regen will abort");
@@ -165,14 +296,11 @@ pub(in crate::stub_gen) fn parse_widget_api_methods(text: &str) -> HashMap<Strin
 }
 
 
-pub(in crate::stub_gen) fn fetch_widget_api(branch: &str) -> HashMap<String, HashSet<String>> {
-    let url = RESOURCE_URL_TEMPLATE
-        .replace("{branch}", branch)
-        .replace("{file}", "WidgetAPI.lua");
-    match fetch_url(&url, None) {
+pub(in crate::stub_gen) fn fetch_widget_api(resources: &ResourceCommits, branch: &str) -> HashMap<String, HashSet<String>> {
+    match resources.fetch(branch, "WidgetAPI.lua") {
         Ok(text) => parse_widget_api_methods(&text),
         Err(e) => {
-            log::warn!("FAILED to fetch WidgetAPI.lua from {branch}: {e} — classic-only widget method diff will be incomplete");
+            log::error!("FAILED to fetch WidgetAPI.lua from {branch}: {e} — classic-only widget methods would be wrong, the regen will abort");
             HashMap::default()
         }
     }
@@ -251,14 +379,52 @@ pub(in crate::stub_gen) fn wiki_title_to_api_name(title: &str) -> String {
         .replace(' ', "_")
 }
 
-/// A `Special:Export` dump of the newline-separated page titles `pages_text` builds, persistently
-/// cached as `<prefix>-<key>.xml` with the export TTL (stale files with the same prefix are
-/// evicted). `key` identifies the requested page set (see [`wiki_cache_key`]).
-fn fetch_wiki_export_cached(prefix: &str, key: u64, pages_text: impl FnOnce() -> String) -> Result<String, String> {
-    // NOTE: Each export is intentionally a single request. The MediaWiki Special:Export endpoint
-    // is behind Cloudflare, which rejects concurrent requests with HTTP 403/429 and can
-    // temporarily challenge-block the source IP. Splitting this into parallel chunked requests
-    // was measured to fail outright (every chunk 403'd) — do not parallelize these fetches.
+/// `xml` if it is a whole `Special:Export` dump, one that reaches its closing root tag. The
+/// wiki can end a dump early while still answering 200, which drops every page after the cut.
+pub(in crate::stub_gen) fn complete_wiki_export(xml: String) -> Result<String, String> {
+    if xml.trim_end().ends_with("</mediawiki>") {
+        Ok(xml)
+    } else {
+        Err(format!("wiki export cut short after {} bytes (no closing </mediawiki>)", xml.len()))
+    }
+}
+
+
+/// The export cached at `path`, if it is fresh and whole.
+pub(in crate::stub_gen) fn read_cached_wiki_export(path: &Path) -> Option<String> {
+    match complete_wiki_export(read_fresh_cache(path, WIKI_CACHE_TTL_SECS)?) {
+        Ok(xml) => Some(xml),
+        Err(e) => {
+            log::warn!("Ignoring cached {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+
+/// Join whole `Special:Export` dumps into one: the first dump's header, then every dump's
+/// pages in order, then a single closing tag.
+pub(in crate::stub_gen) fn merge_wiki_exports(dumps: &[String]) -> String {
+    let mut merged = String::new();
+    for (i, dump) in dumps.iter().enumerate() {
+        let body = dump.trim_end().strip_suffix("</mediawiki>").unwrap_or(dump);
+        let pages_start = if i == 0 { 0 } else { body.find("<page>").unwrap_or(body.len()) };
+        merged.push_str(&body[pages_start..]);
+    }
+    merged.push_str("</mediawiki>\n");
+    merged
+}
+
+
+/// A `Special:Export` dump of `titles`, persistently cached as `<prefix>-<key>.xml` with the
+/// export TTL (stale files with the same prefix are evicted). `key` identifies the requested
+/// page set (see [`wiki_cache_key`]). A dump cut short is refetched, and never cached.
+fn fetch_wiki_export_cached(prefix: &str, key: u64, titles: &[String]) -> Result<String, String> {
+    // NOTE: The export is fetched in sequential requests of WIKI_EXPORT_CHUNK_TITLES titles.
+    // The MediaWiki Special:Export endpoint is behind Cloudflare, which rejects concurrent
+    // requests with HTTP 403/429 and can temporarily challenge-block the source IP. Splitting
+    // this into parallel chunked requests was measured to fail outright (every chunk 403'd) —
+    // do not parallelize these fetches.
     //
     // The raw XML dump is persistently cached (keyed by the requested page set) with a 24h TTL,
     // so repeated runs within a day — including iterating on parsing/stub-formatting code —
@@ -282,7 +448,7 @@ fn fetch_wiki_export_cached(prefix: &str, key: u64, pages_text: impl FnOnce() ->
         }
     }
 
-    if !force_refresh && let Some(cached) = read_fresh_cache(&cache_path, WIKI_CACHE_TTL_SECS) {
+    if !force_refresh && let Some(cached) = read_cached_wiki_export(&cache_path) {
         log::info!(
             "  Using cached wiki export: {} ({:.1} MB; set WOWLUA_LS_REFRESH_WIKI to force refresh)",
             cache_path.display(),
@@ -290,7 +456,20 @@ fn fetch_wiki_export_cached(prefix: &str, key: u64, pages_text: impl FnOnce() ->
         );
         return Ok(cached);
     }
-    let fetched = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text()), ("curonly", "1")]))?;
+    let requests = titles.chunks(WIKI_EXPORT_CHUNK_TITLES);
+    let request_count = requests.len();
+    let dumps = requests
+        .enumerate()
+        .map(|(i, chunk)| {
+            log::info!("  Fetching wiki export {}/{request_count} ({} titles)...", i + 1, chunk.len());
+            fetch_url_with(
+                WIKI_EXPORT_URL,
+                Some(&[("pages", &chunk.join("\n")), ("curonly", "1")]),
+                complete_wiki_export,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let fetched = merge_wiki_exports(&dumps);
     // Best-effort cache write — a failure here only costs a re-fetch next run.
     if let Some(parent) = cache_path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -313,11 +492,10 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
     // namespace where the real wikitext now lives, while removed/deprecated pages remain
     // in the legacy namespace. The legacy titles are now redirects, so requesting only
     // them — the previous behavior — exported redirect stubs instead of page content.
-    let pages_text = || api_names.iter()
+    let titles: Vec<String> = api_names.iter()
         .flat_map(|n| [format!("API {n}"), format!("API:{n}")])
-        .collect::<Vec<_>>()
-        .join("\n");
-    let xml_text = match fetch_wiki_export_cached("wiki-export", wiki_cache_key(api_names), pages_text) {
+        .collect();
+    let xml_text = match fetch_wiki_export_cached("wiki-export", wiki_cache_key(api_names), &titles) {
         Ok(text) => text,
         Err(e) => {
             log::error!("Wiki export failed: {e} — wiki pages will be empty");
@@ -390,7 +568,7 @@ pub(in crate::stub_gen) fn fetch_wiki_structure_pages(names: &[String]) -> HashM
         return HashMap::default();
     }
     let titles: Vec<String> = names.iter().map(|n| format!("Structure {n}")).collect();
-    let xml_text = match fetch_wiki_export_cached("wiki-structures", wiki_cache_key(&titles), || titles.join("\n")) {
+    let xml_text = match fetch_wiki_export_cached("wiki-structures", wiki_cache_key(&titles), &titles) {
         Ok(text) => text,
         Err(e) => {
             log::error!("Wiki structure export failed: {e} — wiki structure pages will be empty");
@@ -417,8 +595,9 @@ pub(in crate::stub_gen) fn fetch_wiki_structure_pages(names: &[String]) -> HashM
 ///
 /// Queries `Category:API_functions` and its subcategories (Removed, deprecated, Noflavor)
 /// to capture the full set of documented functions including deprecated/removed ones
-/// that addons may still reference.
-pub(in crate::stub_gen) fn fetch_wiki_function_names() -> Vec<String> {
+/// that addons may still reference. A page of a listing that can't be fetched fails the
+/// whole listing: stopping there would silently drop every name after it.
+pub(in crate::stub_gen) fn fetch_wiki_function_names() -> Result<Vec<String>, String> {
     let categories = [
         "Category:API_functions",
         "Category:API_functions/Removed",
@@ -442,44 +621,25 @@ pub(in crate::stub_gen) fn fetch_wiki_function_names() -> Vec<String> {
                 url.push_str(&format!("&cmcontinue={}", urlencoding(cont)));
             }
 
-            let body = match fetch_url(&url, None) {
-                Ok(text) => text,
-                Err(e) => {
-                    log::error!("Wiki category query failed for {category}: {e} — wiki names will be incomplete");
-                    break;
-                }
-            };
-            let json: serde_json::Value = match serde_json::from_str(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::error!("Failed to parse wiki category JSON for {category}: {e}");
-                    break;
-                }
-            };
-
-            if let Some(members) = json["query"]["categorymembers"].as_array() {
-                for member in members {
-                    if let Some(title) = member["title"].as_str() {
-                        // Function pages are titled "API FunctionName" in the legacy main
-                        // namespace, or "API:FunctionName" in the dedicated API namespace
-                        // (ns 3000) that warcraft.wiki.gg migrated most functions into.
-                        // Accept either prefix; skip non-API pages like "Global functions".
-                        if let Some(name) = title
-                            .strip_prefix("API ")
-                            .or_else(|| title.strip_prefix("API:"))
-                        {
-                            names.push(name.replace(' ', "_"));
-                            cat_count += 1;
-                        }
-                    }
+            let (titles, next) = fetch_url_with(&url, None, |body| parse_category_members(&body))
+                .map_err(|e| format!("{category}: {e}"))?;
+            for title in titles {
+                // Function pages are titled "API FunctionName" in the legacy main
+                // namespace, or "API:FunctionName" in the dedicated API namespace
+                // (ns 3000) that warcraft.wiki.gg migrated most functions into.
+                // Accept either prefix; skip non-API pages like "Global functions".
+                if let Some(name) = title
+                    .strip_prefix("API ")
+                    .or_else(|| title.strip_prefix("API:"))
+                {
+                    names.push(name.replace(' ', "_"));
+                    cat_count += 1;
                 }
             }
 
-            // Check for continuation token
-            if let Some(cont) = json["continue"]["cmcontinue"].as_str() {
-                cmcontinue = Some(cont.to_string());
-            } else {
-                break;
+            match next {
+                Some(cont) => cmcontinue = Some(cont),
+                None => break,
             }
         }
         log::info!("  {category}: {cat_count} functions");
@@ -488,16 +648,35 @@ pub(in crate::stub_gen) fn fetch_wiki_function_names() -> Vec<String> {
     names.sort();
     names.dedup();
     log::info!("  Discovered {} unique function names from wiki categories", names.len());
-    names
+    Ok(names)
+}
+
+
+/// The member titles and continuation token of one `list=categorymembers` API response.
+/// A response with no member list (an API error, or an error page that isn't JSON) is an
+/// error rather than the end of the listing.
+pub(in crate::stub_gen) fn parse_category_members(body: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("invalid JSON: {e}"))?;
+    if let Some(error) = json.get("error") {
+        return Err(format!(
+            "API error {}: {}",
+            error["code"].as_str().unwrap_or_default(),
+            error["info"].as_str().unwrap_or_default(),
+        ));
+    }
+    let members = json["query"]["categorymembers"]
+        .as_array()
+        .ok_or("response has no categorymembers list")?;
+    let titles = members.iter()
+        .filter_map(|member| member["title"].as_str().map(str::to_string))
+        .collect();
+    Ok((titles, json["continue"]["cmcontinue"].as_str().map(str::to_string)))
 }
 
 
 /// Fetch CVar names from BlizzardInterfaceResources and generate a `---@alias CVar` stub.
-pub(in crate::stub_gen) fn fetch_and_generate_cvar_stubs() -> String {
-    let url = RESOURCE_URL_TEMPLATE
-        .replace("{branch}", "live")
-        .replace("{file}", "CVars.lua");
-    let content = match fetch_url(&url, None) {
+pub(in crate::stub_gen) fn fetch_and_generate_cvar_stubs(resources: &ResourceCommits) -> String {
+    let content = match resources.fetch("live", "CVars.lua") {
         Ok(text) => text,
         Err(e) => {
             log::error!("FAILED to fetch CVars.lua: {e} — CVar alias will be empty");
@@ -528,22 +707,11 @@ pub(in crate::stub_gen) fn fetch_and_generate_cvar_stubs() -> String {
 // ── Phase 1: LE_* legacy constants from FrameXML scanning ─────────────────────
 
 
-/// Fetch and parse BlizzardInterfaceResources LuaEnum.lua.
+/// Parse BlizzardInterfaceResources LuaEnum.lua.
 /// Returns a map from flattened LE_*-style name to numeric value.
 /// The LE_* name is generated via mechanical CamelCase→UPPER_SNAKE conversion
 /// (used only for value assignment, not as ground truth for which names exist).
-pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
-    let url = RESOURCE_URL_TEMPLATE
-        .replace("{branch}", branch)
-        .replace("{file}", "LuaEnum.lua");
-    let content = match fetch_url(&url, None) {
-        Ok(text) => text,
-        Err(e) => {
-            log::error!("FAILED to fetch LuaEnum.lua from {branch}: {e} — LE_* values will be missing");
-            return HashMap::default();
-        }
-    };
-
+pub(in crate::stub_gen) fn parse_lua_enum_le_values(content: &str) -> HashMap<String, i64> {
     // Parse nested Lua table: Enum = { CategoryName = { ValueName = N, ... }, ... }
     // We produce candidate LE_* names by converting CamelCase to UPPER_SNAKE.
     // Skip the top-level "Enum = {" wrapper and parse second-level category blocks.
@@ -595,7 +763,7 @@ pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<Str
     // Blizzard exposes directly as globals rather than nesting inside `Enum = {...}`,
     // e.g. `LE_EXPANSION_CLASSIC = 0`).
     let le_direct_re = regex_lite::Regex::new(r"(?m)^(LE_[A-Z][A-Z_0-9]*)\s*=\s*(-?\d+)").unwrap();
-    for cap in le_direct_re.captures_iter(&content) {
+    for cap in le_direct_re.captures_iter(content) {
         if let (Some(name), Some(val)) = (cap.get(1), cap.get(2))
             && let Ok(num) = val.as_str().parse::<i64>() {
                 result.insert(name.as_str().to_string(), num);
@@ -610,7 +778,11 @@ pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<Str
 /// retail) API diff, derive the retail global name universe, and compute flavor
 /// bitmasks from branch presence. `lua_widget_methods` are `Type:Method` keys
 /// retail defines in Lua, which its WidgetAPI.lua doesn't list.
-pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_methods: &HashSet<String>) -> BranchResourceData {
+pub(in crate::stub_gen) fn fetch_branch_resources(
+    stubs_dir: &Path,
+    lua_widget_methods: &HashSet<String>,
+    resources: &ResourceCommits,
+) -> BranchResourceData {
     use crate::flavor::FLAVOR_RETAIL;
     log::info!("Downloading BlizzardInterfaceResources (parallel)...");
 
@@ -621,11 +793,11 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     ];
     let results: Vec<HashSet<String>> = std::thread::scope(|s| {
         let handles: Vec<_> = specs.iter()
-            .map(|&(branch, file)| s.spawn(move || fetch_resource(branch, file)))
+            .map(|&(branch, file)| s.spawn(move || fetch_resource(resources, branch, file)))
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    let empty_resources: Vec<String> = specs.iter().zip(&results)
+    let mut empty_resources: Vec<String> = specs.iter().zip(&results)
         .filter(|(_, names)| names.is_empty())
         .map(|((branch, file), _)| format!("{branch}/{file}"))
         .collect();
@@ -683,12 +855,19 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     // present in classic branches need stubs added to the GameTooltip class etc.
     log::info!("Downloading WidgetAPI.lua for all branches (parallel)...");
     let (widget_live, widget_classic_era, widget_classic, widget_forever) = std::thread::scope(|s| {
-        let h1 = s.spawn(|| fetch_widget_api("live"));
-        let h2 = s.spawn(|| fetch_widget_api("classic_era"));
-        let h3 = s.spawn(|| fetch_widget_api("classic"));
-        let h4 = s.spawn(|| fetch_widget_api("forever"));
+        let h1 = s.spawn(|| fetch_widget_api(resources, "live"));
+        let h2 = s.spawn(|| fetch_widget_api(resources, "classic_era"));
+        let h3 = s.spawn(|| fetch_widget_api(resources, "classic"));
+        let h4 = s.spawn(|| fetch_widget_api(resources, "forever"));
         (h1.join().unwrap(), h2.join().unwrap(), h3.join().unwrap(), h4.join().unwrap())
     });
+    for (branch, methods) in [
+        ("live", &widget_live), ("classic_era", &widget_classic_era), ("classic", &widget_classic), ("forever", &widget_forever),
+    ] {
+        if methods.is_empty() {
+            empty_resources.push(format!("{branch}/WidgetAPI.lua"));
+        }
+    }
 
     // Find methods defined in colon syntax (TypeName:Method) in existing stubs,
     // so we can exclude vendor-covered methods from the classic-only diff.
@@ -700,14 +879,11 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     // but absent from retail WidgetAPI.lua AND absent from vendor stubs (which cover
     // retail APIs not listed in retail's WidgetAPI.lua, like GameTooltip:SetHyperlink).
     //
-    // If the retail fetch failed (empty map), skip the diff entirely — an empty retail
-    // map would cause every classic method to appear classic-only, generating hundreds
-    // of duplicate stubs and corrupting the precomputed blob.
+    // If the retail fetch failed (empty map, which aborts the regen), skip the diff: an
+    // empty retail map would list every classic method as classic-only.
     let mut missing_widget_methods: Vec<(String, String)> = Vec::new();
     let mut flavor_map = flavor_map;
-    if widget_live.is_empty() {
-        log::warn!("Retail WidgetAPI.lua fetch failed or returned empty — skipping classic-only widget method diff to avoid over-generation");
-    } else {
+    if !widget_live.is_empty() {
         let all_widget_types: HashSet<String> = widget_classic_era.keys()
             .chain(widget_classic.keys())
             .chain(widget_forever.keys())
@@ -766,9 +942,21 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
 }
 
 
+/// A `git` command for network operations, which gives up on an HTTP transfer that makes
+/// no progress for `stall`, like the HTTP fetches do. By default git waits on a stalled
+/// connection forever.
+pub(in crate::stub_gen) fn git_network_command(stall: Duration) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
+        .env("GIT_HTTP_LOW_SPEED_TIME", stall.as_secs().to_string());
+    command
+}
+
+
 /// Shallow-clone a single branch of a git repo.
 pub(in crate::stub_gen) fn shallow_clone(repo: &str, branch: &str, dest: &Path) -> bool {
-    std::process::Command::new("git")
+    git_network_command(HTTP_STALL_TIMEOUT)
         .args(["clone", "--depth", "1", "--single-branch", "-b", branch, repo])
         .arg(dest)
         .stderr(std::process::Stdio::inherit())
@@ -782,7 +970,7 @@ pub(in crate::stub_gen) fn shallow_clone(repo: &str, branch: &str, dest: &Path) 
 /// than re-cloning from scratch. When `refresh` is true, always reclones.
 pub(in crate::stub_gen) fn ensure_shallow_clone(repo: &str, branch: &str, dest: &Path, refresh: bool) -> bool {
     if !refresh && dest.join(".git").exists() {
-        let fetched = std::process::Command::new("git")
+        let fetched = git_network_command(HTTP_STALL_TIMEOUT)
             .current_dir(dest)
             .args(["fetch", "--depth", "1", "origin", branch])
             .stderr(std::process::Stdio::inherit())

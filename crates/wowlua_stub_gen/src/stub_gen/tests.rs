@@ -3200,3 +3200,172 @@ function Untyped(a) end
     assert!(out.contains("---@param tbl table\n---@return number\nfunction RemoveValue("), "{out}");
     assert!(out.contains("\n\n---@return string\nfunction Untyped(a) end"), "{out}");
 }
+
+/// What the test server does with a connection once it has read the request.
+enum Reply {
+    /// Send these bytes and close the connection.
+    Send(Vec<u8>),
+    /// Send these bytes, then hold the connection open (up to 10 s) without sending more.
+    Stall(Vec<u8>),
+}
+
+/// Serve `replies` in order, one per connection, on a loopback port; returns its URL.
+fn serve_http(replies: Vec<Reply>) -> String {
+    use std::io::{BufRead, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut body_len = 0;
+            loop {
+                let mut line = String::new();
+                if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(len) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    body_len = len.trim().parse().unwrap();
+                }
+            }
+            request.read_exact(&mut vec![0; body_len]).unwrap();
+            match reply {
+                Reply::Send(bytes) => stream.write_all(&bytes).unwrap(),
+                Reply::Stall(bytes) => {
+                    stream.write_all(&bytes).unwrap();
+                    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+                    let _ = stream.read(&mut [0]);
+                }
+            }
+        }
+    });
+    url
+}
+
+fn http_response(status: &str, body: impl AsRef<[u8]>) -> Reply {
+    let body = body.as_ref();
+    let mut response = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+    response.extend_from_slice(body);
+    Reply::Send(response)
+}
+
+fn test_agent() -> ureq::Agent {
+    http_agent(std::time::Duration::from_secs(5), std::time::Duration::from_secs(5))
+}
+
+#[test]
+fn stalled_request_times_out() {
+    // ureq waits on a silent server forever by default, which hung whole regens.
+    let agent = http_agent(std::time::Duration::from_millis(200), std::time::Duration::from_millis(200));
+    for reply in [
+        Reply::Stall(Vec::new()),
+        Reply::Stall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\npart".to_vec()),
+    ] {
+        let url = serve_http(vec![reply]);
+        let started = std::time::Instant::now();
+        assert!(fetch_with_retries(&agent, &[], &url, None, Ok).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+}
+
+#[test]
+fn transient_http_failures_are_retried() {
+    let retry = [std::time::Duration::ZERO];
+    let url = serve_http(vec![http_response("522 Origin Connection Time-out", ""), http_response("200 OK", "ok")]);
+    assert_eq!(fetch_with_retries(&test_agent(), &retry, &url, None, Ok), Ok("ok".to_string()));
+    // A client error is final: the success queued behind it is never requested.
+    let url = serve_http(vec![http_response("404 Not Found", ""), http_response("200 OK", "ok")]);
+    assert!(fetch_with_retries(&test_agent(), &retry, &url, None, Ok).is_err());
+}
+
+#[test]
+fn body_cut_short_is_retried() {
+    let retry = [std::time::Duration::ZERO];
+    // A chunked body whose connection drops before the last chunk, here between
+    // characters: ureq 2 read that as the end of the body.
+    let dropped = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\ncaf".to_vec();
+    let url = serve_http(vec![Reply::Send(dropped), http_response("200 OK", "caf\u{e9}")]);
+    assert_eq!(fetch_with_retries(&test_agent(), &retry, &url, None, Ok), Ok("caf\u{e9}".to_string()));
+    // A body the server ends partway through the two-byte "\u{e9}".
+    let url = serve_http(vec![http_response("200 OK", b"caf\xc3"), http_response("200 OK", "caf\u{e9}")]);
+    assert_eq!(fetch_with_retries(&test_agent(), &retry, &url, None, Ok), Ok("caf\u{e9}".to_string()));
+    // Bytes that can never decode are final.
+    let url = serve_http(vec![http_response("200 OK", b"caf\xff"), http_response("200 OK", "caf\u{e9}")]);
+    assert!(fetch_with_retries(&test_agent(), &retry, &url, None, Ok).is_err());
+}
+
+#[test]
+fn stalled_git_transfer_times_out() {
+    // git, like ureq's default agent, waits on a silent server forever.
+    let url = serve_http(vec![Reply::Stall(Vec::new())]);
+    let started = std::time::Instant::now();
+    let status = git_network_command(std::time::Duration::from_secs(1))
+        .args(["ls-remote", &format!("{url}repo.git")])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "{:?}", started.elapsed());
+}
+
+#[test]
+fn cut_short_wiki_export_is_refetched_not_accepted() {
+    let agent = test_agent();
+    let retry = [std::time::Duration::ZERO];
+    let whole = "<mediawiki>\n  <page>\n    <title>API:Foo</title>\n  </page>\n</mediawiki>\n";
+    let cut = &whole[..whole.len() - 20];
+    let url = serve_http(vec![http_response("200 OK", cut), http_response("200 OK", whole)]);
+    assert_eq!(fetch_with_retries(&agent, &retry, &url, Some("pages=API%3AFoo"), complete_wiki_export).as_deref(), Ok(whole));
+    let url = serve_http(vec![http_response("200 OK", cut), http_response("200 OK", cut)]);
+    assert!(fetch_with_retries(&agent, &retry, &url, Some("pages=API%3AFoo"), complete_wiki_export).is_err());
+}
+
+#[test]
+fn cut_short_cached_wiki_export_is_not_reused() {
+    // A cut-short export used to be cached and reused for the cache's whole 24 h TTL.
+    let path = std::env::temp_dir().join("wowlua-ls-test-wiki-export-cache.xml");
+    std::fs::write(&path, "<mediawiki>\n  <page>\n    <title>API:Foo</title>").unwrap();
+    assert_eq!(read_cached_wiki_export(&path), None);
+    std::fs::write(&path, "<mediawiki>\n</mediawiki>\n").unwrap();
+    assert_eq!(read_cached_wiki_export(&path).as_deref(), Some("<mediawiki>\n</mediawiki>\n"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn chunked_wiki_exports_merge_into_one_dump() {
+    let dump = |pages: &str| format!("<mediawiki>\n  <siteinfo>\n    <sitename>Wiki</sitename>\n  </siteinfo>\n{pages}</mediawiki>\n");
+    let page = |title: &str, text: &str| format!("  <page>\n    <title>{title}</title>\n    <text>{text}</text>\n  </page>\n");
+    let merged = merge_wiki_exports(&[dump(&page("API:Foo", "foo")), dump(""), dump(&page("API:Bar", "bar"))]);
+    assert_eq!((merged.matches("<siteinfo>").count(), merged.matches("</mediawiki>").count()), (1, 1), "{merged}");
+    assert!(complete_wiki_export(merged.clone()).is_ok());
+    let (pages, _, _) = parse_wiki_export(&merged);
+    assert_eq!((pages["Foo"].as_str(), pages["Bar"].as_str()), ("foo", "bar"));
+}
+
+#[test]
+fn category_listing_page_errors_fail_the_listing() {
+    let page = r#"{"batchcomplete":"","continue":{"cmcontinue":"page|4142|1","continue":"-||"},"query":{"categorymembers":[{"ns":3000,"title":"API:Foo"},{"ns":0,"title":"Global functions"}]}}"#;
+    assert_eq!(
+        parse_category_members(page),
+        Ok((vec!["API:Foo".to_string(), "Global functions".to_string()], Some("page|4142|1".to_string()))),
+    );
+    assert_eq!(parse_category_members(r#"{"batchcomplete":"","query":{"categorymembers":[]}}"#), Ok((vec![], None)));
+    // An API error or an error page used to read as the listing's last page.
+    assert!(parse_category_members(r#"{"error":{"code":"badcontinue","info":"Invalid continue param."}}"#).is_err());
+    assert!(parse_category_members("<html><title>522: Connection timed out</title></html>").is_err());
+}
+
+#[test]
+fn ls_remote_heads_give_each_branch_commit() {
+    let output = "877c67e9e0a64b5daae348a7b72b7a64bfaab90f\trefs/heads/classic\n\
+                  36dd01db2d8fa5086dffda5cbfb3d55f4a70e526\trefs/heads/live\n\
+                  1f1dec331d23927fefe3d50c3d7f6e0915cda96f\trefs/heads/old/live\n";
+    assert_eq!(
+        parse_ls_remote_heads(output, &["live", "classic"]),
+        Ok(vec![
+            ("live".to_string(), "36dd01db2d8fa5086dffda5cbfb3d55f4a70e526".to_string()),
+            ("classic".to_string(), "877c67e9e0a64b5daae348a7b72b7a64bfaab90f".to_string()),
+        ]),
+    );
+    assert!(parse_ls_remote_heads(output, &["forever"]).is_err());
+}

@@ -36,7 +36,7 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 ### 3. Ketho/BlizzardInterfaceResources
 
-[Ketho/BlizzardInterfaceResources](https://github.com/Ketho/BlizzardInterfaceResources) is fetched via raw GitHub URLs across four branches: `live`, `classic_era`, `classic`, `forever`.
+[Ketho/BlizzardInterfaceResources](https://github.com/Ketho/BlizzardInterfaceResources) is fetched via raw GitHub URLs across four branches: `live`, `classic_era`, `classic`, `forever`. Each branch is resolved to its current commit when the run starts, every file is fetched at that commit, and the commits are recorded in `stubs/precomputed-provenance.txt`, so a regeneration that changes an API's flavors can be traced to the upstream change.
 
 - **`Resources/GlobalAPI.lua` and `Resources/FrameXML.lua`**: Simple name lists used to compute the classic-only API diff by identifying names present in the other branches but absent from retail/`live`. Also used as the source of global variable names for `GlobalVariables.lua` and per-API flavor bitmasks (derived from which branches' `GlobalAPI.lua` contains each name; a function retail defines in FrameXML gets no bitmask, even where Forever implements it in C).
 - **`Resources/LuaEnum.lua`**: Parsed for `LE_*` legacy enum constant values (nested `Enum = { Category = { ValueName = N } }` structures converted from CamelCase to `LE_UPPER_SNAKE` format, cross-referenced against wow-ui-source FrameXML `LE_*` references); `Enum.*` enum category stubs (merged with APIDocumentation enumerations); and the `Constants` global table (sub-tables with typed number/boolean/string fields).
@@ -57,9 +57,9 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 Function names are discovered by querying the MediaWiki API for the `API_functions`, `API_functions/Removed`, `API_functions/deprecated`, and `API_functions/Noflavor` categories. Names that duplicate a Blizzard API namespace function (e.g. `GetAddOnMetadata` shadowed by `C_AddOns.GetAddOnMetadata`) are filtered unless they still exist as bare globals in BlizzardInterfaceResources' `GlobalAPI.lua`.
 
-Page names from all three passes are collected upfront and batch-fetched in a single HTTP POST to `Special:Export` (the endpoint is behind Cloudflare, which rejects concurrent requests, so this is intentionally one request), then distributed to each processor:
+Page names from all three passes are collected upfront and batch-fetched from `Special:Export` in sequential POSTs of 4,000 titles (a single request for the whole set runs past the wiki's time limit and comes back cut short; the endpoint is behind Cloudflare, which rejects concurrent requests, so the requests never run in parallel), then distributed to each processor:
 
-The raw `Special:Export` XML dump is the single most expensive step (~25–40s). It is persistently cached under the platform cache directory (`$XDG_CACHE_HOME`/`~/.cache/wowlua-ls/` on Linux/macOS, `%LOCALAPPDATA%\wowlua-ls\` on Windows) with a 24-hour TTL. The cache is keyed by a hash of the requested page-name set (not by parsing logic) so iterating on `parse_wikitext()` or stub formatting reuses the cached dump and only a change to *which* pages are requested forces a re-fetch. Set the `WOWLUA_LS_REFRESH_WIKI` environment variable to force a fresh fetch regardless of cache age.
+The raw `Special:Export` XML dump is the single most expensive step (about 75 s). It is persistently cached under the platform cache directory (`$XDG_CACHE_HOME`/`~/.cache/wowlua-ls/` on Linux/macOS, `%LOCALAPPDATA%\wowlua-ls\` on Windows) with a 24-hour TTL. Only a complete dump, one that ends with the closing `</mediawiki>` tag, is cached or reused; a dump the wiki cuts short is fetched again. The cache is keyed by a hash of the requested page-name set (not by parsing logic) so iterating on `parse_wikitext()` or stub formatting reuses the cached dump and only a change to *which* pages are requested forces a re-fetch. Set the `WOWLUA_LS_REFRESH_WIKI` environment variable to force a fresh fetch regardless of cache age.
 
 
 - **Classic-only APIs**: Wiki pages for APIs in `(classic_era ∪ classic ∪ forever) \ retail` are parsed to extract parameter types, names, and return types, generating typed stubs in `ClassicGlobals.lua`.
@@ -151,7 +151,7 @@ The pipeline writes these Lua files to a temp directory for scanning. Their text
 |------|--------|---------|
 | `stubs/precomputed.bin.zst` | Magic (`0x574F575F`) + Version (4B) + zstd-9 payload | Bincode-serialized `PrecomputedStubs` (PreResolvedGlobals + ClassDecl + ExternalGlobal) |
 | `stubs/precomputed-files.bin.zst` | Version (4B) + zstd-9 payload | Bincode-serialized `HashMap<String, String>` of stub file contents for go-to-definition |
-| `stubs/precomputed-provenance.txt` | Text | Generation timestamp, source repo, commit hash, symbol/function/table/file counts |
+| `stubs/precomputed-provenance.txt` | Text | Generation timestamp, the commit of vscode-wow-api and of each wow-ui-source and BlizzardInterfaceResources branch, symbol/function/table/file counts |
 
 The main blob contains the fully resolved type database, and the files blob contains the source text of every referenced stub file so the LSP can support go-to-definition into stub code. Every source path in the main blob is a key of the files blob (`vendor/…` for the vscode-wow-api clone, `overrides/…`, `generated/…`), so neither blob contains paths from the machine that generated it.
 
@@ -162,6 +162,8 @@ The blob version (`BLOB_VERSION` in `crates/wowlua_analysis/src/pre_globals/mod.
 The `embedded-stubs` Cargo feature (default on) bakes both blobs into the binary via `include_bytes!`. Without the feature (`--no-default-features`), blobs are loaded at runtime from a `stubs/` directory next to the executable, used for universal editor plugin packages that share one copy of stubs across per-platform binaries.
 
 ## Validation
+
+Every download gives up on a server that stops responding: an HTTP request after two minutes without a response or five minutes on its body, a git transfer after two minutes without progress. HTTP downloads are retried after a transient failure (a timeout, a dropped connection, HTTP 408, 429 or 5xx, or a response cut short). A source that still fails, including a single page of the wiki's category listing, aborts the run before it writes the stubs.
 
 Before writing, the pipeline validates minimum counts (symbols ≥ 50k, functions ≥ 20k, tables ≥ 10k, files ≥ 1k, globals ≥ 50k, classes ≥ 10k) to catch truncated data from network failures or upstream structure changes. It also refuses to write the blobs if either one contains a directory the run used (the clone cache, its temp directory, or `stubs/overrides`).
 

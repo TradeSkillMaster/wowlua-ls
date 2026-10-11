@@ -248,11 +248,33 @@ impl BlizzardDocRegexes {
 const VSCODE_WOW_API_REPO: &str = "https://github.com/Ketho/vscode-wow-api.git";
 const VSCODE_WOW_API_BRANCH: &str = "master";
 
+const BLIZZARD_RESOURCES_REPO: &str = "https://github.com/Ketho/BlizzardInterfaceResources.git";
+/// The BlizzardInterfaceResources branches the pipeline reads.
+const RESOURCE_BRANCHES: &[&str] = &["live", "classic_era", "classic", "forever"];
 const RESOURCE_URL_TEMPLATE: &str =
-    "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{branch}/Resources/{file}";
+    "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{commit}/Resources/{file}";
 const WIKI_EXPORT_URL: &str = "https://warcraft.wiki.gg/wiki/Special:Export";
 const USER_AGENT: &str = "wowlua-ls-stub-generator/1.0";
 
+/// Longest an HTTP request waits for the server to start responding, and longest a git
+/// transfer may go without progress. Exceeds Cloudflare's 100 s origin timeout, so a slow
+/// wiki answer still arrives.
+const HTTP_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Longest an HTTP response body may take to arrive in full (ureq bounds the whole body,
+/// not each read). The largest, a wiki export chunk, takes about 20 s.
+const HTTP_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Waits before each retry of a request that failed transiently (a timeout, a dropped
+/// connection, HTTP 408/429/5xx such as Cloudflare's 522, or a body cut short).
+const HTTP_RETRY_DELAYS: [std::time::Duration; 3] = [
+    std::time::Duration::from_secs(5),
+    std::time::Duration::from_secs(15),
+    std::time::Duration::from_secs(45),
+];
+
+/// Page titles per `Special:Export` request. The wiki cuts an export off when it runs past
+/// the server's time limit, which one request for the whole ~18k-title set often did; a
+/// request this size takes about 20 s.
+const WIKI_EXPORT_CHUNK_TITLES: usize = 4000;
 /// Max age of the cached raw wiki export dump before a fresh fetch is required (24h).
 const WIKI_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Bump to invalidate all existing wiki-export caches when the request shape changes.
@@ -535,10 +557,16 @@ pub(in crate::stub_gen) struct BranchResourceData {
     retail_api_names: HashSet<String>,
     /// Flavor map derived from branch presence diffs.
     flavor_map: HashMap<String, u8>,
-    /// `branch/file` of each resource list that came back empty (a failed fetch):
-    /// a missing list silently rewrites every flavor mask, so the regen aborts.
+    /// `branch/file` of each resource list that came back empty (a failed fetch): a
+    /// missing list silently rewrites every flavor mask or drops the classic-only widget
+    /// methods, so the regen aborts.
     empty_resources: Vec<String>,
 }
+
+/// The commit each of `RESOURCE_BRANCHES` pointed to when the run started, as
+/// `(branch, commit)`. Every resource file is fetched at its branch's commit, so the
+/// files a run reads agree with each other and with the commits provenance records.
+pub(in crate::stub_gen) struct ResourceCommits(Vec<(String, String)>);
 
 /// Parse all *Documentation.lua files in Blizzard_APIDocumentationGenerated.
 /// Returns (constants: name → (type, value), enums: enum_name → [(field_name, value)]).

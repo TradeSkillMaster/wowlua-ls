@@ -37,6 +37,16 @@ pub fn regenerate_stubs() {
     let wiki_names_handle = std::thread::spawn(fetch_wiki_function_names);
     let global_csvs_handle = std::thread::spawn(fetch_global_csvs);
 
+    // Every BlizzardInterfaceResources file is read at the commit its branch points to now,
+    // which provenance records.
+    let resource_commits = ResourceCommits::resolve().unwrap_or_else(|e| {
+        log::error!("Could not resolve BlizzardInterfaceResources branches: {e}");
+        std::process::exit(1);
+    });
+    for (branch, commit) in resource_commits.iter() {
+        log::info!("Resolved BlizzardInterfaceResources {branch} commit: {commit}");
+    }
+
     // Step 1: Shallow-clone vscode-wow-api into the persistent clones cache.
     // Cached clones are reused across runs (updated via `git fetch`) unless
     // WOWLUA_LS_REFRESH_CLONES is set. tmp_dir holds throwaway scratch dirs only.
@@ -84,7 +94,7 @@ pub fn regenerate_stubs() {
     log::info!("Resolved vscode-wow-api commit: {vscode_wow_api_commit}");
 
     // Init submodules within the cloned repo (FramexmlAnnotations → Annotations/FrameXML)
-    let status = std::process::Command::new("git")
+    let status = git_network_command(HTTP_STALL_TIMEOUT)
         .current_dir(&clone_dir)
         .args(["submodule", "update", "--init", "--recursive", "--depth", "1"])
         .status()
@@ -139,7 +149,8 @@ pub fn regenerate_stubs() {
             });
             classic_ui_dirs.push(dest);
         } else {
-            log::warn!("could not clone branch {branch}");
+            log::error!("could not clone branch {branch}");
+            source_errors.push(format!("wow-ui-source {branch}: clone failed"));
         }
     }
     let retail_ui_dir = clones_dir.join("wow-ui-source-live");
@@ -201,7 +212,7 @@ pub fn regenerate_stubs() {
     // Step 2c: Fetch BlizzardInterfaceResources lists (all 4 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
     log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
-    let mut branch_data = fetch_branch_resources(&combined_stubs, &tooltip_accessor_keys(&tooltip_accessors));
+    let mut branch_data = fetch_branch_resources(&combined_stubs, &tooltip_accessor_keys(&tooltip_accessors), &resource_commits);
     for resource in &branch_data.empty_resources {
         source_errors.push(format!("BlizzardInterfaceResources {resource}: empty (fetch failed)"));
     }
@@ -340,10 +351,18 @@ pub fn regenerate_stubs() {
 
     // Step 4: Collect all wiki page names from the three passes, then batch-fetch once
     log::info!("Collecting wiki page names...");
-    let mut wiki_names = wiki_names_handle.join().expect("wiki function names fetch thread panicked");
-    if wiki_names.len() < 1000 {
-        source_errors.push(format!("wiki function names: {} (expected ≥1000)", wiki_names.len()));
-    }
+    let mut wiki_names = match wiki_names_handle.join().expect("wiki function names fetch thread panicked") {
+        Ok(names) => {
+            if names.len() < 1000 {
+                source_errors.push(format!("wiki function names: {} (expected ≥1000)", names.len()));
+            }
+            names
+        }
+        Err(e) => {
+            source_errors.push(format!("wiki function names: {e}"));
+            Vec::new()
+        }
+    };
     phase!("join wiki_function_names (overlapped w/ clones)");
     let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
     let unannotated = widget_methods.iter().filter(|m| m.required_params.is_empty()).count();
@@ -395,6 +414,28 @@ pub fn regenerate_stubs() {
         wiki_names.extend(retail_extras);
     }
 
+    // LE_* constant values for the classic stubs, from LuaEnum.lua. classic_era covers
+    // Classic-only constants and its values win where branches overlap (e.g.
+    // LE_EXPANSION_CLASSIC); live adds retail-only ones such as LE_EXPANSION_SHADOWLANDS,
+    // and forever its own additions. The live file also feeds the Enum.* and Constants
+    // stubs below.
+    log::info!("Fetching LuaEnum.lua (classic_era + live + forever)...");
+    let mut le_values: HashMap<String, i64> = HashMap::default();
+    let mut live_lua_enum = String::new();
+    for branch in ["classic_era", "live", "forever"] {
+        match resource_commits.fetch(branch, "LuaEnum.lua") {
+            Ok(text) => {
+                for (name, val) in parse_lua_enum_le_values(&text) {
+                    le_values.entry(name).or_insert(val);
+                }
+                if branch == "live" {
+                    live_lua_enum = text;
+                }
+            }
+            Err(e) => source_errors.push(format!("LuaEnum.lua ({branch}): fetch failed — {e}")),
+        }
+    }
+
     // Step 4a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames).
     // Also returns the full union of classic enum data (classic_enum_union) so the
     // enum-merge step below can add classic-exclusive field names into retail enums
@@ -408,6 +449,7 @@ pub fn regenerate_stubs() {
         &classic_ui_dirs,
         retail_api_doc.as_ref(),
         &retail_fxml_consts,
+        &le_values,
         &all_ui_dirs,
         &branch_flavors,
     );
@@ -464,7 +506,7 @@ pub fn regenerate_stubs() {
 
     // Step 4c: Generate CVar alias (replaces Ketho's CVar.lua)
     log::info!("Generating CVar alias from BlizzardInterfaceResources...");
-    let cvar_lua = fetch_and_generate_cvar_stubs();
+    let cvar_lua = fetch_and_generate_cvar_stubs(&resource_commits);
     if cvar_lua.is_empty() {
         source_errors.push("CVar alias: empty (fetch failed)".to_string());
     }
@@ -532,25 +574,11 @@ pub fn regenerate_stubs() {
     let script_object_lua = generate_scriptobject_method_stubs(&blizzard_docs, &known_enum_names, &existing_widget_methods, &secret_table_types);
     std::fs::write(gen_dir.join("ScriptObjectMethods.lua"), &script_object_lua).unwrap();
 
-    // Fetch LuaEnum.lua once for both Enum.* categories and Constants.* sub-tables.
-    log::info!("Fetching LuaEnum.lua for Enum.* and Constants...");
-    let lua_enum_content = {
-        let url = RESOURCE_URL_TEMPLATE
-            .replace("{branch}", "live")
-            .replace("{file}", "LuaEnum.lua");
-        match fetch_url(&url, None) {
-            Ok(text) => text,
-            Err(e) => {
-                source_errors.push(format!("LuaEnum.lua (live): fetch failed — {e}"));
-                String::new()
-            }
-        }
-    };
-    phase!("gen wiki/blizzard stubs + LuaEnum fetch (HTTP)");
+    phase!("gen wiki/blizzard stubs");
 
     // Enums: merge APIDocumentation enums with LuaEnum.lua categories, replacing Ketho's Enum.lua.
     // APIDocumentation has 825 enums; LuaEnum.lua fills ~120 gaps (shop, housing, etc.).
-    let lua_enum_cats = parse_lua_enum_categories(&lua_enum_content);
+    let lua_enum_cats = parse_lua_enum_categories(&live_lua_enum);
     let mut all_enums = lua_enum_cats;
     // APIDocumentation enums take precedence over LuaEnum.lua
     for (name, fields) in retail_enums {
@@ -593,7 +621,7 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("BlizzardEnums.lua"), &blizzard_enums_lua).unwrap();
 
     // Constants: extract Constants.* sub-tables from LuaEnum.lua
-    let constants_tables = parse_constants_tables(&lua_enum_content);
+    let constants_tables = parse_constants_tables(&live_lua_enum);
     if constants_tables.len() < 20 {
         source_errors.push(format!("Constants sub-tables: {} (expected ≥20)", constants_tables.len()));
     }
@@ -891,6 +919,9 @@ pub fn regenerate_stubs() {
     );
     for (branch, commit) in &ui_source_commits {
         header.push_str(&format!("# Source: {} @ {} (branch: {})\n", WOW_UI_SOURCE_REPO, commit, branch));
+    }
+    for (branch, commit) in resource_commits.iter() {
+        header.push_str(&format!("# Source: {} @ {} (branch: {})\n", BLIZZARD_RESOURCES_REPO, commit, branch));
     }
     header.push_str(&format!(
         "# Symbols: {}, Functions: {}, Tables: {}\n# Embedded source files: {}\n",

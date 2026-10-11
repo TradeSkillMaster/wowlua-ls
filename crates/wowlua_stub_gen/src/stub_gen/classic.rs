@@ -145,7 +145,7 @@ pub(in crate::stub_gen) fn compute_flavor_map(
 
 // Data-pipeline function threading multiple independent data sources through the
 // classic stub generation pipeline. The parameters are naturally separate concerns
-// (diff, wiki, UI dirs, API docs, frame flavors).
+// (diff, wiki, UI dirs, API docs, LE_* values, frame flavors).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(in crate::stub_gen) fn generate_classic_stubs(
     diff: &ClassicApiDiff,
@@ -155,6 +155,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     classic_ui_dirs: &[PathBuf],
     retail_api_doc: Option<&ApiDocData>,
     retail_fxml_consts: &HashMap<String, (String, String)>,
+    le_values: &HashMap<String, i64>,
     all_ui_dirs: &[PathBuf],
     branch_flavors: &[u8],
 ) -> (String, HashMap<String, Vec<(String, i64)>>, HashMap<String, u8>) {
@@ -321,19 +322,6 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     // Note: some constants (e.g. LE_PET_JOURNAL_FILTER_FAVORITES) are absent from
     // both LuaEnum.lua and FrameXML and must be added to RuntimeMissingGlobals.lua.
     {
-        // Fetch LuaEnum.lua from several branches for comprehensive LE_* coverage.
-        // classic_era covers Classic-only constants; live covers retail-only constants
-        // such as LE_EXPANSION_SHADOWLANDS (Shadowlands was retail-only); forever
-        // covers its own additions.
-        log::info!("Fetching LuaEnum.lua for LE_* constants (classic_era + live + forever)...");
-        let mut le_values = fetch_and_parse_lua_enum("classic_era");
-        // live, then forever, supplement classic_era without overriding (classic_era
-        // values are authoritative for constants present in both, e.g. LE_EXPANSION_CLASSIC).
-        for branch in ["live", "forever"] {
-            for (name, val) in fetch_and_parse_lua_enum(branch) {
-                le_values.entry(name).or_insert(val);
-            }
-        }
         log::info!("  Combined LE_* map: {} candidate names from LuaEnum.lua", le_values.len());
 
         // Start with all LuaEnum.lua-derived names, then add any additional names
