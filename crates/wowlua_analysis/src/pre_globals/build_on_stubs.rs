@@ -81,6 +81,8 @@ struct BuildOnStubsContext<'a> {
     conflicting_arity_funcs: HashSet<FunctionIndex>,
     // `@creates-global` side-effect globals: scope0 symbol → creating-call location.
     deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
+    // Class-typed fields written calls: the field's coarse expr → the calls.
+    deferred_call_fields: HashMap<ExprId, Vec<crate::analysis::deferred::DeferredCallField>>,
     // Workspace methods that override a built-in stub method of the same name:
     // (workspace `FunctionIndex`, displaced stub definition location). Recorded as
     // alternate go-to-definition sites in `build_on_stubs` after `finish`, so
@@ -138,6 +140,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_returns: HashSet::default(),
             conflicting_arity_funcs: HashSet::default(),
             deferred_call_globals: HashMap::default(),
+            deferred_call_fields: HashMap::default(),
             method_stub_overrides: Vec::new(),
             implicit_protected_prefix,
         }
@@ -208,6 +211,55 @@ impl<'a> BuildOnStubsContext<'a> {
             &self.parameterized_aliases, &[],
             &mut self.tables, &mut self.exprs,
         ).or_else(|| self.resolve_annotation(at))
+    }
+
+    /// Register the field `field_name` the write `g` typed `vt` (its literal `expr`)
+    /// for the call-field harvest when `vt` is a class and `g` recorded the call its
+    /// value comes from (`call_of`).
+    fn defer_call_field(&mut self, expr: ExprId, vt: &ValueType, g: &crate::annotations::ExternalGlobal, field_name: &str) {
+        if !matches!(vt, ValueType::Table(Some(idx)) if self.tables[idx.ext_offset()].class_name.is_some()) {
+            return;
+        }
+        if let Some(call) = Self::call_of(g, field_name) {
+            self.deferred_call_fields.insert(expr, vec![call]);
+        }
+    }
+
+    /// Account for a write `g` of the field `field_name` of `table_idx` that another
+    /// write typed first: when the field is registered for the call-field harvest, it
+    /// may hold this write's value too. A call joins the harvest, which refines the
+    /// field only when all its calls agree; any other write ends it.
+    fn note_field_write(&mut self, table_idx: TableIndex, field_name: &str, g: &crate::annotations::ExternalGlobal) {
+        let Some(expr) = self.tables[table_idx.ext_offset()].fields.get(field_name).map(|fi| fi.expr) else { return };
+        let call = Self::call_of(g, field_name);
+        let Some(calls) = self.deferred_call_fields.get_mut(&expr) else { return };
+        match call {
+            Some(call) => {
+                if !calls.iter().any(|c| c.path == call.path && c.call_offset == call.call_offset) {
+                    calls.push(call);
+                }
+            }
+            None => {
+                self.deferred_call_fields.remove(&expr);
+            }
+        }
+    }
+
+    /// The call the write `g` of `field_name` records its value comes from
+    /// (`ExternalGlobal::assigned_call_offset`): its own right-hand side, or the call
+    /// initializing the local it assigns.
+    fn call_of(g: &crate::annotations::ExternalGlobal, field_name: &str) -> Option<crate::analysis::deferred::DeferredCallField> {
+        use crate::analysis::deferred::{CallTarget, DeferredCallField};
+        use crate::annotations::{ExternalGlobalKind, FieldValueKind};
+        let (Some(call_offset), Some(path)) = (g.assigned_call_offset, &g.source_path) else { return None };
+        let target = match &g.kind {
+            ExternalGlobalKind::TableField(_, _, FieldValueKind::FunctionCall(..)) => CallTarget::Field(field_name.to_string()),
+            ExternalGlobalKind::TableField(_, _, FieldValueKind::FieldRef(names)) if names.len() == 1 => {
+                CallTarget::Local(names[0].clone())
+            }
+            _ => return None,
+        };
+        Some(DeferredCallField { path: path.clone(), call_offset, target })
     }
 
     /// The type of the call a field is assigned (`X.f = Call()`): the callee's
@@ -731,6 +783,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     .is_some_and(|fi| fi.annotation.as_ref()
                         .is_some_and(|a| !matches!(a, ValueType::Any | ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
+                    self.note_field_write(leaf_idx, field_name, g);
                     continue;
                 }
                 let value_type = if !g.returns.is_empty() {
@@ -792,6 +845,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     if let FieldValueKind::Number(Some(val)) = value_kind {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
+                    self.defer_call_field(expr_idx, &vt, g, field_name);
                     // An explicit table constructor (`X.field = { ... }`) is a real,
                     // author-written `table`-typed field even when its shape came out
                     // empty — positional/bracket keys aren't captured by the value-kind
@@ -830,6 +884,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
+                    self.note_field_write(leaf_idx, field_name, g);
                     continue;
                 }
                 let value_type = if let Some(&idx) = self.classes.get(field_name) {
@@ -1065,6 +1120,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     };
                     keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    if let Some(fi) = self.tables[local_idx].fields.get(field_name) {
+                        self.defer_call_field(fi.expr, &ValueType::Table(Some(method_table)), g, field_name);
+                    }
                     continue;
                 }
                 let ctor_entry = (table_idx, field_name.clone());
@@ -1074,6 +1132,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 if !is_ctor_entry && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    self.note_field_write(table_idx, field_name, g);
                     continue;
                 }
                 if !g.returns.is_empty() {
@@ -1130,6 +1189,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
                     self.ctor_entries.remove(&ctor_entry);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    self.defer_call_field(expr_idx, &vt, g, field_name);
                 }
             }
         }
@@ -1151,6 +1211,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 if !self.ctor_entries.contains(&ctor_entry) && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    self.note_field_write(table_idx, field_name, g);
                     continue;
                 }
 
@@ -1450,6 +1511,13 @@ impl<'a> BuildOnStubsContext<'a> {
 
         let deferred_returns_by_path = super::shared::deferred_returns_by_path(&self.deferred_returns, &self.function_locations);
         let deferred_call_globals_by_path = super::shared::deferred_call_globals_by_path(&self.deferred_call_globals);
+        let mut deferred_field_calls_by_path: HashMap<PathBuf, Vec<(u32, crate::analysis::deferred::CallTarget)>> = HashMap::default();
+        for call in self.deferred_call_fields.values().flatten() {
+            let calls = deferred_field_calls_by_path.entry(call.path.clone()).or_default();
+            if !calls.iter().any(|(offset, _)| *offset == call.call_offset) {
+                calls.push((call.call_offset, call.target.clone()));
+            }
+        }
 
         // Constructor self-fields whose coarse type is `any` — record where their
         // RHS call lives so the precise generic type args can be harvested lazily.
@@ -1578,6 +1646,8 @@ impl<'a> BuildOnStubsContext<'a> {
             narrowing_methods: Default::default(),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
+            deferred_call_fields: self.deferred_call_fields,
+            deferred_field_calls_by_path,
             deferred_field_type_args,
             deferred_field_type_args_by_path,
             deferred_class_field_paths,

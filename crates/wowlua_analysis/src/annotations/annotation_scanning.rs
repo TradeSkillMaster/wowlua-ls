@@ -411,8 +411,10 @@ pub struct ExternalGlobal {
     pub deferred_call_type: bool,
     /// For an unannotated `X = f(...)` global, the start offset of the call, so the
     /// global's type can be harvested from the call's resolved return type the same
-    /// way as a `deferred_call_type` global's. Runtime only — `#[serde(skip)]`, no
-    /// BLOB_VERSION bump.
+    /// way as a `deferred_call_type` global's. Likewise for a field written
+    /// `t.f = f(...)`, or `t.f = w` where the class of the local `w` was only
+    /// guessed from its call (the call initializing `w`, when it isn't assigned
+    /// again). Runtime only — `#[serde(skip)]`, no BLOB_VERSION bump.
     #[serde(skip)]
     pub assigned_call_offset: Option<u32>,
     /// For a `Table` global assigned a constructor (`X = { a = 1 }`), the

@@ -131,6 +131,30 @@ pub struct DeferredCallGlobal {
     pub created: bool,
 }
 
+/// Locates a call a table field is written, like a [`DeferredCallGlobal`]'s: the
+/// right-hand side of an unannotated `t.f = g(...)`, or the initializer of a local
+/// `w` written `t.f = w` whose class the scan only guessed from that call. The
+/// field's coarse type is the callee's declared return or that guess — for
+/// `CreateFrame("Frame", nil, nil, "Tpl")` bare `Frame` — so a cross-file read takes
+/// the type its calls resolve to when they all agree on it and it refines that class
+/// (`Frame & Tpl`, see [`refined_class_view`](crate::analysis::refined_class_view)).
+/// The harvest only accepts a call at `call_offset` that still assigns `target`.
+#[derive(Debug, Clone)]
+pub struct DeferredCallField {
+    pub path: PathBuf,
+    pub call_offset: u32,
+    pub target: CallTarget,
+}
+
+/// What a [`DeferredCallField`]'s call is assigned to.
+#[derive(Debug, Clone)]
+pub enum CallTarget {
+    /// The field itself, by name (`t.f = g(...)`).
+    Field(String),
+    /// The local, by name, the field is assigned (`local w = g(...)`).
+    Local(String),
+}
+
 /// `(class_name, field_name)` identifying a deferred constructor self-field.
 pub type DeferredFieldKey = (String, String);
 
@@ -158,8 +182,8 @@ pub struct DeferredSig {
 }
 
 /// A unit of deferred harvest: one file analyzed on its own (its deferred returns,
-/// created globals and constructor field type args), or the files of a workspace
-/// `@class` analyzed together (its fields).
+/// call-typed globals and fields, and constructor field type args), or the files of a
+/// workspace `@class` analyzed together (its fields).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Unit {
     File(PathBuf),
@@ -183,6 +207,9 @@ struct FileHarvest {
     sigs: HashMap<FunctionIndex, DeferredSig>,
     /// The type of every created global defined in it (`None`: unresolvable).
     call_globals: HashMap<SymbolIndex, Option<ValueType>>,
+    /// The type of every call in it writing a deferred call field, by the call's
+    /// start offset (`None`: unresolvable).
+    call_fields: HashMap<u32, Option<ValueType>>,
     /// The type args of every deferred constructor self-field defined in it
     /// (`None`: unresolvable).
     field_args: HashMap<DeferredFieldKey, Option<Vec<ValueType>>>,
@@ -712,6 +739,66 @@ impl Ir {
             .copied()
             .find(|&p| self.table(p).fields.contains_key(field_name))
     }
+
+    /// Ensure a read of `field_name` through `table_idx` sees the type the field's
+    /// calls ([`DeferredCallField`]) resolve to in their files, when they agree on it
+    /// and it is a richer view of the field's coarse class
+    /// ([`refined_class_view`](crate::analysis::refined_class_view)) — the rule the
+    /// defining file reads the field by. The field of an external table is overlaid;
+    /// this file's copy of it (its namespace table, or a `@class` it declares too) is
+    /// updated in place. A field this file writes keeps its writes' type. Each field
+    /// is consulted once per analysis; returns whether the field changed.
+    pub fn ensure_call_field_overlay(&mut self, table_idx: TableIndex, field_name: &str) -> bool {
+        if self.ext.deferred_call_fields.is_empty() {
+            return false;
+        }
+        let Some(slot) = self.field_slot(table_idx, field_name) else { return false };
+        if slot.is_external() && self.overlay_fields.get(&slot).is_some_and(|m| m.contains_key(field_name)) {
+            return false;
+        }
+        let Some(fi) = self.table(slot).fields.get(field_name) else { return false };
+        if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+            return false;
+        }
+        let expr = fi.expr;
+        if !self.ext.deferred_call_fields.contains_key(&expr) || !self.call_fields_checked.insert((slot, expr)) {
+            return false;
+        }
+        let Some(coarse) = self.table(slot).fields.get(field_name).and_then(|fi| fi.annotation.clone()) else {
+            return false;
+        };
+        for call in self.ext.deferred_call_fields.get(&expr).into_iter().flatten() {
+            self.deferred_dep_files.insert(call.path.clone());
+        }
+        let instance_of = self.instance_class(&coarse);
+        let Some(ty) = resolve_deferred_call_field_type(&self.ext, expr)
+            .and_then(|ty| crate::analysis::refined_class_view(&ty, &coarse, instance_of.as_ref()))
+        else {
+            return false;
+        };
+        if slot.is_external() {
+            let mut precise = self.table(slot).fields[field_name].clone();
+            precise.annotation = Some(ty);
+            self.overlay_fields.entry(slot).or_default().insert(field_name.to_string(), precise);
+        } else if let Some(fi) = self.tables[slot.val()].fields.get_mut(field_name) {
+            fi.annotation = Some(ty);
+        }
+        true
+    }
+
+    /// The table holding the field a read of `field_name` through `table_idx` sees
+    /// (`get_field`'s direct lookup): `table_idx`, else the first parent class
+    /// declaring it — on its own fields or this file's overlay of them.
+    fn field_slot(&self, table_idx: TableIndex, field_name: &str) -> Option<TableIndex> {
+        let declares = |t: TableIndex| {
+            (t.is_external() && self.overlay_fields.get(&t).is_some_and(|m| m.contains_key(field_name)))
+                || self.table(t).fields.contains_key(field_name)
+        };
+        if declares(table_idx) {
+            return Some(table_idx);
+        }
+        self.table(table_idx).parent_classes.iter().copied().find(|&p| declares(p))
+    }
 }
 
 impl Analysis<'_> {
@@ -805,6 +892,26 @@ pub fn resolve_deferred_call_global_type(
     read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.call_globals.get(&sym_idx).cloned()))
         .flatten()
         .flatten()
+}
+
+/// Resolve the type of a field written calls (by its coarse expr) from the resolved
+/// return types of those calls in their files (memoized). `None` when a call can't be
+/// resolved or two disagree; the reader then keeps the field's coarse type.
+pub fn resolve_deferred_call_field_type(ext: &Arc<PreResolvedGlobals>, expr: ExprId) -> Option<ValueType> {
+    let mut agreed: Option<ValueType> = None;
+    for call in ext.deferred_call_fields.get(&expr)? {
+        let ty = read_unit(ext, Unit::File(call.path.clone()), |h| {
+            h.file().and_then(|f| f.call_fields.get(&call.call_offset).cloned())
+        })
+        .flatten()
+        .flatten()?;
+        match &agreed {
+            Some(prev) if *prev != ty => return None,
+            Some(_) => {}
+            None => agreed = Some(ty),
+        }
+    }
+    agreed
 }
 
 /// Resolve the precise generic type arguments for a deferred constructor
@@ -1240,8 +1347,8 @@ fn analyze_file(
 
 /// Harvest everything cross-file readers take from an analysis of `path`: the precise
 /// signature bundle (returns + correlated overloads) of every deferred function, the
-/// resolved type of every call-typed global, and the type args of every deferred
-/// constructor self-field.
+/// resolved type of every call-typed global and call field, and the type args of every
+/// deferred constructor self-field.
 fn file_harvest(
     ext: &Arc<PreResolvedGlobals>,
     path: &Path,
@@ -1252,6 +1359,7 @@ fn file_harvest(
     FileHarvest {
         sigs: harvest_sigs(ext, path, result, &globals),
         call_globals: harvest_call_globals(ext, path, tree, result, &globals),
+        call_fields: harvest_call_fields(ext, path, tree, result, &globals),
         field_args: harvest_field_args(ext, path, result, &globals),
     }
 }
@@ -1331,11 +1439,8 @@ fn harvest_sigs(
 }
 
 /// The resolved type of every call-typed global defined in `path` (`None` when
-/// unresolvable, so the file is not re-analyzed). For each global, locate its call by
-/// the recorded start offset (matching `Expr::FunctionCall.call_range.0`) — accepting
-/// only a call there that still defines the global ([`call_defines_global`]) — read
-/// the call's first-return resolved type from the engine's expression cache, and lift
-/// it into ext-index space.
+/// unresolvable, so the file is not re-analyzed), from its call ([`call_type_at`],
+/// accepting only a call that still defines the global), lifted into ext-index space.
 fn harvest_call_globals(
     ext: &Arc<PreResolvedGlobals>,
     path: &Path,
@@ -1348,47 +1453,81 @@ fn harvest_call_globals(
     let mut harvested: HashMap<SymbolIndex, Option<ValueType>> = HashMap::default();
     for &sym_idx in ext.deferred_call_globals_by_path.get(path).into_iter().flatten() {
         let Some(dcg) = ext.deferred_call_globals.get(&sym_idx) else { continue };
-        // The call's first return (ret_index 0) is the global's value; its
-        // resolved type is the global's type.
-        let resolved = ir
-            .call_exprs_starting_at(dcg.call_offset)
-            .filter_map(|(eid, e)| match e {
-                Expr::FunctionCall { ret_index: 0, call_range, .. } => Some((eid, *call_range)),
-                _ => None,
-            })
-            .find(|&(_, range)| call_defines_global(root, range, dcg, ext.creates_global_specs()))
-            .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
-            .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
-            .filter(|t| !contains_any(t));
+        let resolved = call_type_at(result, root, dcg.call_offset, |call| {
+            call_defines_global(call, dcg, ext.creates_global_specs())
+        })
+        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
+        .filter(|t| !contains_any(t));
         harvested.insert(sym_idx, resolved);
     }
     harvested
 }
 
-/// Whether the call spanning `range` in `root` still defines `dcg`'s global —
-/// creates it, or is the value assigned to it — rather than being another call a
-/// stale offset now lands on.
-fn call_defines_global(
+/// The type of every [`DeferredCallField`] call in `path` (`None` when unresolvable),
+/// by its start offset ([`call_type_at`], accepting only a call that still assigns
+/// its target), lifted into ext-index space.
+fn harvest_call_fields(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+    tree: &crate::syntax::tree::SyntaxTree,
+    result: &crate::analysis::AnalysisResult,
+    globals: &GlobalTables,
+) -> HashMap<u32, Option<ValueType>> {
+    use crate::annotations::scan_globals::{call_assigns_field, call_initializes_local};
+    let ir = &result.ir;
+    let root = crate::syntax::SyntaxNode::new_root(tree);
+    let mut harvested: HashMap<u32, Option<ValueType>> = HashMap::default();
+    for (offset, target) in ext.deferred_field_calls_by_path.get(path).into_iter().flatten() {
+        let resolved = call_type_at(result, root, *offset, |call| match target {
+            CallTarget::Field(field) => call_assigns_field(call, field),
+            CallTarget::Local(local) => call_initializes_local(call, local),
+        })
+        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
+        .filter(|t| !contains_any(t));
+        harvested.insert(*offset, resolved);
+    }
+    harvested
+}
+
+/// The resolved type of the value of the call starting at `offset` in the analyzed
+/// file (its first return, matching `Expr::FunctionCall.call_range.0`), if `accepts`
+/// that call — the check that a stale offset hasn't landed on another call.
+fn call_type_at(
+    result: &crate::analysis::AnalysisResult,
     root: crate::syntax::SyntaxNode<'_>,
-    range: (u32, u32),
+    offset: u32,
+    accepts: impl Fn(&crate::ast::FunctionCall<'_>) -> bool,
+) -> Option<ValueType> {
+    use crate::ast::{AstNode, FunctionCall};
+    let token = root.token_at_offset(crate::syntax::TextSize::from(offset)).right_biased()?;
+    result
+        .ir
+        .call_exprs_starting_at(offset)
+        .filter_map(|(eid, e)| match e {
+            Expr::FunctionCall { ret_index: 0, call_range, .. } => Some((eid, *call_range)),
+            _ => None,
+        })
+        .find(|&(_, range)| {
+            token.ancestors().filter_map(FunctionCall::cast).any(|call| {
+                let r = call.syntax().text_range();
+                (u32::from(r.start()), u32::from(r.end())) == range && accepts(&call)
+            })
+        })
+        .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
+}
+
+/// Whether `call` still defines `dcg`'s global — creates it, or is the value
+/// assigned to it.
+fn call_defines_global(
+    call: &crate::ast::FunctionCall<'_>,
     dcg: &DeferredCallGlobal,
     specs: &crate::annotations::CreatesGlobalMap,
 ) -> bool {
-    use crate::ast::{AstNode, FunctionCall};
     use crate::annotations::scan_globals::{call_assigns_global, extract_created_global};
-    let Some(token) = root.token_at_offset(crate::syntax::TextSize::from(range.0)).right_biased() else {
-        return false;
-    };
-    let Some(call) = token.ancestors().filter_map(FunctionCall::cast).find(|call| {
-        let r = call.syntax().text_range();
-        (u32::from(r.start()), u32::from(r.end())) == range
-    }) else {
-        return false;
-    };
     if dcg.created {
-        extract_created_global(&call, specs).as_deref() == Some(dcg.global.as_str())
+        extract_created_global(call, specs).as_deref() == Some(dcg.global.as_str())
     } else {
-        call_assigns_global(&call, &dcg.global)
+        call_assigns_global(call, &dcg.global)
     }
 }
 

@@ -1,0 +1,3 @@
+local _, ns = ...
+
+ns.Same = CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")

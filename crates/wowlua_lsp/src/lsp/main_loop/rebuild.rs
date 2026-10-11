@@ -11,8 +11,8 @@ use super::*;
 // field below but differing only in `source_path` harvest the identical field type.
 // IMPORTANT: Update this function when adding semantic fields to ExternalGlobal.
 // assigned_call_offset: positional (RHS call byte offset) — the call harvest only
-// accepts a call there that still assigns the global, so a stale offset misses and
-// falls back to the coarse type until the next real rebuild.
+// accepts a call there that still assigns the global or field, so a stale offset
+// misses and falls back to the coarse type until the next real rebuild.
 pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
     x.name == y.name
         && x.kind == y.kind

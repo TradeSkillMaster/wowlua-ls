@@ -472,6 +472,18 @@ pub struct PreResolvedGlobals {
     /// whole-file harvest warms every created global in the file at once.
     #[serde(skip)]
     pub deferred_call_globals_by_path: HashMap<PathBuf, Vec<SymbolIndex>>,
+    /// Class-typed table fields written calls (`ns.f = CreateFrame(...)`, in
+    /// `build_on_stubs`) → those calls, whose agreed resolved type a cross-file read
+    /// takes when it refines the class (`analysis/deferred.rs`, `DeferredCallField`).
+    /// Keyed by the field's coarse expr, which the per-file copies of a namespace
+    /// field share; a per-addon copy registers its own (`build_per_addon_tables`).
+    /// Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub deferred_call_fields: HashMap<ExprId, Vec<crate::analysis::deferred::DeferredCallField>>,
+    /// Reverse index: path → the calls in that file writing deferred call fields, by
+    /// start offset, each with what it must still assign.
+    #[serde(skip)]
+    pub deferred_field_calls_by_path: HashMap<PathBuf, Vec<(u32, crate::analysis::deferred::CallTarget)>>,
     /// Constructor self-fields whose coarse type is `any` (the RHS is an
     /// unresolvable function call), keyed by `(class_name, field_name)`. The
     /// per-file engine *can* resolve the call — including generic type args — so
@@ -3024,9 +3036,11 @@ impl BuildContext {
             narrowing_methods: Default::default(),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
-            // Stubs carry no defclass constructor self-fields needing harvest, and
-            // these maps are #[serde(skip)] anyway; the workspace path
+            // Stubs carry no defclass constructor self-fields or call fields needing
+            // harvest, and these maps are #[serde(skip)] anyway; the workspace path
             // (build_on_stubs) populates them at runtime.
+            deferred_call_fields: HashMap::default(),
+            deferred_field_calls_by_path: HashMap::default(),
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
@@ -3434,6 +3448,8 @@ impl PreResolvedGlobals {
             narrowing_methods: Default::default(),
             deferred_call_globals: HashMap::default(),
             deferred_call_globals_by_path: HashMap::default(),
+            deferred_call_fields: HashMap::default(),
+            deferred_field_calls_by_path: HashMap::default(),
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
@@ -3881,6 +3897,7 @@ impl PreResolvedGlobals {
                 let fi = if let Some(vt) = addon_field_types.get(*addon_root).and_then(|m| m.get(field_name)) {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    self.rekey_call_field(field_info.expr, expr_idx);
                     let mut fi = field_info.clone();
                     fi.expr = expr_idx;
                     fi.annotation = Some(vt.clone());
@@ -3891,7 +3908,7 @@ impl PreResolvedGlobals {
                     // from `ns.db.*` writes), rebuild a per-addon copy holding only
                     // the sub-paths this addon wrote — otherwise a sibling addon's
                     // `ns.db.foo` leaks into this addon's `self.db.` completion.
-                    let sub = self.field_subtable(&fi);
+                    let sub = self.field_subtable(&fi).filter(|&sub| !self.shares_call_field_class(&fi, sub));
                     if let (Some(paths_this), Some(sub)) = (paths_this, sub) {
                         let new_sub = self.rebuild_owned_subtable(
                             sub, std::slice::from_ref(field_name), paths_this, &owned_all, 0,
@@ -3963,10 +3980,28 @@ impl PreResolvedGlobals {
     fn repoint_field_subtable(&mut self, fi: &mut FieldInfo, new_sub: TableIndex) {
         let new_expr = ExprId(EXT_BASE + self.exprs.len());
         self.exprs.push(Expr::Literal(ValueType::Table(Some(new_sub))));
+        self.rekey_call_field(fi.expr, new_expr);
         fi.expr = new_expr;
         if matches!(fi.annotation, Some(ValueType::Table(Some(_)))) {
             fi.annotation = Some(ValueType::Table(Some(new_sub)));
         }
+    }
+
+    /// Register `new`, a per-addon copy's expr, for the calls the field `old` is
+    /// harvested from (`deferred_call_fields`).
+    fn rekey_call_field(&mut self, old: ExprId, new: ExprId) {
+        if let Some(calls) = self.deferred_call_fields.get(&old).cloned() {
+            self.deferred_call_fields.insert(new, calls);
+        }
+    }
+
+    /// Whether the per-addon copy of `fi`, whose value is the table `sub`, keeps it:
+    /// a field written calls whose value is a class's own table, which only the
+    /// class itself matches in the harvested type (an instance table is copied — its
+    /// `instance_class` still names the class).
+    fn shares_call_field_class(&self, fi: &FieldInfo, sub: TableIndex) -> bool {
+        self.deferred_call_fields.contains_key(&fi.expr)
+            && self.tables[sub.ext_offset()].class_name.as_ref().is_some_and(|name| self.classes.get(name) == Some(&sub))
     }
 
     /// Resolve a field's value to a sub-table index, when its expr is an external
@@ -4013,7 +4048,8 @@ impl PreResolvedGlobals {
                 continue;
             }
             if depth >= MAX_DEPTH { continue; }
-            let child_sub = table.fields.get(&name).and_then(|fi| self.field_subtable(fi));
+            let child_sub = table.fields.get(&name)
+                .and_then(|fi| self.field_subtable(fi).filter(|&sub| !self.shares_call_field_class(fi, sub)));
             if let Some(child_sub) = child_sub {
                 let new_child = self.rebuild_owned_subtable(child_sub, &child_path, owned_this, owned_all, depth + 1);
                 let mut fi = table.fields.remove(&name).unwrap();

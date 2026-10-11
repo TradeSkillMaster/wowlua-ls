@@ -23,6 +23,9 @@ struct FetchedField {
     /// A coarse cross-file placeholder (`field_is_coarse_placeholder`) that a
     /// deferred harvest or a constructor twin may replace.
     placeholder: bool,
+    /// A field written a call whose resolved type may refine its class
+    /// (`Ir::ensure_call_field_overlay`).
+    deferred_call: bool,
     annotation: Option<ValueType>,
     primary: ExprId,
     extras: Vec<ExprId>,
@@ -35,6 +38,7 @@ impl FetchedField {
     fn of(fi: &FieldInfo, ext: &crate::pre_globals::PreResolvedGlobals) -> Self {
         Self {
             placeholder: crate::analysis::deferred::field_is_coarse_placeholder(fi, ext),
+            deferred_call: fi.expr.is_external() && ext.deferred_call_fields.contains_key(&fi.expr),
             annotation: fi.annotation.clone(),
             primary: fi.expr,
             extras: fi.extra_exprs.clone(),
@@ -3846,13 +3850,17 @@ impl<'a> Analysis<'a> {
             // the borrow ends immediately. Only the (rare) cross-file placeholder
             // field (`any` or a bare `table`) pays for the harvest + re-fetch —
             // warming the per-file overlay with the definition-site type harvested
-            // from the class's declaring file(s); the common precise field is used
+            // from the class's declaring file(s) — and a class field written a call,
+            // whose call type may refine the class; the common precise field is used
             // directly, so a non-placeholder external field access repeats no
             // `get_field` lookups.
             let fetch = |ir: &super::Ir| ir.get_field(idx, field).map(|fi| FetchedField::of(fi, &ir.ext));
             let mut fetched = fetch(&self.ir);
             if fetched.as_ref().is_some_and(|f| f.placeholder) {
                 self.ir.ensure_field_overlay(idx, field);
+                fetched = fetch(&self.ir);
+            }
+            if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {
                 fetched = fetch(&self.ir);
             }
             // An entry the scan typed as a placeholder in the anonymous sub-table of
@@ -3917,7 +3925,8 @@ impl<'a> Analysis<'a> {
                         // placeholder used to expose.
                         let exprs = std::iter::once(field_primary).chain(field_extras.iter().copied());
                         self.note_constructor_twin(ann_vt, has_author_text, exprs.clone());
-                        let enriched = super::enriched_class_field(ann_vt, exprs, |e| self.resolve_expr(e));
+                        let instance_of = self.ir.instance_class(ann_vt);
+                        let enriched = super::enriched_class_field(ann_vt, instance_of.as_ref(), exprs, |e| self.resolve_expr(e));
                         field_types.push(enriched.unwrap_or_else(|| ann_vt.clone()));
                     }
                 } else {

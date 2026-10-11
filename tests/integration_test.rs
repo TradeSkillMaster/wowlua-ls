@@ -5741,6 +5741,97 @@ fn created_global_harvest_rejects_a_shifted_call() {
 }
 
 #[test]
+fn call_fields_crossfile() {
+    // Fields written a call keep the call's type in other files where it refines
+    // the coarse class: a frame created from a template is `Frame & Template`.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/call-fields-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/call-fields-crossfile"),
+    });
+}
+
+#[test]
+fn call_fields_class_namespace() {
+    // Read through a namespace typed as a class the reader declares too, whose
+    // table holds its own copies of the fields.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/call-fields-crossfile/class_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/call-fields-crossfile"),
+    });
+}
+
+#[test]
+fn call_fields_multi_addon() {
+    // `addonRoot` gives each addon its own copy of the namespace table.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/call-fields-multi-addon/AddonA/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/call-fields-multi-addon"),
+    });
+}
+
+#[test]
+fn call_fields_defining_file() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/call-fields-crossfile/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/call-fields-crossfile"),
+    });
+}
+
+#[test]
+fn call_fields_defining_file_reads_own_writes() {
+    // The defining file types the fields from its own writes, without harvesting
+    // itself.
+    let dir = std::path::Path::new("tests/call-fields-crossfile");
+    let pg = fresh_workspace_globals(dir);
+    let hover = last_local_hover(&pg, dir, "defs.lua");
+    assert!(hover.starts_with("(local) ownRow: Frame & CallFieldRowTemplate"), "got {hover:?}");
+    assert_eq!(pg.deferred_harvests.analyses(), 0);
+}
+
+#[test]
+fn call_field_harvest_survives_call_arg_edit() {
+    // A template edit leaves the coarse scan unchanged, so no rebuild: the re-harvest
+    // still finds the call — the field's own, or the one initializing its local.
+    for (user_src, name, template_call) in [
+        ("local _, ns = ...\nlocal row = ns.Row\n", "row", r#"ns.Row = CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")"#),
+        ("local _, ns = ...\nlocal panel = ns.Panel\n", "panel", r#"local panel = CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")"#),
+    ] {
+        let (before, after) = hover_before_after_defs_edit(
+            "tests/call-fields-crossfile", "defs.lua", user_src, name,
+            |text| text.replace(template_call, &template_call.replace("CallFieldRowTemplate", "CallFieldOtherTemplate")),
+        );
+        assert!(before.contains("Frame & CallFieldRowTemplate"), "{name} baseline: got {before:?}");
+        assert!(after.contains("Frame & CallFieldOtherTemplate"), "{name} after the argument edit: got {after:?}");
+    }
+}
+
+#[test]
+fn call_field_harvest_rejects_a_shifted_call() {
+    // An edit above shifts `ns.Row`'s call onto `ns.Other`'s, and `panel`'s onto
+    // `other`'s: neither assigns what the read field is written, so the field keeps
+    // its coarse `Frame` rather than taking the other template.
+    for (user_src, name, earlier, later) in [
+        (
+            "local _, ns = ...\nlocal other = ns.Other\n", "other",
+            r#"CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")"#,
+            r#"CreateFrame("Frame", nil, UIParent, "CallFieldOtherTemplate")"#,
+        ),
+        ("local _, ns = ...\nlocal otherPanel = ns.OtherPanel\n", "otherPanel", "local panel = CreateFrame", "local other = CreateFrame"),
+    ] {
+        let (before, after) = hover_before_after_defs_edit(
+            "tests/call-fields-crossfile", "defs.lua", user_src, name,
+            |text| shift_call_onto(text, earlier, later),
+        );
+        assert!(before.contains("Frame & CallFieldOtherTemplate"), "{name} baseline: got {before:?}");
+        assert!(!after.contains("CallFieldRowTemplate"), "{name} after the shift: got {after:?}");
+    }
+}
+
+#[test]
 fn mixin_parentkey() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/mixin-parentkey/derived.lua",

@@ -205,7 +205,7 @@ fn enrich_class_field_from_local(
     depth: usize,
 ) -> Option<ValueType> {
     let exprs = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied());
-    crate::analysis::enriched_class_field(ann, exprs, |e| {
+    crate::analysis::enriched_class_field(ann, ir.instance_class(ann).as_ref(), exprs, |e| {
         resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1)
     })
 }

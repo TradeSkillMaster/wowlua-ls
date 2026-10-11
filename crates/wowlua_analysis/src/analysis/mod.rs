@@ -160,14 +160,16 @@ pub fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Iterator<Ite
 }
 
 /// Enrichment rule for a class-annotated self-field. When the field's own LOCAL
-/// (non-external) assignment resolves to an intersection that still contains the
-/// class annotation `ann`, return that richer intersection — it is assignable to
-/// `ann` (never a contradiction), only more specific. This threads `AceDB:New`'s
-/// generic `Defaults & AceDBObject-3.0` (the typed default-section shapes) through
-/// the *defining* file, while other files keep the base `AceDBObject-3.0` the
-/// cross-file funcall scanner registered. Returns `None` when the field isn't a
-/// class annotation, has no local assignment, or no local expr resolves to a
-/// containing intersection.
+/// (non-external) assignment resolves to a richer view of the class annotation
+/// `ann` ([`refined_class_view`]; `instance_of` is the class `ann` is an instance
+/// of, `Ir::instance_class`), return it — it is assignable to `ann` (never a
+/// contradiction), only more specific. This threads `AceDB:New`'s generic
+/// `Defaults & AceDBObject-3.0` (the typed default-section shapes) through the
+/// *defining* file, while other files keep the base `AceDBObject-3.0` the
+/// cross-file funcall scanner registered (a field written the call directly
+/// harvests it, `Ir::ensure_call_field_overlay`). Returns `None` when the field
+/// isn't a class annotation, has no local assignment, or no local expr resolves to
+/// a richer view.
 ///
 /// Resolver-agnostic so the two engines share one rule: `exprs` is the field's
 /// assignment exprs (primary + extras) and `resolve` is the caller's own resolver
@@ -176,6 +178,7 @@ pub fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Iterator<Ite
 /// short-circuit before resolving anything.
 pub(crate) fn enriched_class_field(
     ann: &ValueType,
+    instance_of: Option<&ValueType>,
     mut exprs: impl Iterator<Item = ExprId> + Clone,
     mut resolve: impl FnMut(ExprId) -> Option<ValueType>,
 ) -> Option<ValueType> {
@@ -185,12 +188,23 @@ pub(crate) fn enriched_class_field(
     if !exprs.clone().any(|e| !e.is_external()) {
         return None;
     }
-    exprs.find_map(|e| match resolve(e) {
-        Some(ValueType::Intersection(members)) if members.contains(ann) => {
-            Some(ValueType::Intersection(members))
-        }
-        _ => None,
-    })
+    exprs.find_map(|e| resolve(e).and_then(|ty| refined_class_view(&ty, ann, instance_of)))
+}
+
+/// `ty` as a richer view of the class `ann`: an intersection still containing it,
+/// or containing the class `ann` is an instance of (`instance_of`, for a table
+/// holding the methods defined through a field), which `ann` then stands in for.
+pub(crate) fn refined_class_view(ty: &ValueType, ann: &ValueType, instance_of: Option<&ValueType>) -> Option<ValueType> {
+    let ValueType::Intersection(members) = ty else { return None };
+    if !matches!(ann, ValueType::Table(Some(_))) {
+        return None;
+    }
+    if members.contains(ann) {
+        return Some(ty.clone());
+    }
+    let class = instance_of.filter(|class| members.contains(class))?;
+    let members = members.iter().map(|m| if m == class { ann.clone() } else { m.clone() });
+    Some(ValueType::Intersection(members.collect()))
 }
 
 fn scope_set_contains<T: Eq + std::hash::Hash>(
@@ -803,6 +817,9 @@ pub struct Ir {
     /// consults this map first for external indices, so resolution, diagnostics,
     /// hover, and completion all see the precise type.
     pub symbol_overlay: HashMap<SymbolIndex, Symbol>,
+    /// The deferred call fields (by the table read and the field's coarse expr)
+    /// `ensure_call_field_overlay` has consulted, so each is harvested once.
+    pub call_fields_checked: HashSet<(TableIndex, ExprId)>,
     /// Defining files this file harvested a deferred cross-file type from during
     /// analysis (a body-derived return, a `@creates-global`, a `@class` field, or a
     /// constructor generic type-arg — recorded by the `ensure_*_overlay` /
@@ -1991,6 +2008,16 @@ impl Ir {
         } else {
             None
         }
+    }
+
+    /// The class `ty` is an instance of, when it is an instance table: one holding
+    /// the methods defined through a field (`function R.f:m()`), whose first parent
+    /// is its class (`instance_parents` in `pre_globals`).
+    pub fn instance_class(&self, ty: &ValueType) -> Option<ValueType> {
+        let ValueType::Table(Some(idx)) = ty else { return None };
+        let t = self.table(*idx);
+        let &class = t.parent_classes.first()?;
+        (t.class_name.is_some() && self.table(class).class_name == t.class_name).then_some(ValueType::Table(Some(class)))
     }
 
     pub fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
@@ -3389,6 +3416,7 @@ impl<'a> Analysis<'a> {
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),
+                call_fields_checked: HashSet::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),

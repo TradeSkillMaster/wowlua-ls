@@ -1307,6 +1307,9 @@ pub fn scan_file_globals_with_synth(
     // The `class_vars` locals only guessed from a call's string argument
     // (`local X = DefineClass("Name")`, below).
     let mut class_var_guesses: HashSet<String> = HashSet::default();
+    // Where the call of each guessed local declared and assigned once starts: a
+    // field the local is assigned to is harvested from it (`assigned_call_offset`).
+    let mut guess_call_offsets: HashMap<String, u32> = HashMap::default();
     // Track locals with @type annotations so field assignments on them are emitted
     // under the annotated class name (cross-file overlay tracking).
     let mut local_type_vars: HashMap<String, String> = HashMap::default();
@@ -1332,6 +1335,7 @@ pub fn scan_file_globals_with_synth(
                 for name in &names {
                     local_vars.insert(name.clone());
                     first_local_offset.entry(name.clone()).or_insert(decl_offset);
+                    guess_call_offsets.remove(name);
                 }
                 if names.len() == 1 && exprs.len() == 1 {
                     if let Expression::Identifier(ident) = &exprs[0] {
@@ -1403,6 +1407,9 @@ pub fn scan_file_globals_with_synth(
                     {
                         class_vars.insert(names[0].clone(), cn);
                         class_var_guesses.insert(names[0].clone());
+                        if annotations.var_type.is_none() && first_local_offset.get(&names[0]) == Some(&decl_offset) {
+                            guess_call_offsets.insert(names[0].clone(), u32::from(call.syntax().text_range().start()));
+                        }
                     }
                 }
                 // Record the local's value type for cross-file `ns.Field = local`
@@ -1426,6 +1433,18 @@ pub fn scan_file_globals_with_synth(
                 local_vars.insert(name.clone());
                 local_functions.insert(name);
             }
+        // A guessed local assigned again holds another value than its initializer's.
+        if let Statement::Assign(assign) = stmt
+            && let Some(var_list) = assign.variable_list()
+        {
+            for ident in var_list.identifiers() {
+                if !ident.has_prefix_expr_base() && !ident.has_non_string_bracket_tail()
+                    && let [name] = ident.names().as_slice()
+                {
+                    guess_call_offsets.remove(name);
+                }
+            }
+        }
         // Track @class annotations on global assignments (e.g. `---@class Foo\nMyMixin = {}`)
         // so that methods defined on the global are emitted under the class name.
         // Also handles `local name, AddOn = ... \n ---@class Foo \n AddOn = LibStub(...)`:
@@ -2011,6 +2030,22 @@ pub fn scan_file_globals_with_synth(
                                     _ => Vec::new(),
                                 }
                             } else { Vec::new() };
+                            // The call whose type in this file can refine the field's
+                            // class in other files (a template frame's `Frame &
+                            // Template`): an unannotated right-hand side, or the call
+                            // the class of the local assigned was only guessed from.
+                            let assigned_call_offset = match &effective {
+                                Expression::FunctionCall(call) if returns.is_empty() => {
+                                    Some(u32::from(call.syntax().text_range().start()))
+                                }
+                                Expression::Identifier(ident) if annotations.var_type.is_none()
+                                    && annotations.class.is_none()
+                                    && matches!(&value_kind, FieldValueKind::FieldRef(names) if names.len() == 1) =>
+                                {
+                                    ident.names().first().and_then(|name| guess_call_offsets.get(name)).copied()
+                                }
+                                _ => None,
+                            };
                             // When the RHS is a single local function with a captured
                             // signature, emit a method on the namespace/class so the full
                             // signature (params/returns/etc.) is preserved cross-file,
@@ -2097,7 +2132,7 @@ pub fn scan_file_globals_with_synth(
                                 requires: Vec::new(),
                                 body_derived_returns: false,
                                 deferred_call_type: false,
-                                assigned_call_offset: None,
+                                assigned_call_offset,
                                 ctor_fields: Vec::new(),
                                 ctor_elements: false,
                                 declares_class: false,
@@ -2753,11 +2788,10 @@ pub fn scan_created_globals(
     out
 }
 
-/// Whether `call` is the value a single-target `name = ...` (or `_G.name = ...`)
-/// assignment gives the global: its right-hand side, or the effective operand of an
-/// `and`/`or` chain there ([`unwrap_logical_chain`]) — where the main scan takes an
-/// `assigned_call_offset` from.
-pub(crate) fn call_assigns_global(call: &FunctionCall<'_>, name: &str) -> bool {
+/// The statement `call` is the only value of: its right-hand side, or the effective
+/// operand of an `and`/`or` chain there ([`unwrap_logical_chain`]) — where the main
+/// scan takes an `assigned_call_offset` from.
+fn statement_valued_by<'a>(call: &FunctionCall<'a>) -> Option<Statement<'a>> {
     let mut node = call.syntax();
     let mut parent = node.parent();
     while let Some(p) = parent
@@ -2768,20 +2802,43 @@ pub(crate) fn call_assigns_global(call: &FunctionCall<'_>, name: &str) -> bool {
         node = p;
         parent = p.parent();
     }
-    let Some(expr_list) = parent.and_then(ExpressionList::cast) else { return false };
-    let Some(assign) = expr_list.syntax().parent().and_then(Assign::cast) else { return false };
-    let Some(var_list) = assign.variable_list() else { return false };
-    let idents = var_list.identifiers();
-    if idents.len() != 1 || expr_list.expressions().len() != 1
-        || idents[0].has_prefix_expr_base() || idents[0].has_non_string_bracket_tail()
-    {
-        return false;
+    let expr_list = parent.and_then(ExpressionList::cast)?;
+    if expr_list.expressions().len() != 1 {
+        return None;
     }
-    let mut names = idents[0].names();
+    Statement::cast(expr_list.syntax().parent()?)
+}
+
+/// The names of the one target `call` is assigned to ([`statement_valued_by`]).
+fn assigned_target(call: &FunctionCall<'_>) -> Option<Vec<String>> {
+    let Some(Statement::Assign(assign)) = statement_valued_by(call) else { return None };
+    let idents = assign.variable_list()?.identifiers();
+    let [ident] = idents.as_slice() else { return None };
+    if ident.has_prefix_expr_base() || ident.has_non_string_bracket_tail() {
+        return None;
+    }
+    Some(ident.names())
+}
+
+/// Whether `call` is the value a single-target `name = ...` (or `_G.name = ...`)
+/// assignment gives the global.
+pub(crate) fn call_assigns_global(call: &FunctionCall<'_>, name: &str) -> bool {
+    let Some(mut names) = assigned_target(call) else { return false };
     if names.len() == 2 && names[0] == "_G" {
         names.remove(0);
     }
     names.len() == 1 && names[0] == name
+}
+
+/// Whether `call` is the value a single-target `t.field = ...` write gives `field`.
+pub(crate) fn call_assigns_field(call: &FunctionCall<'_>, field: &str) -> bool {
+    assigned_target(call).is_some_and(|names| names.len() >= 2 && names.last().is_some_and(|n| n == field))
+}
+
+/// Whether `call` initializes `local name = ...`.
+pub(crate) fn call_initializes_local(call: &FunctionCall<'_>, name: &str) -> bool {
+    matches!(statement_valued_by(call), Some(Statement::LocalAssign(local))
+        if local.name_list().is_some_and(|list| list.names() == [name]))
 }
 
 /// If `call` invokes a `@creates-global` function (per `specs`) with a
