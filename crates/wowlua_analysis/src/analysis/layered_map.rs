@@ -65,6 +65,11 @@ impl<V> LayeredMap<V> {
         self.iter().map(|(_, v)| v)
     }
 
+    /// The file's own entries, without the ext ones.
+    pub fn local_values(&self) -> impl Iterator<Item = &V> {
+        self.local.values().filter_map(Option::as_ref)
+    }
+
     // No `len()`: unlike the `HashMap::len()` it would mimic, it could only be an
     // `iter().count()` walk of the whole ext map. `is_empty` short-circuits instead.
     pub fn is_empty(&self) -> bool {

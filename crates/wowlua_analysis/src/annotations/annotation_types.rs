@@ -25,14 +25,27 @@ pub fn collect_annotation_string_literals(at: &AnnotationType, out: &mut Vec<Str
     }
 }
 
+/// A two-member `T | nil` union, which formats as the `T?` shorthand.
+fn is_optional_shorthand(types: &[AnnotationType]) -> bool {
+    types.len() == 2
+        && types.iter().any(|t| matches!(t, AnnotationType::Simple(s) if s == "nil"))
+        && types.iter().any(|t| !matches!(t, AnnotationType::Simple(s) if s == "nil"))
+}
+
 pub fn format_annotation_type(at: &AnnotationType) -> String {
     match at {
         AnnotationType::Simple(s) => s.clone(),
-        AnnotationType::Array(inner) => format!("{}[]", format_annotation_type(inner)),
-        AnnotationType::Union(types) if types.len() == 2
-            && types.iter().any(|t| matches!(t, AnnotationType::Simple(s) if s == "nil"))
-            && types.iter().any(|t| !matches!(t, AnnotationType::Simple(s) if s == "nil")) =>
-        {
+        AnnotationType::Array(inner) => {
+            let element = format_annotation_type(inner);
+            // Unparenthesized, `A & B[]` reads back as `A & (B[])`.
+            let needs_parens = match inner.as_ref() {
+                AnnotationType::Union(types) => !is_optional_shorthand(types),
+                AnnotationType::Intersection(_) | AnnotationType::Fun(..) => true,
+                _ => false,
+            };
+            if needs_parens { format!("({element})[]") } else { format!("{element}[]") }
+        }
+        AnnotationType::Union(types) if is_optional_shorthand(types) => {
             let other = types.iter()
                 .find(|t| !matches!(t, AnnotationType::Simple(s) if s == "nil"))
                 .unwrap();
@@ -1083,6 +1096,15 @@ mod tests {
             other => panic!("{other:?}"),
         }).collect();
         assert_eq!(descs, [Some("Found"), Some("Missing")]);
+    }
+
+    #[test]
+    fn array_of_compound_type_round_trips() {
+        for text in ["(Button & UIPanelButtonTemplate)[]", "(string | number)[]", "(fun(): number)[]", "Texture?[]", "Texture[]"] {
+            let parsed = parse_type(text);
+            assert!(matches!(parsed, AnnotationType::Array(_)), "{text:?} -> {parsed:?}");
+            assert_eq!(format_annotation_type(&parsed), text);
+        }
     }
 }
 

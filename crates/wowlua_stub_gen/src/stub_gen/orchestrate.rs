@@ -132,13 +132,13 @@ pub fn regenerate_stubs() {
     // Step 2: Clone wow-ui-source branches. The non-retail clones feed the
     // pipeline's "classic" side (`classic_ui_dirs`), which Forever shares.
     log::info!("Cloning wow-ui-source branches...");
-    let mut classic_ui_dirs = Vec::new();
+    let mut classic_ui_branches: Vec<(&'static str, PathBuf)> = Vec::new();
     let mut classic_branch_flavors = Vec::new();
-    for branch in NON_RETAIL_UI_BRANCHES {
+    for &branch in NON_RETAIL_UI_BRANCHES {
         let dest = clones_dir.join(format!("wow-ui-source-{branch}"));
         if ensure_shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest, refresh_clones) {
             log::info!("  Cloned {branch}");
-            classic_branch_flavors.push(match *branch {
+            classic_branch_flavors.push(match branch {
                 "classic_era" => crate::flavor::FLAVOR_CLASSIC_ERA,
                 "classic" => crate::flavor::FLAVOR_CLASSIC,
                 "forever" => crate::flavor::FLAVOR_FOREVER,
@@ -147,12 +147,13 @@ pub fn regenerate_stubs() {
                     0
                 }
             });
-            classic_ui_dirs.push(dest);
+            classic_ui_branches.push((branch, dest));
         } else {
             log::error!("could not clone branch {branch}");
             source_errors.push(format!("wow-ui-source {branch}: clone failed"));
         }
     }
+    let classic_ui_dirs: Vec<PathBuf> = classic_ui_branches.iter().map(|(_, dir)| dir.clone()).collect();
     let retail_ui_dir = clones_dir.join("wow-ui-source-live");
     let has_retail_ui = ensure_shallow_clone(WOW_UI_SOURCE_REPO, "live", &retail_ui_dir, refresh_clones);
     if has_retail_ui {
@@ -167,9 +168,7 @@ pub fn regenerate_stubs() {
     if has_retail_ui && let Some(commit) = git_head_commit(&retail_ui_dir) {
         ui_source_commits.push(("live".to_string(), commit));
     }
-    for dir in &classic_ui_dirs {
-        let branch = dir.file_name().unwrap().to_str().unwrap()
-            .strip_prefix("wow-ui-source-").unwrap_or("?");
+    for (branch, dir) in &classic_ui_branches {
         if let Some(commit) = git_head_commit(dir) {
             ui_source_commits.push((branch.to_string(), commit));
         }
@@ -653,6 +652,26 @@ pub fn regenerate_stubs() {
     let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs, &known_enum_names, &extra_event_names);
     std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
     apply_secret_annotations_to_dir(&gen_dir, &secret_index);
+
+    // FrameXML template classes. The vendored FramexmlAnnotations declares the retail
+    // templates of its own snapshot, minus most Glue and Store UI ones; every branch's
+    // XML fills in the rest, retail first.
+    let any_class_re = regex_lite::Regex::new(r"---\s*@class\s+(?:\([^)]*\)\s*)?(\w+)").unwrap();
+    let mut declared_classes = get_existing_names_with(&clone_dir.join("Annotations"), &any_class_re, &[]);
+    declared_classes.extend(get_existing_names_with(&overrides_dir, &any_class_re, &[]));
+    declared_classes.extend(get_existing_names_with(&gen_dir, &any_class_re, &[]));
+    let mut template_branches: Vec<(&str, &Path)> = Vec::new();
+    if has_retail_ui {
+        template_branches.push(("live", retail_ui_dir.as_path()));
+    }
+    template_branches.extend(classic_ui_branches.iter().map(|(branch, dir)| (*branch, dir.as_path())));
+    let (templates_lua, templates_found, templates_emitted) = generate_template_stubs(&template_branches, &declared_classes);
+    log::info!("  FrameXML templates: {templates_found} found, {templates_emitted} emitted");
+    if templates_found < MIN_FRAMEXML_TEMPLATES {
+        source_errors.push(format!("FrameXML templates: {templates_found} (expected ≥{MIN_FRAMEXML_TEMPLATES})"));
+    }
+    std::fs::write(gen_dir.join("FrameXMLTemplates.lua"), &templates_lua).unwrap();
+    phase!("generate FrameXML template classes");
 
     // Step 6: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");

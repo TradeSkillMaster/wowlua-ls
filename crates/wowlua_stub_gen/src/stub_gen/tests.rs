@@ -413,6 +413,101 @@ fn test_parent_class_corrections_skip_self_parent() {
 }
 
 #[test]
+fn template_stubs_merge_branches_and_class_children() {
+    let tmp = std::env::temp_dir().join("wowlua-ls-test-template-stubs");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let write = |branch: &str, xml: &str| {
+        let dir = tmp.join(branch).join("Interface/AddOns/Blizzard_Preview");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PreviewTemplates.xml"), xml).unwrap();
+    };
+    write("live", r#"<Ui>
+    <Button name="DeclaredTemplate" virtual="true"/>
+    <Button name="PreviewTabTemplate" inherits="PreviewBaseTemplate" mixin="PreviewTabMixin"
+            virtual="true">
+        <KeyValues>
+            <KeyValue key="tabKind" value="side"/>
+            <KeyValue key="tooltipText" value="PREVIEW_TOOLTIP" type="global"/>
+        </KeyValues>
+        <Layers>
+            <Layer level="ARTWORK">
+                <Texture parentKey="Icon"/>
+                <FontString parentKey="Count" inherits="GameFontNormal"/>
+                <FontString parentKey="Label" inherits="GameFontHighlight"/>
+                <Texture parentArray="Stars" inherits="!Preview-Star"/>
+            </Layer>
+        </Layers>
+        <Frames>
+            <Frame parentKey="Badge">
+                <Layers><Layer><FontString parentKey="Text" inherits="GameFontNormal"/></Layer></Layers>
+            </Frame>
+            <Button parentArray="Pips" inherits="PreviewPipTemplate"/>
+        </Frames>
+    </Button>
+    <FontFamily name="PreviewFontFamily" virtual="true"/>
+    <Frame name="PreviewFrame"/>
+</Ui>
+"#);
+    write("classic_era", r#"<Ui>
+    <Frame name="PreviewClassicTemplate" virtual="true"/>
+    <Button name="PreviewTabTemplate" inherits="PreviewClassicTabTemplate" virtual="true">
+        <Layers><Layer><FontString parentKey="Count"/><Texture parentKey="Glow"/></Layer></Layers>
+    </Button>
+</Ui>
+"#);
+    let live = tmp.join("live");
+    let classic_era = tmp.join("classic_era");
+    let declared: HashSet<String> = ["DeclaredTemplate", "PreviewTabTemplate_Label"]
+        .into_iter().map(String::from).collect();
+    let (lua, found, emitted) = generate_template_stubs(
+        &[("live", live.as_path()), ("classic_era", classic_era.as_path())],
+        &declared,
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    // Found: the two templates, the declared one, and the font family; emitted:
+    // the two undeclared frame templates. A non-virtual frame is not a template.
+    assert_eq!((found, emitted), (4, 2));
+    let source = |branch: &str, line: usize| format!(
+        "---[Source](https://github.com/Gethe/wow-ui-source/blob/{branch}/Interface/AddOns/Blizzard_Preview/PreviewTemplates.xml#L{line})"
+    );
+    let expected = [
+        "---@meta _",
+        "-- FrameXML templates missing from the vendor annotations (auto-generated from wow-ui-source XML)",
+        "",
+        &source("classic_era", 2),
+        "---@class PreviewClassicTemplate : Frame",
+        "",
+        // The first definition (retail) sets the source and each field's type;
+        // the Classic one adds its parent and its other children.
+        &source("live", 3),
+        "---@class PreviewTabTemplate : Button, PreviewBaseTemplate, PreviewTabMixin, PreviewClassicTabTemplate",
+        "---@field tabKind string",
+        "---@field Icon Texture",
+        "---@field Count PreviewTabTemplate_Count",
+        // `PreviewTabTemplate_Label` is taken, so this child stays an intersection.
+        "---@field Label FontString & GameFontHighlight",
+        // An atlas-style template name can't be written in an annotation.
+        "---@field Stars Texture[]",
+        "---@field Badge PreviewTabTemplate_Badge",
+        "---@field Pips PreviewTabTemplate_Pips[]",
+        "---@field tooltipText any",
+        "---@field Glow Texture",
+        "",
+        "---@class PreviewTabTemplate_Count : FontString, GameFontNormal",
+        "",
+        "---@class PreviewTabTemplate_Badge : Frame",
+        "---@field Text PreviewTabTemplate_Badge_Text",
+        "",
+        "---@class PreviewTabTemplate_Badge_Text : FontString, GameFontNormal",
+        "",
+        "---@class PreviewTabTemplate_Pips : Button, PreviewPipTemplate",
+        "",
+    ].join("\n");
+    assert_eq!(lua, expected);
+}
+
+#[test]
 fn test_extract_xml_mixins_multi_space_separated() {
     // Real Blizzard XML uses spaces between multiple mixins.
     let xml = r#"

@@ -26,6 +26,7 @@
             <KeyValue key="label" value="default" type="string" />
             <KeyValue key="count" value="0" type="number" />
             <KeyValue key="enabled" value="true" type="boolean" />
+            <KeyValue key="confirmText" value="ACCEPT" type="global" />
         </KeyValues>
         <Layers>
             <Layer level="BACKGROUND">

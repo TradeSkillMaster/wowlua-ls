@@ -3634,14 +3634,20 @@ impl<'a> Analysis<'a> {
     /// deeper chains like `a.b:method()` are too ambiguous for a global search.
     /// Bails out if multiple classes define the method with such an annotation to
     /// avoid non-deterministic resolution and false narrowing on unrelated
-    /// receivers. Scans the whole class universe, so guards it can't match (e.g.
+    /// receivers. Searches the whole class universe, so guards it can't match (e.g.
     /// `@secret-guard`) use [`Self::resolve_call_function_by_path`] instead.
     fn unique_narrowing_method(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
         let names = call.identifier()?.names();
         let [receiver, method] = names.as_slice() else { return None };
         self.sym(self.get_symbol(&SymbolIdentifier::Name(receiver.clone()), scope)?).versions.last()?;
-        let mut found: Option<FunctionIndex> = None;
-        for &table_idx in self.ir.classes.values().chain(self.ir.ext.classes.values()) {
+        // The ext classes are indexed once per workspace build; only the file's own
+        // are scanned here.
+        let mut found: Option<FunctionIndex> = match self.ir.ext.narrowing_method(method) {
+            Some(None) => return None,
+            Some(Some(func_idx)) => Some(func_idx),
+            None => None,
+        };
+        for &table_idx in self.ir.classes.local_values() {
             if let Some(fi) = self.ir.table(table_idx).fields.get(method.as_str())
                 && let Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx))) = self.expr(fi.expr) {
                 let func = self.func(*func_idx);

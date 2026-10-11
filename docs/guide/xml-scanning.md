@@ -11,7 +11,7 @@ When wowlua-ls scans an XML file, it extracts:
 - **Virtual templates** (`virtual="true"`) become `@class` declarations: available for `@type` annotations and inheritance
 - **Non-virtual named frames** become both a class and a global variable: no `undefined-global` warning
 - **`parentKey` children** become typed fields on the parent frame's class
-- **`KeyValue` elements** become fields with their declared types (`string`, `number`, `boolean`, and `int` as `number`). With `type="global"`, the field takes the type of the global it names (e.g. `value="MyAddon.FormatName"`)
+- **`KeyValue` elements** become fields with their declared types (`string`, the default, `number`, `boolean`, and `int` as `number`). With `type="global"`, the field takes the type of the global it names (e.g. `value="MyAddon.FormatName"`)
 - **`inherits`, `mixin`, and `secureMixin`** attributes populate the parent class chain. Each mixin table also picks up the element type and `parentKey` children of the frames that use it, named or not
 - **`Mixin(self, MyMixin)`** calls in a frame's inline `<OnLoad>` handler count the same as a `mixin` attribute
 - **Mixin names and handler functions** (`<OnClick function="MyAddon_OnClick"/>`) are allowed globals: defining or reading them in Lua doesn't trigger `create-global` or `undefined-global`

@@ -1027,6 +1027,15 @@ fn framexml_missing_globals() {
 }
 
 #[test]
+fn framexml_templates() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/framexml-templates.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn annotations() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/annotations.lua",

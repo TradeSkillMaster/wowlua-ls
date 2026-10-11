@@ -19,6 +19,8 @@ pub struct XmlScanResult {
     /// These should be auto-allowed so their Lua-side declarations don't trip
     /// `create-global` and reads don't trip `undefined-global`.
     pub xml_bound_names: HashSet<String>,
+    /// Names of the `classes` declared `virtual="true"` (templates, not globals).
+    pub templates: HashSet<String>,
 }
 
 /// Mutable scanning context threaded through parsing helpers.
@@ -29,6 +31,7 @@ struct ScanContext {
     mixin_augments: Vec<ClassDecl>,
     intrinsics: HashMap<String, String>,
     xml_bound_names: HashSet<String>,
+    templates: HashSet<String>,
 }
 
 /// Map an XML element name to the corresponding WoW Lua frame type.
@@ -114,7 +117,7 @@ pub fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
 }
 
 /// Validate a frame name as a valid Lua global identifier.
-fn is_valid_global_name(name: &str) -> bool {
+pub fn is_valid_global_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
@@ -240,7 +243,7 @@ pub fn scan_xml_file(path: &Path) -> Option<XmlScanResult> {
 }
 
 /// Scan XML content for frame/template declarations.
-fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
+pub fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -252,6 +255,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         mixin_augments: Vec::new(),
         intrinsics: HashMap::default(),
         xml_bound_names: HashSet::default(),
+        templates: HashSet::default(),
     };
     let mut script_depth: usize = 0;
 
@@ -321,7 +325,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                             &frame_ctx,
                         );
                     }
-                    finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals, &mut ctx.mixin_augments);
+                    finalize_frame(frame_ctx, path, &mut ctx);
                 }
             }
             Ok(Event::Text(ref e)) => {
@@ -364,6 +368,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         globals: ctx.globals,
         mixin_augments: ctx.mixin_augments,
         xml_bound_names: ctx.xml_bound_names,
+        templates: ctx.templates,
     }
 }
 
@@ -407,7 +412,7 @@ fn process_open_tag(
                 && let Some(mut frame_ctx) = entry.frame
             {
                 frame_ctx.def_end = tag_start;
-                finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals, &mut ctx.mixin_augments);
+                finalize_frame(frame_ctx, path, ctx);
             }
         }
     } else {
@@ -522,7 +527,8 @@ fn handle_key_value(
         return;
     };
     let value = get_attr(e, b"value").unwrap_or_default();
-    let kv_type = get_attr(e, b"type").unwrap_or_default();
+    // UI.xsd defaults `type` to "string".
+    let kv_type = get_attr(e, b"type").unwrap_or_else(|| "string".to_string());
 
     // Find nearest frame ancestor
     let Some(frame_ctx) = stack
@@ -937,13 +943,7 @@ fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> Cla
 }
 
 /// Finalize a frame context into ClassDecl and/or ExternalGlobal entries.
-fn finalize_frame(
-    ctx: FrameContext,
-    path: &Path,
-    classes: &mut Vec<ClassDecl>,
-    globals: &mut Vec<ExternalGlobal>,
-    mixin_augments: &mut Vec<ClassDecl>,
-) {
+fn finalize_frame(mut ctx: FrameContext, path: &Path, scan: &mut ScanContext) {
     // Emit mixin augments first, before the name gate below. A mixin augment
     // depends only on the frame's base element type and parentKey fields, not on
     // the frame's name, so an *unnamed* `<Frame mixin="FooMixin" parentKey="…">`
@@ -953,7 +953,7 @@ fn finalize_frame(
         if ctx.name.as_deref() == Some(mixin_name.as_str()) {
             continue;
         }
-        mixin_augments.push(build_mixin_augment(mixin_name, &ctx, path));
+        scan.mixin_augments.push(build_mixin_augment(mixin_name, &ctx, path));
     }
 
     let Some(ref name) = ctx.name else {
@@ -963,6 +963,19 @@ fn finalize_frame(
     // Validate name for global/class creation
     if !is_valid_global_name(name) {
         return;
+    }
+
+    // A `type="global"` KeyValue is a field reference on the frame's name (the
+    // `TableField` globals below), which a workspace build resolves on a template's
+    // class as well. The template's class also declares the field as `any` for the
+    // template stubs, whose `@field`s can't name a global's type.
+    if ctx.is_virtual {
+        for (key, _, tag_start) in &ctx.global_key_values {
+            if !ctx.fields.iter().any(|(n, _, _)| n == key) {
+                ctx.fields.push((key.clone(), AnnotationType::Simple("any".to_string()), Visibility::Public));
+                ctx.field_ranges.insert(key.clone(), (*tag_start, *tag_start));
+            }
+        }
     }
 
     // Build parent list: [frame_type, ...inherits, ...mixins]
@@ -1013,11 +1026,13 @@ fn finalize_frame(
         enum_call: None,
         secret_when: Vec::new(),
     };
-    classes.push(class_decl);
+    scan.classes.push(class_decl);
 
     // For non-virtual frames, also create an ExternalGlobal
-    if !ctx.is_virtual {
-        globals.push(ExternalGlobal {
+    if ctx.is_virtual {
+        scan.templates.insert(name.clone());
+    } else {
+        scan.globals.push(ExternalGlobal {
             name: name.clone(),
             kind: ExternalGlobalKind::Table,
             params: Vec::new(),
@@ -1074,7 +1089,7 @@ fn finalize_frame(
 
     // Emit ExternalGlobal entries for KeyValue type="global" fields
     for (key, ref_parts, _tag_start) in ctx.global_key_values {
-        globals.push(ExternalGlobal {
+        scan.globals.push(ExternalGlobal {
             name: name.clone(),
             kind: ExternalGlobalKind::TableField(Vec::new(), key, FieldValueKind::FieldRef(ref_parts)),
             params: Vec::new(),
@@ -1243,6 +1258,56 @@ mod tests {
         } else {
             panic!("expected TableField with FieldRef");
         }
+    }
+
+    #[test]
+    fn key_value_without_type_is_string() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="MyFrame" virtual="true">
+                    <KeyValues>
+                        <KeyValue key="label" value="hello" />
+                    </KeyValues>
+                </Frame>
+            </Ui>
+        "#);
+        assert_eq!(field_type(&r.classes[0], "label").as_deref(), Some("string"));
+    }
+
+    #[test]
+    fn template_global_key_value_keeps_field_ref() {
+        // The field reference types the field in a workspace; the `any` field is
+        // what the template stubs declare.
+        let r = scan(r#"
+            <Ui>
+                <Frame name="MyTemplate" virtual="true">
+                    <KeyValues>
+                        <KeyValue key="getType" value="Utils.GetType" type="global" />
+                    </KeyValues>
+                </Frame>
+            </Ui>
+        "#);
+        let field_refs: Vec<_> = r.globals.iter().filter_map(|g| match &g.kind {
+            ExternalGlobalKind::TableField(_, key, FieldValueKind::FieldRef(parts)) => {
+                Some((g.name.as_str(), key.as_str(), parts.join(".")))
+            }
+            _ => None,
+        }).collect();
+        assert_eq!(field_refs, [("MyTemplate", "getType", "Utils.GetType".to_string())]);
+        assert_eq!(field_type(&r.classes[0], "getType").as_deref(), Some("any"));
+    }
+
+    #[test]
+    fn templates_lists_virtual_classes_only() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="MyTemplate" virtual="true" />
+                <Frame name="MyFrame" inherits="MyTemplate" />
+            </Ui>
+        "#);
+        assert_eq!(r.classes.len(), 2);
+        assert!(r.templates.contains("MyTemplate"));
+        assert!(!r.templates.contains("MyFrame"));
     }
 
     #[test]

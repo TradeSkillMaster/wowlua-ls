@@ -1575,6 +1575,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_returns: self.deferred_returns,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
             deferred_harvests: Default::default(),
+            narrowing_methods: Default::default(),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
             deferred_field_type_args,

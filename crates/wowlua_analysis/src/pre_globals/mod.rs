@@ -453,6 +453,12 @@ pub struct PreResolvedGlobals {
     /// (interior-mutable, runtime only).
     #[serde(skip)]
     pub deferred_harvests: crate::analysis::deferred::DeferredHarvests,
+    /// Method name → the class method of that name annotated `@type-narrows` or
+    /// `@returns-class-name` (`None` when classes define different ones), indexed
+    /// over every class on first use by [`Self::narrowing_method`]. Runtime only —
+    /// `#[serde(skip)]`.
+    #[serde(skip)]
+    narrowing_methods: std::sync::OnceLock<HashMap<String, Option<FunctionIndex>>>,
     /// Globals whose type is harvested lazily from a call's resolved return type
     /// (keyed by the global's scope0 symbol): `@creates-global` side-effect
     /// globals (`deferred_call_type`) and, in `build_on_stubs`, unannotated
@@ -3015,6 +3021,7 @@ impl BuildContext {
             deferred_returns: self.deferred_returns,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
             deferred_harvests: Default::default(),
+            narrowing_methods: Default::default(),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
             // Stubs carry no defclass constructor self-fields needing harvest, and
@@ -3097,6 +3104,28 @@ impl PreResolvedGlobals {
     #[inline] pub fn try_table(&self, idx: TableIndex) -> Option<&TableInfo> {
         if !idx.is_external() { return None; }
         self.tables.get(idx.ext_offset())
+    }
+
+    /// The class method named `name` that is annotated `@type-narrows` or
+    /// `@returns-class-name`, searched across every class: `Some(None)` when classes
+    /// define different such methods by that name.
+    pub fn narrowing_method(&self, name: &str) -> Option<Option<FunctionIndex>> {
+        self.narrowing_methods.get_or_init(|| {
+            let mut methods: HashMap<String, Option<FunctionIndex>> = HashMap::default();
+            for &table_idx in self.classes.values() {
+                let Some(table) = self.try_table(table_idx) else { continue };
+                for (field, fi) in &table.fields {
+                    let Some(Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx)))) = self.try_expr(fi.expr) else { continue };
+                    let func = self.func(*func_idx);
+                    if func.type_narrows.is_some() || func.type_narrows_class.is_some() || func.returns_class_name {
+                        methods.entry(field.clone())
+                            .and_modify(|found| if *found != Some(*func_idx) { *found = None })
+                            .or_insert(Some(*func_idx));
+                    }
+                }
+            }
+            methods
+        }).get(name).copied()
     }
 
     /// Drop every lazily-harvested deferred memo entry whose *defining* file is
@@ -3402,6 +3431,7 @@ impl PreResolvedGlobals {
             deferred_returns_by_path: HashMap::default(),
             conflicting_arity_funcs: HashSet::default(),
             deferred_harvests: Default::default(),
+            narrowing_methods: Default::default(),
             deferred_call_globals: HashMap::default(),
             deferred_call_globals_by_path: HashMap::default(),
             deferred_field_type_args: HashMap::default(),
@@ -5066,6 +5096,46 @@ function Frame:SetScript(scriptType, handler) end
         }
         assert_eq!(set_script("Button").overloads.len(), 1, "the overload must not be duplicated");
         assert!(set_script("Unrelated").overloads.is_empty(), "a different parameter list is not a redeclaration");
+    }
+
+    #[test]
+    fn narrowing_method_index() {
+        let src = r#"
+---@class Region
+local Region = {}
+---@returns-class-name
+---@return string
+function Region:GetObjectType() end
+
+---@class Shape
+local Shape = {}
+---@type-narrows Shape
+---@return boolean
+function Shape:IsRound() end
+
+---@class Coin
+local Coin = {}
+---@type-narrows Coin
+---@return boolean
+function Coin:IsRound() end
+
+---@class Plain
+local Plain = {}
+---@return boolean
+function Plain:IsShown() end
+"#;
+        let tree = crate::syntax::parser::parse(src);
+        let root = crate::syntax::SyntaxNode::new_root(&tree);
+        let classes = crate::annotations::scan_all_annotations(root).classes;
+        let globals = crate::annotations::scan_file_globals(root, Some(Path::new("test.lua")));
+        let pg = PreResolvedGlobals::build(&globals, &classes, &[], false, &HashMap::default(), &HashSet::default());
+
+        let get_object_type = &pg.table(pg.classes["Region"]).fields["GetObjectType"];
+        let Expr::FunctionDef(func_idx) = pg.expr(get_object_type.expr) else { panic!("not a method") };
+        assert_eq!(pg.narrowing_method("GetObjectType"), Some(Some(*func_idx)));
+        // Two classes narrow by an `IsRound` of their own: which one a call means is unknown.
+        assert_eq!(pg.narrowing_method("IsRound"), Some(None));
+        assert_eq!(pg.narrowing_method("IsShown"), None);
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use super::*;
+use crate::annotations::{AnnotationType, ClassDecl};
+use crate::xml_scan::is_valid_global_name;
 
 pub(in crate::stub_gen) fn extract_xml_frames_and_mixins(
     ui_source_dir: &Path,
@@ -123,6 +125,201 @@ pub(in crate::stub_gen) fn extract_xml_parentkey_fields(
         }
     }
     merged
+}
+
+
+/// A `@class` of the template stubs: a template, merged over every wow-ui-source
+/// definition of it, or one of its children.
+struct TemplateClass {
+    parents: Vec<String>,
+    fields: Vec<(String, AnnotationType)>,
+}
+
+/// `@class` declarations for the wow-ui-source virtual templates that no stub
+/// declares (`declared_classes`), so a frame created from one, or inheriting it,
+/// gets its child keys, KeyValues and mixins. `branches` is `(branch, clone dir)`,
+/// highest priority first. A template defined more than once (on several branches,
+/// or in several flavors' directories of one) gets the union of its parents and
+/// fields, the first definition giving a field's type. Returns the stub text, the
+/// number of distinct templates found, and the number emitted.
+pub(in crate::stub_gen) fn generate_template_stubs(
+    branches: &[(&str, &Path)],
+    declared_classes: &HashSet<String>,
+) -> (String, usize, usize) {
+    use rayon::prelude::*;
+
+    let mut found: HashSet<String> = HashSet::default();
+    // name → (class, link to its first definition)
+    let mut templates: HashMap<String, (TemplateClass, String)> = HashMap::default();
+    for &(branch, clone_dir) in branches {
+        let mut xml_files = Vec::new();
+        collect_xml_paths(&clone_dir.join("Interface"), &mut xml_files);
+        xml_files.sort();
+        let per_file: Vec<Vec<(ClassDecl, String)>> = xml_files
+            .par_iter()
+            .map(|path| scan_template_classes(path, clone_dir, branch))
+            .collect();
+        for (class, source) in per_file.into_iter().flatten() {
+            found.insert(class.name.clone());
+            // A virtual font is a global font object, typed `Font` as one.
+            if declared_classes.contains(&class.name) || class.parents.first().is_some_and(|p| p == "Font") {
+                continue;
+            }
+            let (entry, _) = templates.entry(class.name.clone()).or_insert_with(|| {
+                (TemplateClass { parents: Vec::new(), fields: Vec::new() }, source)
+            });
+            for parent in class.parents {
+                if parent != class.name && is_valid_global_name(&parent) && !entry.parents.contains(&parent) {
+                    entry.parents.push(parent);
+                }
+            }
+            for (name, typ, _) in class.fields {
+                if !is_valid_global_name(&name) || entry.fields.iter().any(|(n, _)| *n == name) {
+                    continue;
+                }
+                if let Some(typ) = identifier_names_only(&typ) {
+                    entry.fields.push((name, typ));
+                }
+            }
+        }
+    }
+
+    let mut names: Vec<&String> = templates.keys().collect();
+    names.sort();
+    let mut taken: HashSet<String> = declared_classes.clone();
+    taken.extend(names.iter().map(|n| (*n).clone()));
+    let mut out = vec![
+        "---@meta _".to_string(),
+        "-- FrameXML templates missing from the vendor annotations (auto-generated from wow-ui-source XML)".to_string(),
+        String::new(),
+    ];
+    for name in &names {
+        let (template, source) = &templates[*name];
+        out.push(format!("---[Source]({source})"));
+        push_template_class(&mut out, name, template, &mut taken);
+    }
+    (out.join("\n"), found.len(), names.len())
+}
+
+
+/// Emit `name`'s `@class`, then a class for each child that needs one.
+fn push_template_class(out: &mut Vec<String>, name: &str, class: &TemplateClass, taken: &mut HashSet<String>) {
+    let mut children: Vec<(String, TemplateClass)> = Vec::new();
+    out.push(format!("---@class {name} : {}", class.parents.join(", ")));
+    for (field, typ) in &class.fields {
+        let typ = template_child_type(name, field, typ, taken, &mut children);
+        out.push(format!("---@field {field} {typ}"));
+    }
+    out.push(String::new());
+    for (child_name, child) in &children {
+        push_template_class(out, child_name, child, taken);
+    }
+}
+
+/// The declared type of child `key` of `owner`. A widget combined with templates,
+/// mixins or children of its own becomes a class named `owner_key`, as the vendored
+/// annotations name them: as an intersection type, its members would go unchecked.
+fn template_child_type(
+    owner: &str,
+    key: &str,
+    typ: &AnnotationType,
+    taken: &mut HashSet<String>,
+    children: &mut Vec<(String, TemplateClass)>,
+) -> String {
+    use crate::annotations::annotation_types::format_annotation_type;
+    match typ {
+        AnnotationType::Array(element) => {
+            let element = template_child_type(owner, key, element, taken, children);
+            if is_valid_global_name(&element) { format!("{element}[]") } else { format_annotation_type(typ) }
+        }
+        AnnotationType::Intersection(members) => {
+            let name = format!("{owner}_{key}");
+            if taken.contains(&name) {
+                return format_annotation_type(typ);
+            }
+            let mut parents: Vec<String> = Vec::new();
+            let mut fields: Vec<(String, AnnotationType)> = Vec::new();
+            for member in members {
+                match member {
+                    AnnotationType::Simple(parent) if !parents.contains(parent) => parents.push(parent.clone()),
+                    AnnotationType::TableLiteral(entries) => {
+                        for (field, field_type) in entries {
+                            if !fields.iter().any(|(n, _)| n == field) {
+                                fields.push((field.clone(), field_type.clone()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if parents.is_empty() {
+                return format_annotation_type(typ);
+            }
+            taken.insert(name.clone());
+            children.push((name.clone(), TemplateClass { parents, fields }));
+            name
+        }
+        _ => format_annotation_type(typ),
+    }
+}
+
+
+/// The virtual template classes `xml_scan` finds in one XML file, each with a
+/// wow-ui-source link to its declaration.
+fn scan_template_classes(path: &Path, clone_dir: &Path, branch: &str) -> Vec<(ClassDecl, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let result = crate::xml_scan::scan_xml_content(&text, path);
+    let rel_path: Vec<String> = path
+        .strip_prefix(clone_dir)
+        .unwrap_or(path)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let repo_url = WOW_UI_SOURCE_REPO.trim_end_matches(".git");
+    let bytes = text.as_bytes();
+    result
+        .classes
+        .into_iter()
+        .filter(|class| result.templates.contains(&class.name))
+        .map(|class| {
+            // The range starts just past the opening tag.
+            let tag_end = class.def_range.map_or(0, |(start, _)| start as usize).min(bytes.len());
+            let tag_start = bytes[..tag_end].iter().rposition(|&b| b == b'<').unwrap_or(0);
+            let line = bytes[..tag_start].iter().filter(|&&b| b == b'\n').count() + 1;
+            let source = format!("{repo_url}/blob/{branch}/{}#L{line}", rel_path.join("/"));
+            (class, source)
+        })
+        .collect()
+}
+
+
+/// `typ` without the names that can't be written in an annotation: atlas-style
+/// template names (`!UI-Frame-LeftTile`) that a region's `inherits` may hold, and
+/// such KeyValue keys. `None` when nothing remains.
+fn identifier_names_only(typ: &AnnotationType) -> Option<AnnotationType> {
+    match typ {
+        AnnotationType::Simple(name) => is_valid_global_name(name).then(|| typ.clone()),
+        AnnotationType::Array(inner) => identifier_names_only(inner).map(|t| AnnotationType::Array(Box::new(t))),
+        AnnotationType::Intersection(members) => {
+            let mut kept: Vec<AnnotationType> = members.iter().filter_map(identifier_names_only).collect();
+            match kept.len() {
+                0 => None,
+                1 => kept.pop(),
+                _ => Some(AnnotationType::Intersection(kept)),
+            }
+        }
+        AnnotationType::TableLiteral(fields) => {
+            let kept: Vec<(String, AnnotationType)> = fields
+                .iter()
+                .filter(|(name, _)| is_valid_global_name(name))
+                .filter_map(|(name, t)| identifier_names_only(t).map(|t| (name.clone(), t)))
+                .collect();
+            (!kept.is_empty()).then_some(AnnotationType::TableLiteral(kept))
+        }
+        _ => Some(typ.clone()),
+    }
 }
 
 

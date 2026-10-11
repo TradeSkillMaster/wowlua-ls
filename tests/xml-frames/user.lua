@@ -21,6 +21,9 @@ local cnt = base.count
 --    ^ hover: (local) cnt: number
 local en = base.enabled
 --    ^ hover: (local) en: boolean
+-- A template's `type="global"` KeyValue takes the type of the global it names
+local confirm = base.confirmText
+--    ^ hover: (local) confirm: string
 
 -- Template inheriting another template gets inherited fields + own fields
 ---@type MyButtonTemplate

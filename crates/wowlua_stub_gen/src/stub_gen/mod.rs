@@ -300,6 +300,8 @@ const MIN_TABLES: usize = 10_000;
 const MIN_FILES: usize = 1_000;
 const MIN_GLOBALS: usize = 50_000;
 const MIN_CLASSES: usize = 10_000;
+/// Distinct virtual templates across the wow-ui-source branches (~3600 as of 2026-10).
+const MIN_FRAMEXML_TEMPLATES: usize = 2_000;
 
 /// Maps Blizzard ScriptObject API names to their Lua class names in Ketho's stubs.
 ///
