@@ -14,3 +14,7 @@ local got = Registry.Get()
 --    ^ hover: (local) got: Widget
 local nextValue = ns.Counter:Next()
 --    ^ hover: (local) nextValue: number
+local moduleLabel = ns.Module:Label()
+--    ^ hover: (local) moduleLabel: string
+local moduleTag = ns.Module:Tag()
+--    ^ hover: (local) moduleTag: number

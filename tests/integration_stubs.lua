@@ -1656,6 +1656,13 @@ local stubSoundKit = SOUNDKIT.IG_MAINMENU_OPTION
 -- A constructor with `[key]` entries the scan skips stays untyped when indexed.
 local stubFactionName = PLAYER_FACTION_GROUP[0]
 --    ^ hover: (local) stubFactionName: any
+-- One keyed `["k"] = v` is a map of its entries' type: a dynamic read isn't nil.
+---@param key string
+local function stubDifficultyColor(key)
+    return QuestDifficultyColors[key]
+end
+local stubDifficulty = stubDifficultyColor("impossible")
+--    ^ hover: (local) stubDifficulty: {\n  b: number,\n  font: string,\n  g: number,\n  r: number\n}
 
 -- FrameXML methods defined through a field assigned a call land on that field.
 local stubUnitCount = MonthlyActivitiesFrameMixin.TimeLeftFormatter:GetDesiredUnitCount(5)

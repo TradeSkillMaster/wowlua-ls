@@ -700,7 +700,8 @@ fn keep_call_field_methods(
 /// Populate a newly-created sub-table with fields extracted from a table constructor.
 /// Converts each `(name, FieldValueKind)` entry into a `FieldInfo` with a literal expression,
 /// recursively creating nested sub-tables for `FieldValueKind::Table` entries. Call-valued
-/// entries are logged in `nested_calls` for later resolution.
+/// entries are logged in `nested_calls` for later resolution. An index entry types
+/// the table's dynamic reads instead (`annotations::apply_index_entry`).
 fn populate_table_fields(
     table_local_idx: usize,
     fields: &[(String, crate::annotations::FieldValueKind)],
@@ -730,6 +731,10 @@ fn populate_table_fields(
             // Create field with Any type so it exists for field-chain resolution
             FieldValueKind::Unknown | FieldValueKind::MaybeCallable | FieldValueKind::FunctionCall { .. } | FieldValueKind::FieldRef(_) => ValueType::Any,
         };
+        if crate::annotations::is_index_entry(name) {
+            crate::annotations::apply_index_entry(&mut tables[table_local_idx], name, vt);
+            continue;
+        }
         let expr_idx = ExprId(EXT_BASE + exprs.len());
         exprs.push(Expr::Literal(vt.clone()));
         if let Some(val) = num_val {
@@ -809,6 +814,9 @@ fn record_added_fields(
 ) {
     use crate::annotations::FieldValueKind;
     for (name, kind) in fields {
+        if crate::annotations::is_index_entry(name) {
+            continue;
+        }
         added.insert((table_idx, name.clone()));
         if let FieldValueKind::Table(sub_fields) = kind
             && let Some(fi) = tables[table_idx.ext_offset()].fields.get(name)
@@ -946,7 +954,7 @@ fn merge_ctor_fields(g: &crate::annotations::ExternalGlobal, table_idx: TableInd
     use crate::annotations::FieldValueKind;
     let local_idx = table_idx.ext_offset();
     if let Some(path) = &g.source_path {
-        for f in &g.ctor_fields {
+        for f in g.ctor_fields.iter().filter(|f| !crate::annotations::is_index_entry(&f.name)) {
             if !ctx.tables[local_idx].fields.contains_key(&f.name) {
                 ctx.field_locations.entry_or_default(table_idx)
                     .entry(f.name.clone())
@@ -960,10 +968,6 @@ fn merge_ctor_fields(g: &crate::annotations::ExternalGlobal, table_idx: TableInd
         .map(|f| (f.name.clone(), f.kind.clone()))
         .collect();
     merge_table_fields(table_idx, &fields, ctx.tables, ctx.exprs, ctx.number_literals, ctx.string_literals, ctx.ctor_entries, ctx.nested_calls);
-    // Its other entries aren't scanned: a dynamic index may reach them.
-    if g.ctor_elements {
-        ctx.tables[local_idx].value_type.get_or_insert(ValueType::Any);
-    }
 }
 
 /// Link `Derived = CreateFromMixins(Base, …)` globals into the class inheritance
@@ -4282,6 +4286,10 @@ impl PreResolvedGlobals {
             tables.push(TableInfo::default());
             for (name, field_ann) in fields {
                 if let Some(vt) = Self::resolve_annotation_gen(field_ann, classes, aliases, param_aliases, generics, tables, exprs) {
+                    if crate::annotations::is_index_entry(name) {
+                        crate::annotations::apply_index_entry(&mut tables[table_idx.ext_offset()], name, vt);
+                        continue;
+                    }
                     let expr_id = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[table_idx.ext_offset()].fields.insert(name.clone(), FieldInfo {

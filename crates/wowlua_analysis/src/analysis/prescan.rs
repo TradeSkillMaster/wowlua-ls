@@ -2103,6 +2103,10 @@ impl<'a> Analysis<'a> {
                 self.resolve_annotation_type_mut_gen(field_ann, generics)
             };
             if let Some(vt) = resolved {
+                if crate::annotations::is_index_entry(name) {
+                    crate::annotations::apply_index_entry(&mut self.ir.tables[table_idx.val()], name, vt);
+                    continue;
+                }
                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                 self.ir.tables[table_idx.val()].fields.insert(name.clone(), FieldInfo {
                     expr: expr_id,

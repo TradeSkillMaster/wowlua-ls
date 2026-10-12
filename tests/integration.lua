@@ -538,10 +538,18 @@ local bracketVarMap = { [_bKey1] = _bVal1, [_bKey2] = _bVal2 }
 local bracketNamedAccess = bracketStrMap.foo
 --    ^ hover: (local) bracketNamedAccess: string  def: local
 local mixedTable = { ["a"] = 1, x = "hello" }
+--    ^ hover: (local) mixedTable: table<string, number | string>  def: local
 local _mixedA = mixedTable.a
 --    ^ hover: (local) _mixedA: number  def: local
 local _mixedX = mixedTable.x
 --    ^ hover: (local) _mixedX: string  def: local
+-- `x = v` is keyed like `["x"] = v`, so a dynamic read may get either entry.
+---@param key string
+local function mixedLookup(key)
+    return mixedTable[key]
+end
+local _mixedAny = mixedLookup("x")
+--    ^ hover: (local) _mixedAny: number | string
 -- Phase 2 deferred inference for positional arrays with variable values
 local _arrVal1 = "foo"
 local _arrVal2 = "bar"

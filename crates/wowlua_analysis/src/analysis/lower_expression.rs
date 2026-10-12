@@ -701,6 +701,7 @@ impl<'a> Analysis<'a> {
                 let mut fields: HashMap<String, FieldInfo> = HashMap::default();
                 let mut array_fields = Vec::new();
                 let mut bracket_fields: Vec<(ExprId, ExprId)> = Vec::new();
+                let mut named_entries: Vec<(String, ExprId)> = Vec::new();
                 for field in tc.fields() {
                     match field.kind() {
                         Some(FieldKind::Named { name, value }) => {
@@ -766,6 +767,7 @@ impl<'a> Analysis<'a> {
                             }
                             let vis = crate::annotations::default_visibility_for_name(&name, self.implicit_protected_prefix);
                             let field_range = field.syntax().text_range();
+                            named_entries.push((name.clone(), expr_id));
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
                                 extra_exprs: Vec::new(),
@@ -825,6 +827,15 @@ impl<'a> Analysis<'a> {
                                 bracket_fields.push((lowered[0], lowered[1]));
                             }
                         }
+                    }
+                }
+                // `["k"] = v` makes the table a map, whose `k = v` entries are keyed
+                // the same way: they are elements too.
+                if bracket_fields.iter().any(|(key, _)| self.ir.string_literals.contains_key(key)) {
+                    for (name, value) in named_entries {
+                        let key = self.ir.push_expr(Expr::Literal(ValueType::String(None)));
+                        self.ir.string_literals.insert(key, name);
+                        bracket_fields.push((key, value));
                     }
                 }
                 // Infer key_type/value_type from bracket fields (and array fields)

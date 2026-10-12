@@ -228,6 +228,22 @@ _use((dict["missing"] or 9999) < 5)
 local arr = {}
 _use(arr[10] or 0)
 
+-- A lookup grouped in an `or`: the `or` takes the element type, but a missing key
+-- yields its right side, which may be false, so the `and` is not redundant.
+---@param key string
+local function isKnownKey(key)
+    return (dict[key] or key == "base") and true or false
+end
+_use(isKnownKey)
+
+-- Unless the right side is always truthy.
+---@param key string
+local function lookupOrZero(key)
+    return (dict[key] or 0) and true or false
+--                          ^ diag: redundant-and
+end
+_use(lookupOrZero)
+
 -- Literal key matching a declared @field resolves to the field type (guaranteed
 -- to exist), so `or` IS redundant here — not suppressed.
 ---@class DictWithField : table<string, number>

@@ -2263,7 +2263,7 @@ pub use annotation_scanning::{
     DIAGNOSTIC_DIRECTIVE_MARKER, find_diagnostic_directive, strip_trailing_diagnostic_directive,
 };
 pub use annotation_scanning::{
-    ADDON_NS_NAME,
+    ADDON_NS_NAME, STRING_INDEX_ENTRY, ANY_INDEX_ENTRY, apply_index_entry, is_index_entry,
     detect_addon_ns_var, canonicalize_member_path, scope_addon_ns_path,
     extract_inline_class,
     extract_inline_class_with_offset,

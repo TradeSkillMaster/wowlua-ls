@@ -17,11 +17,16 @@ local function readKey(key)
     return PanelKeys[key]
 end
 local keyed = readKey("Label")
---    ^ hover: (local) keyed: string | number | nil
+--    ^ hover: (local) keyed: any
 local factionIndex = PanelFactions.Horde
 --    ^ hover: (local) factionIndex: number
 local factionName = PanelFactions[0]
 --    ^ hover: (local) factionName: any
+---@param names string[]
+local function takeNames(names) return names end
+takeNames(PanelOrder)
+local order = PanelOrder
+--    ^ hover: (local) order: table
 
 local minInterval = PanelMixin.TimeFormatter:GetMinInterval(5)
 --    ^ hover: (local) minInterval: number

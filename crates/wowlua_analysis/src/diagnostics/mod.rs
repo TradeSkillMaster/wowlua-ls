@@ -653,18 +653,29 @@ pub fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) 
     || is_symbol_from_uncertain_source(analysis, expr_id)
     || is_flavor_restricted_global(analysis, expr_id)
     || is_overridable_method_call(analysis, expr_id)
-    || is_and_chain_with_uncertain_term(analysis, expr_id)
+    || is_logical_chain_with_uncertain_term(analysis, expr_id)
 }
 
-/// `and`-chain propagation: `a and b and c` parses as `((a and b) and c)`.
+/// `and`/`or` propagation. `a and b and c` parses as `((a and b) and c)`.
 /// The result type of a truthy `and` chain equals the type of the last term,
 /// but the chain can short-circuit to nil/false at runtime if ANY term is
-/// uncertain. Walk the left-associative spine and check each term.
-fn is_and_chain_with_uncertain_term(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+/// uncertain. Walk the left-associative spine and check each term. `a or b`
+/// takes `a`'s type when `a` is typed truthy, but is `b` when `a` is nil at
+/// runtime: uncertain when `a` is, unless `b` is always truthy, or when `b` is.
+fn is_logical_chain_with_uncertain_term(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
     let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
-    let Expr::BinaryOp { op: crate::ast::Operator::And, lhs, rhs, .. } = analysis.expr(id) else { return false };
-    is_expr_truthiness_uncertain(analysis, *rhs)
-    || is_expr_truthiness_uncertain(analysis, *lhs)
+    match analysis.expr(id) {
+        Expr::BinaryOp { op: crate::ast::Operator::And, lhs, rhs, .. } => {
+            is_expr_truthiness_uncertain(analysis, *rhs)
+            || is_expr_truthiness_uncertain(analysis, *lhs)
+        }
+        Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs, .. } => {
+            is_expr_truthiness_uncertain(analysis, *rhs)
+            || (is_expr_truthiness_uncertain(analysis, *lhs)
+                && !analysis.resolve_expr_type(*rhs).is_some_and(|t| t.is_guaranteed_truthy()))
+        }
+        _ => false,
+    }
 }
 
 /// Field-access call whose receiver class has a subclass that defines its own

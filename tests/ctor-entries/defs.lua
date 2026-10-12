@@ -37,6 +37,59 @@ local size = ns.Mod.Sub:Size()
 local ref = ns.Mod.Ref
 --    ^ hover: (local) ref: Widget
 
+-- A module built as a local table and exported: the constructor's entries are the
+-- field's, as they would be written there, and so are the local's later writes.
+local Module = {
+    count = 1,
+    ---@return string
+    Label = function(self) return "x" end,
+    Tag = function(self) return 5 end,
+    Ref = widget,
+    ["Keyed"] = true,
+    ---@type Widget?
+    Pending = nil,
+    Sub = { depth = 2 },
+}
+Module.extra = "later"
+ns.Module = Module
+
+local moduleCount = ns.Module.count
+--    ^ hover: (local) moduleCount: number
+local moduleLabel = ns.Module:Label()
+--    ^ hover: (local) moduleLabel: string
+local moduleKeyed = ns.Module.Keyed
+--    ^ hover: (local) moduleKeyed: boolean
+
+-- A string key names an entry too, of a map indexed by any string.
+ns.Keys = { ["first"] = 1, ["second"] = 2, size = 2 }
+local firstKey = ns.Keys.first
+--    ^ hover: (local) firstKey: number
+
+-- Entries of mixed types make a map of `any`, and so do entries no shape carries
+-- (numeric keys here): a dynamic read can't be told from the named entries.
+ns.Mixed = { ["mode"] = 1, label = "x" }
+-- Records of the same fields join field by field.
+local UNBOUNDED = math.huge
+ns.Arity = { ["+"] = { min = 2, max = 2 }, clamp = { min = 1, max = UNBOUNDED } }
+local Ranges = { ["+"] = { min = 2, max = 2 }, clamp = { min = 1, max = UNBOUNDED } }
+ns.Ranges = Ranges
+ns.Factions = { [0] = "Horde", [1] = "Alliance", ["Horde"] = 0, ["Alliance"] = 1 }
+local Sides = { [0] = "Horde", Horde = 0 }
+ns.Sides = Sides
+
+-- Neither an element of a local table nor a local assigned again carries the
+-- constructor, and a local's declared type wins over its constructor.
+local presets = { normal = { size = 1 } }
+ns.Preset = presets[ns.Keys.first]
+PresetTable = { normal = { size = 1 } }
+CurrentPreset = PresetTable[ns.Keys.first]
+local Rebound = { stale = 1 }
+Rebound = { fresh = "x" }
+ns.Rebound = Rebound
+---@type {OnClick: fun(button: string): boolean}
+local Handlers = { OnClick = function(button) return true end }
+ns.Handlers = Handlers
+
 Registry = {
     ---@type Widget
     current = { name = "a", extra = 5 },

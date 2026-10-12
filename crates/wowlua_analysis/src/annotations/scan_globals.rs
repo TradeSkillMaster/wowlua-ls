@@ -5,7 +5,7 @@ use crate::ast::{AstNode, Assign, BinaryExpression, Block, Statement, Expression
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use super::{
-    AnnotationType, ParamInfo, Visibility,
+    AnnotationType, ParamInfo, Visibility, STRING_INDEX_ENTRY, ANY_INDEX_ENTRY,
     extract_annotations, default_visibility_for_name,
 };
 use super::annotation_types::{parse_overload, OverloadSig};
@@ -249,6 +249,15 @@ impl CalleeScope<'_> {
     }
 }
 
+/// The identifier `expr` is when it names a value — not an element of one (`t[k]`)
+/// nor a member of an expression (`(e).f`), whose key `names()` drops.
+fn named_value<'a>(expr: &Expression<'a>) -> Option<crate::ast::Identifier<'a>> {
+    match expr {
+        Expression::Identifier(ident) if !ident.has_non_string_bracket_in_chain() && !ident.has_prefix_expr_base() => Some(*ident),
+        _ => None,
+    }
+}
+
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
 /// `a and b` evaluates to `b` when `a` is truthy, so the effective type is `b`.
 /// `a or b` evaluates to `b` when `a` is falsy (the defensive-init pattern
@@ -418,25 +427,103 @@ fn collect_ctor_key_paths(root: &SyntaxNode<'_>, local_vars: &HashSet<String>) -
     paths
 }
 
-/// Extract named field kinds from a table constructor for `FieldValueKind::Table`.
+/// Extract the kinds of a table constructor's entries for `FieldValueKind::Table`
+/// (see [`ctor_entry_kinds`]).
 fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>, scope: &CalleeScope<'_>) -> Vec<(String, FieldValueKind)> {
-    let mut fields = Vec::new();
-    for field in tc.fields() {
-        if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-            fields.push((name, classify_ctor_entry(field.syntax(), &value, scope)));
-        }
-    }
-    fields
+    ctor_entry_kinds(tc, |field, value| classify_ctor_entry(field, value, scope))
+        .into_iter()
+        .map(|f| (f.name, f.kind))
+        .collect()
 }
 
-/// [`extract_table_field_kinds`] for a global's constructor, reading its
-/// [`named_ctor_entry`]s, each with its key range for go-to-definition.
+/// [`extract_table_field_kinds`] for a global's constructor, each entry with its
+/// key range for go-to-definition.
 fn extract_ctor_fields(tc: &crate::ast::TableConstructor<'_>, scope: &CalleeScope<'_>) -> Vec<CtorField> {
-    tc.fields().iter()
-        .filter_map(|field| {
-            let (name, value, range) = named_ctor_entry(field)?;
-            let kind = nil_entries_unknown(classify_ctor_entry(field.syntax(), &value, scope));
-            Some(CtorField { name, kind, range })
+    ctor_entry_kinds(tc, |field, value| classify_ctor_entry(field, value, scope))
+        .into_iter()
+        .map(|f| CtorField { kind: nil_entries_unknown(f.kind), ..f })
+        .collect()
+}
+
+/// The [`named_ctor_entry`]s of a table constructor, each of the kind `classify`
+/// gives it, then its [`index_entry`] (a literal's value dropped).
+fn ctor_entry_kinds<'a>(
+    tc: &crate::ast::TableConstructor<'a>,
+    mut classify: impl FnMut(SyntaxNode<'a>, &Expression<'a>) -> FieldValueKind,
+) -> Vec<CtorField> {
+    fn without_values(kind: FieldValueKind) -> FieldValueKind {
+        match kind {
+            FieldValueKind::String(_) => FieldValueKind::String(None),
+            FieldValueKind::Number(_) => FieldValueKind::Number(None),
+            FieldValueKind::Table(entries) => FieldValueKind::Table(
+                entries.into_iter().map(|(name, kind)| (name, without_values(kind))).collect(),
+            ),
+            other => other,
+        }
+    }
+    fn join(a: FieldValueKind, b: FieldValueKind) -> FieldValueKind {
+        match (a, b) {
+            (FieldValueKind::Table(a), FieldValueKind::Table(b)) => {
+                join_fields(a, b, join).map_or(FieldValueKind::Unknown, FieldValueKind::Table)
+            }
+            (a, b) if a == b => a,
+            _ => FieldValueKind::Unknown,
+        }
+    }
+    let mut entries = Vec::new();
+    let (mut keyed, mut other) = (false, false);
+    for field in tc.fields() {
+        let Some((name, value, range)) = named_ctor_entry(&field) else {
+            other = true;
+            continue;
+        };
+        keyed |= field.kind().is_none();
+        entries.push(CtorField { name, kind: classify(field.syntax(), &value), range });
+    }
+    let elements = entries.iter()
+        .filter(|f| f.kind != FieldValueKind::Nil)
+        .map(|f| without_values(f.kind.clone()));
+    if let Some((name, kind)) = index_entry(other && !entries.is_empty(), keyed, elements, FieldValueKind::Unknown, join) {
+        entries.push(CtorField { name: name.to_string(), kind, range: (0, 0) });
+    }
+    entries
+}
+
+/// The index entry of a table constructor's shape, typing its dynamic reads: with
+/// named entries and entries no shape carries (`other`: positional ones, another
+/// `[key]`), the [`ANY_INDEX_ENTRY`] of `unknown`, so the named entries' types
+/// don't stand in for the others; with `["k"] = v` entries (`keyed`), the
+/// [`STRING_INDEX_ENTRY`] of its named entries' types (`elements`, `k = v` and
+/// `["k"] = v` alike, a `nil` one, which clears its key, left out) joined: equal
+/// ones, records of the same fields field by field, else `unknown`. None for a
+/// record. A constructor with no named entries has no shape: its table stays a
+/// plain `table`.
+fn index_entry<T>(
+    other: bool,
+    keyed: bool,
+    elements: impl Iterator<Item = T>,
+    unknown: T,
+    join: impl Fn(T, T) -> T,
+) -> Option<(&'static str, T)> {
+    if other {
+        return Some((ANY_INDEX_ENTRY, unknown));
+    }
+    if !keyed {
+        return None;
+    }
+    Some((STRING_INDEX_ENTRY, elements.reduce(join)?))
+}
+
+/// Two records' fields `a` and `b` joined field by field with `join`, when they
+/// name the same fields.
+fn join_fields<T>(a: Vec<(String, T)>, mut b: Vec<(String, T)>, join: impl Fn(T, T) -> T + Copy) -> Option<Vec<(String, T)>> {
+    if a.len() != b.len() {
+        return None;
+    }
+    a.into_iter()
+        .map(|(name, x)| {
+            let (_, y) = b.swap_remove(b.iter().position(|(n, _)| *n == name)?);
+            Some((name, join(x, y)))
         })
         .collect()
 }
@@ -465,12 +552,6 @@ fn named_ctor_entry<'a>(field: &crate::ast::Field<'a>) -> Option<(String, Expres
         }
     };
     Some((name, value, (u32::from(key.start()), u32::from(key.end()))))
-}
-
-/// Whether a constructor has entries [`extract_ctor_fields`] doesn't carry:
-/// positional ones, or a `[key]` other than a string literal.
-fn has_ctor_elements(tc: &crate::ast::TableConstructor<'_>) -> bool {
-    tc.fields().iter().any(|field| named_ctor_entry(field).is_none())
 }
 
 /// The kind of one named table-constructor entry (`field`, whose value is
@@ -523,15 +604,12 @@ fn classify_value_kind_resolving_scalars(
         return kind;
     }
     match expr {
-        Expression::TableConstructor(tc) => {
-            let mut fields = Vec::new();
-            for field in tc.fields() {
-                if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-                    fields.push((name, classify_value_kind_resolving_scalars(&value, scalars, scope)));
-                }
-            }
-            FieldValueKind::Table(fields)
-        }
+        Expression::TableConstructor(tc) => FieldValueKind::Table(
+            ctor_entry_kinds(tc, |_, value| classify_value_kind_resolving_scalars(value, scalars, scope))
+                .into_iter()
+                .map(|f| (f.name, f.kind))
+                .collect(),
+        ),
         Expression::Identifier(ident) => {
             let names = ident.names();
             if names.len() == 1
@@ -677,6 +755,7 @@ struct LocalValues<'a> {
     local_function_sigs: &'a HashMap<String, ExternalGlobal>,
     local_tables: &'a HashSet<String>,
     local_table_field_kinds: &'a HashMap<String, Vec<(String, FieldValueKind)>>,
+    local_table_ctors: &'a HashMap<String, crate::ast::TableConstructor<'a>>,
 }
 
 impl LocalValues<'_> {
@@ -685,12 +764,9 @@ impl LocalValues<'_> {
         match names.len() {
             0 => FieldValueKind::Unknown,
             1 if self.local_functions.contains(&names[0]) => FieldValueKind::Function,
-            // Carry the local table's accumulated shape (captured above) so
-            // `data.constants = constants` exposes `constants`'s fields cross-file,
-            // not a bare `table`.
-            1 if self.local_tables.contains(&names[0]) => FieldValueKind::Table(
-                self.local_table_field_kinds.get(&names[0]).cloned().unwrap_or_default(),
-            ),
+            // Carry the local table's shape so `data.constants = constants`
+            // exposes `constants`'s fields cross-file, not a bare `table`.
+            1 if self.local_tables.contains(&names[0]) => FieldValueKind::Table(self.table_shape(&names[0])),
             // Local was assigned from a function call whose return type isn't known
             // locally — forward the call origin so build_on_stubs can resolve the
             // return type cross-file. Any other single name (e.g. a local or global)
@@ -700,6 +776,22 @@ impl LocalValues<'_> {
             // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
             _ => FieldValueKind::FieldRef(self.scope.names.renamed(names)),
         }
+    }
+
+    /// The fields of the local table `name`: its constructor's entries, as a
+    /// global constructor's ([`extract_ctor_fields`]), then those written on it
+    /// (`name.k = v`, captured above), the last write winning.
+    fn table_shape(&self, name: &str) -> Vec<(String, FieldValueKind)> {
+        let mut shape: Vec<(String, FieldValueKind)> = self.local_table_ctors.get(name)
+            .map(|tc| extract_ctor_fields(tc, self.scope).into_iter().map(|f| (f.name, f.kind)).collect())
+            .unwrap_or_default();
+        for (field, kind) in self.local_table_field_kinds.get(name).into_iter().flatten() {
+            match shape.iter_mut().find(|(n, _)| n == field) {
+                Some(slot) => slot.1 = kind.clone(),
+                None => shape.push((field.clone(), kind.clone())),
+            }
+        }
+        shape
     }
 
     /// The type a field assigned the local `name` takes from it.
@@ -725,10 +817,10 @@ impl LocalValues<'_> {
 
     /// Whether a constructor entry referencing `names` is typed as a field write:
     /// not one rooted at a file local no rename covers
-    /// ([`FileNames::is_unrenamed_local`]: an untyped local, a local table whose
-    /// captured shape holds only its later field writes, or one assigned a call,
-    /// which the entry's own kind carries), nor at a class only guessed from a
-    /// call's string argument.
+    /// ([`FileNames::is_unrenamed_local`]: an untyped local, a local table, whose
+    /// methods only its export carries, or one assigned a call, which the entry's
+    /// own kind carries), nor at a class only guessed from a call's string
+    /// argument.
     fn reference_types(&self, names: &[String]) -> bool {
         self.scope.names.names_global(names)
     }
@@ -743,7 +835,8 @@ enum CtorEntries {
     /// Functions and references: a field's constructor, whose shape annotation
     /// carries the entries declaring their own type.
     References,
-    /// Those and the entries declaring their own type: a global's constructor.
+    /// Those and the entries declaring their own type: a global's constructor, or
+    /// an exported local table's.
     All,
 }
 
@@ -762,12 +855,12 @@ impl CtorEntryScan<'_> {
     /// scan could only type them coarsely: a function as a method (its signature
     /// crosses files, and an unannotated body's returns are harvested lazily,
     /// instead of a bare `function`); a reference typed as `X.k = name` is; and an
-    /// entry declaring its own type. Which of them, `entries` decides; a global's
-    /// constructor also covers `["k"] = v` entries, the others only `k = v`, as
-    /// their shapes do.
+    /// entry declaring its own type. Which of them, `entries` decides; a class's
+    /// constructor covers only `k = v` entries, as the class declaration does,
+    /// the others `["k"] = v` entries too, as their shapes do.
     fn push(&self, globals: &mut Vec<ExternalGlobal>, entries: CtorEntries, owner: &str, path: &[String], tc: &crate::ast::TableConstructor<'_>) {
         for field in tc.fields() {
-            if entries != CtorEntries::All && !matches!(field.kind(), Some(crate::ast::FieldKind::Named { .. })) {
+            if entries == CtorEntries::Methods && !matches!(field.kind(), Some(crate::ast::FieldKind::Named { .. })) {
                 continue;
             }
             let Some((name, value, key)) = named_ctor_entry(&field) else { continue };
@@ -844,7 +937,6 @@ impl CtorEntryScan<'_> {
             deferred_call_type: false,
             assigned_call_offset: None,
             ctor_fields: Vec::new(),
-            ctor_elements: false,
             declares_class: false,
             ctor_method: false,
             name_start: key.0, name_end: key.1,
@@ -1034,7 +1126,6 @@ fn build_func_external(
         deferred_call_type: false,
         assigned_call_offset: None,
         ctor_fields: Vec::new(),
-        ctor_elements: false,
         declares_class: false,
         ctor_method: false,
         name_start,
@@ -1321,6 +1412,11 @@ pub fn scan_file_globals_with_synth(
     let mut local_aliases: HashMap<String, String> = HashMap::default();
     // Track local variables assigned table constructors (e.g. `local Locale = {}`)
     let mut local_tables: HashSet<String> = HashSet::default();
+    // The constructor each local table is declared with, whose entries an export
+    // (`ns.M = M`) carries. A name declared or assigned again has none: the table
+    // exported may be another one.
+    let mut local_table_ctors: HashMap<String, crate::ast::TableConstructor<'_>> = HashMap::default();
+    let mut rebound_locals: HashSet<String> = HashSet::default();
     // Track local functions (e.g. `local function Foo()` or `local Foo = function()`)
     let mut local_functions: HashSet<String> = HashSet::default();
     // Track ALL local variable names so we can skip field/method assignments on
@@ -1365,7 +1461,9 @@ pub fn scan_file_globals_with_synth(
                 let exprs = expr_list.expressions();
                 let decl_offset: u32 = assign.syntax().text_range().start().into();
                 for name in &names {
-                    local_vars.insert(name.clone());
+                    if !local_vars.insert(name.clone()) {
+                        rebound_locals.insert(name.clone());
+                    }
                     first_local_offset.entry(name.clone()).or_insert(decl_offset);
                     guess_call_offsets.remove(name);
                 }
@@ -1376,8 +1474,9 @@ pub fn scan_file_globals_with_synth(
                             local_aliases.insert(names[0].clone(), rhs_names[0].clone());
                         }
                     }
-                    if matches!(&exprs[0], Expression::TableConstructor(_)) {
+                    if let Expression::TableConstructor(tc) = &exprs[0] {
                         local_tables.insert(names[0].clone());
+                        local_table_ctors.insert(names[0].clone(), *tc);
                     }
                     if matches!(&exprs[0], Expression::Function(_)) {
                         local_functions.insert(names[0].clone());
@@ -1462,7 +1561,9 @@ pub fn scan_file_globals_with_synth(
             && let Some(name) = func.name() {
                 let decl_offset: u32 = func.syntax().text_range().start().into();
                 first_local_offset.entry(name.clone()).or_insert(decl_offset);
-                local_vars.insert(name.clone());
+                if !local_vars.insert(name.clone()) {
+                    rebound_locals.insert(name.clone());
+                }
                 local_functions.insert(name);
             }
         // A guessed local assigned again holds another value than its initializer's.
@@ -1474,6 +1575,7 @@ pub fn scan_file_globals_with_synth(
                     && let [name] = ident.names().as_slice()
                 {
                     guess_call_offsets.remove(name);
+                    rebound_locals.insert(name.clone());
                 }
             }
         }
@@ -1498,6 +1600,11 @@ pub fn scan_file_globals_with_synth(
                 }
             }
     }
+
+    // A `@class`/`@type` local's export crosses files as its type instead.
+    local_table_ctors.retain(|name, _| {
+        !rebound_locals.contains(name) && !class_vars.contains_key(name) && !local_type_annotations.contains_key(name)
+    });
 
     let field_aliases = collect_field_aliases(
         &all_stmts, &root, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
@@ -1683,6 +1790,7 @@ pub fn scan_file_globals_with_synth(
         local_function_sigs: &local_function_sigs,
         local_tables: &local_tables,
         local_table_field_kinds: &local_table_field_kinds,
+        local_table_ctors: &local_table_ctors,
     };
     let ctor_entries = CtorEntryScan {
         locals: &local_values,
@@ -1838,6 +1946,9 @@ pub fn scan_file_globals_with_synth(
                             } else { match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None, Vec::new()),
                                 // (`Expression::Function` is handled by the early branch above.)
+                                Expression::Identifier(_) if named_value(&effective).is_none() => {
+                                    (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new())
+                                }
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
                                     // Canonicalize the root of a field reference (e.g. Enum.BagIndex.Backpack)
@@ -1912,11 +2023,9 @@ pub fn scan_file_globals_with_synth(
                                 }
                                 _ => None,
                             };
-                            let (ctor_fields, ctor_elements) = match &effective {
-                                Expression::TableConstructor(tc) => {
-                                    (extract_ctor_fields(tc, &callee_scope), has_ctor_elements(tc))
-                                }
-                                _ => (Vec::new(), false),
+                            let ctor_fields = match &effective {
+                                Expression::TableConstructor(tc) => extract_ctor_fields(tc, &callee_scope),
+                                _ => Vec::new(),
                             };
                             // Name-token range for precise navigation. Uses the LAST
                             // Name token so a redirected `_G.X = ...` points at the
@@ -1964,7 +2073,6 @@ pub fn scan_file_globals_with_synth(
                                 deferred_call_type: false,
                                 assigned_call_offset,
                                 ctor_fields,
-                                ctor_elements,
                                 declares_class,
                                 ctor_method: false,
                                 name_start: ns, name_end: ne,
@@ -2021,6 +2129,7 @@ pub fn scan_file_globals_with_synth(
                             // Unwrap `and`/`or` chains so `ns.B = X and X.Y`
                             // infers from the effective operand (Y), not the whole chain.
                             let effective = unwrap_logical_chain(exprs[0]);
+                            let assigned_ident = named_value(&effective);
                             let value_kind = if let Some(vk) = classify_literal_value_kind(&effective) {
                                 vk
                             } else { match &effective {
@@ -2045,7 +2154,8 @@ pub fn scan_file_globals_with_synth(
                                         arg_refs: file_names.arg_refs(call),
                                     }
                                 }
-                                Expression::Identifier(ident) => local_values.kind(ident.names()),
+                                Expression::Identifier(_) => assigned_ident
+                                    .map_or(FieldValueKind::Unknown, |ident| local_values.kind(ident.names())),
                                 Expression::BinaryExpression(bin) => {
                                     match bin.kind() {
                                         Operator::Concatenate => FieldValueKind::String(None),
@@ -2071,7 +2181,7 @@ pub fn scan_file_globals_with_synth(
                             } else if let Expression::TableConstructor(tc) = &effective {
                                 extract_table_literal_annotation(tc)
                                     .map_or_else(Vec::new, |tl| vec![tl])
-                            } else if let Expression::Identifier(ident) = &effective {
+                            } else if let Some(ident) = assigned_ident {
                                 match ident.names().as_slice() {
                                     [name] => local_values.declared_type(name).into_iter().collect(),
                                     _ => Vec::new(),
@@ -2098,7 +2208,7 @@ pub fn scan_file_globals_with_synth(
                             // signature (params/returns/etc.) is preserved cross-file,
                             // matching `function ns.field(...)`. Otherwise the field would
                             // degrade to a bare `function` type.
-                            if let Expression::Identifier(rhs_ident) = &effective {
+                            if let Some(rhs_ident) = assigned_ident {
                                 let rhs_names = rhs_ident.names();
                                 if rhs_names.len() == 1
                                     && let Some(base) = local_function_sigs.get(&rhs_names[0]) {
@@ -2138,16 +2248,21 @@ pub fn scan_file_globals_with_synth(
                             // A constructor's entries belong to the table it builds: the
                             // field's own (an anonymous one, whose type the constructor
                             // is), or the class a `---@class` makes it. Emitted after the
-                            // field's write, whose coarse entries they replace. Not under a
-                            // plain local table, whose methods only an export carries.
+                            // field's write, whose coarse entries they replace. An exported
+                            // local table's (`ns.M = M`) are the field's too, all of them:
+                            // its shape carries no declared entry. Not under a plain local
+                            // table, whose methods only an export carries.
                             let local_table_root = local_tables.contains(root_name) && !is_addon_root
                                 && !class_vars.contains_key(root_name) && !local_type_vars.contains_key(root_name);
-                            let ctor_owner = match &effective {
-                                Expression::TableConstructor(tc) if annotations.var_type.is_none() && !local_table_root => {
-                                    Some((tc, annotations.class.clone(), canonical_name.clone()))
-                                }
-                                _ => None,
+                            let ctor = match effective {
+                                _ if annotations.var_type.is_some() || local_table_root => None,
+                                Expression::TableConstructor(tc) => Some((tc, CtorEntries::References)),
+                                _ => match assigned_ident.map(|ident| ident.names()).as_deref() {
+                                    Some([local]) => local_table_ctors.get(local).map(|&tc| (tc, CtorEntries::All)),
+                                    _ => None,
+                                },
                             };
+                            let ctor_owner = ctor.map(|(tc, entries)| (tc, entries, annotations.class.clone(), canonical_name.clone()));
                             let range = assign.syntax().text_range();
                             // An explicit inline `@private`/`@protected` on the field
                             // assignment wins; otherwise fall back to the name convention.
@@ -2181,7 +2296,6 @@ pub fn scan_file_globals_with_synth(
                                 deferred_call_type: false,
                                 assigned_call_offset,
                                 ctor_fields: Vec::new(),
-                                ctor_elements: false,
                                 declares_class: false,
                                 ctor_method: false,
                                 name_start: u32::from(range.start()),
@@ -2192,15 +2306,15 @@ pub fn scan_file_globals_with_synth(
                                 secret: None,
                             });
                             match ctor_owner {
-                                Some((tc, Some(class_name), _)) => ctor_entries.push(&mut globals, CtorEntries::Methods, &class_name, &[], tc),
-                                Some((tc, None, owner)) => ctor_entries.push(&mut globals, CtorEntries::References, &owner, &names[1..], tc),
+                                Some((tc, _, Some(class_name), _)) => ctor_entries.push(&mut globals, CtorEntries::Methods, &class_name, &[], &tc),
+                                Some((tc, entries, None, owner)) => ctor_entries.push(&mut globals, entries, &owner, &names[1..], &tc),
                                 None => {}
                             }
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.
                             if is_addon_root && names.len() == 2 {
                                 addon_assigned_fields.insert(field_name.clone());
-                                if let Expression::Identifier(rhs_ident) = &effective {
+                                if let Some(rhs_ident) = assigned_ident {
                                     let rhs_names = rhs_ident.names();
                                     if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
                                         local_table_to_addon_field.insert(rhs_names[0].clone(), field_name.clone());
@@ -2374,7 +2488,6 @@ pub fn scan_file_globals_with_synth(
                     deferred_call_type: false,
                     assigned_call_offset: None,
                     ctor_fields: Vec::new(),
-                    ctor_elements: false,
                     declares_class: false,
                     ctor_method: false,
                     name_start: ns,
@@ -2541,7 +2654,6 @@ pub fn scan_file_globals_with_synth(
                 deferred_call_type: false,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
-                ctor_elements: false,
                 declares_class: false,
                 ctor_method: false,
                 name_start: ns,
@@ -2821,7 +2933,6 @@ pub fn scan_created_globals(
                 deferred_call_type: true,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
-                ctor_elements: false,
                 declares_class: false,
                 ctor_method: false,
                 name_start: u32::from(range.start()),
@@ -2907,12 +3018,16 @@ pub(crate) fn extract_created_global(call: &FunctionCall<'_>, specs: &CreatesGlo
 /// Extract named fields from a table constructor as a `TableLiteral` annotation.
 /// Returns `None` if the table has no named fields.  Used by the global scanner
 /// and bare self-field scanner to preserve table shape across files.
-/// Positional and bracket-keyed entries are intentionally skipped — only
-/// `Name = expr` fields map to `TableLiteral` field entries.
+/// Positional entries and any `[key]` other than a string literal are skipped:
+/// only the fields [`named_ctor_entry`] names map to `TableLiteral` entries, then
+/// its [`index_entry`].
 pub fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -> Option<AnnotationType> {
     let mut fields = Vec::new();
+    // Whether each field's type is a map element: not a `nil` entry's.
+    let mut elements = Vec::new();
+    let (mut keyed, mut other) = (false, false);
     for field in tc.fields() {
-        if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
+        if let Some((name, value, _)) = named_ctor_entry(&field) {
             // Check for per-field ---@type annotation first (preceding-line or trailing)
             let field_type = if let Some(at) = constructor_entry_type(field.syntax(), &value) {
                 at
@@ -2941,10 +3056,30 @@ pub fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -
                     _ => AnnotationType::Simple("any".into()),
                 }
             };
+            keyed |= field.kind().is_none();
+            elements.push(!matches!(&value, Expression::Literal(lit) if lit.is_nil()));
             fields.push((name, field_type));
+        } else {
+            other = true;
         }
     }
-    if fields.is_empty() { None } else { Some(AnnotationType::TableLiteral(fields)) }
+    if fields.is_empty() {
+        return None;
+    }
+    fn join(a: AnnotationType, b: AnnotationType) -> AnnotationType {
+        match (a, b) {
+            (AnnotationType::TableLiteral(a), AnnotationType::TableLiteral(b)) => {
+                join_fields(a, b, join).map_or_else(|| AnnotationType::Simple("any".into()), AnnotationType::TableLiteral)
+            }
+            (a, b) if a == b => a,
+            _ => AnnotationType::Simple("any".into()),
+        }
+    }
+    let element_types = fields.iter().zip(&elements).filter(|(_, element)| **element).map(|((_, t), _)| t.clone());
+    if let Some((name, element)) = index_entry(other, keyed, element_types, AnnotationType::Simple("any".into()), join) {
+        fields.push((name.to_string(), element));
+    }
+    Some(AnnotationType::TableLiteral(fields))
 }
 
 #[cfg(test)]

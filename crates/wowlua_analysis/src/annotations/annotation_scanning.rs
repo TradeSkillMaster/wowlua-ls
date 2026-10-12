@@ -72,6 +72,33 @@ pub fn collect_statements_recursive<'a>(block: &Block<'a>, out: &mut Vec<Stateme
 
 pub const ADDON_NS_NAME: &str = "__addon_ns__";
 
+/// The entry a scanned table constructor's shape (a `FieldValueKind::Table`, or a
+/// `TableLiteral`) carries the element type of its `["k"] = v` entries under: a
+/// constructor keyed that way is a map as well, as `@field [string] V` declares a
+/// class to be, so the table it builds maps strings to that type instead of
+/// holding a field of this name.
+pub const STRING_INDEX_ENTRY: &str = "[string]";
+
+/// The entry a scanned table constructor's shape carries when the constructor has
+/// entries no shape carries — positional ones, or a `[key]` other than a string
+/// literal — beside its named ones: a dynamic index may read either, so the table
+/// it builds has values of this entry's type (`any`) under keys of any type.
+pub const ANY_INDEX_ENTRY: &str = "[any]";
+
+/// Whether a shape's entry `name` is one of its index entries rather than a field.
+pub fn is_index_entry(name: &str) -> bool {
+    name == STRING_INDEX_ENTRY || name == ANY_INDEX_ENTRY
+}
+
+/// Type the dynamic reads of `table`, a scanned constructor's, from its shape's
+/// index entry `name` ([`is_index_entry`]) of type `vt`.
+pub fn apply_index_entry(table: &mut crate::types::TableInfo, name: &str, vt: ValueType) {
+    if name == STRING_INDEX_ENTRY {
+        table.key_type = Some(ValueType::String(None));
+    }
+    table.value_type = Some(vt);
+}
+
 /// Build a dotted path string for a method/function global.
 /// Returns the fully qualified dotted name: `root.int1.int2.method` for methods
 /// or just `root` for top-level functions. Returns None for non-method/function
@@ -433,10 +460,6 @@ pub struct ExternalGlobal {
     /// BLOB_VERSION bump.
     #[serde(skip)]
     pub ctor_fields: Vec<CtorField>,
-    /// That constructor also has entries `ctor_fields` doesn't carry: positional
-    /// ones or `[key]`s other than a string literal. Runtime only — `#[serde(skip)]`.
-    #[serde(skip)]
-    pub ctor_elements: bool,
     /// `returns` is the class this global *is* — a `---@class Foo` on its own
     /// assignment (`Bar = {}`) — rather than a `---@type` for its value. Runtime
     /// only — `#[serde(skip)]`, no BLOB_VERSION bump.
@@ -521,7 +544,6 @@ impl ExternalGlobal {
             deferred_call_type: false,
             assigned_call_offset: None,
             ctor_fields: Vec::new(),
-            ctor_elements: false,
             declares_class: false,
             ctor_method: false,
             name_start: 0,
@@ -1130,7 +1152,6 @@ pub fn scan_method_funcall_self_fields(
                 deferred_call_type: false,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
-                ctor_elements: false,
                 declares_class: false,
                 ctor_method: false,
                 name_start: range.0,

@@ -13,10 +13,13 @@ PanelConstants = {
 -- A typed write replaces a constructor entry.
 PanelConstants.Pending = "ready"
 
--- A string key names an entry too; other keys aren't scanned, so a dynamic index
--- into a constructor that has them stays untyped.
+-- A string key names an entry too, and makes the table a map of its named entries
+-- (mixed here, so `any`); other keys aren't scanned, so a dynamic index into a
+-- constructor that has them stays untyped.
 PanelKeys = { ["Mode"] = 1, Label = "x" }
 PanelFactions = { [0] = "Horde", [1] = "Alliance", Horde = 0, Alliance = 1 }
+-- With no named entry, nothing is scanned: a plain table.
+PanelOrder = { "first", "second" }
 
 ---@class PanelFormatter
 PanelFormatter = {}
