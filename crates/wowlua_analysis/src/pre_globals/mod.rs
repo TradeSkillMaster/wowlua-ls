@@ -170,7 +170,7 @@ fn substitute_annotation_type_inner(
 /// or any serialized type changes shape — or when serialized data changes
 /// meaning, like a new flavor bit in the `flavors` masks.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 42;
+pub const BLOB_VERSION: u32 = 43;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -568,6 +568,7 @@ struct NestedCtorCall {
     table: usize,
     field: String,
     callee: Vec<String>,
+    arg_refs: crate::annotations::CallArgRefs,
     /// The placeholder `expr` the entry was populated with.
     placeholder: ExprId,
 }
@@ -601,7 +602,7 @@ fn call_field_writes(globals: &[crate::annotations::ExternalGlobal]) -> HashSet<
     use crate::annotations::{ExternalGlobalKind, FieldValueKind};
     globals.iter()
         .filter_map(|g| match &g.kind {
-            ExternalGlobalKind::TableField(path, field, FieldValueKind::FunctionCall(..)) if path.is_empty() => {
+            ExternalGlobalKind::TableField(path, field, FieldValueKind::FunctionCall { .. }) if path.is_empty() => {
                 Some((g.name.as_str(), field.as_str()))
             }
             _ => None,
@@ -727,7 +728,7 @@ fn populate_table_fields(
                 ValueType::Table(Some(sub_idx))
             }
             // Create field with Any type so it exists for field-chain resolution
-            FieldValueKind::Unknown | FieldValueKind::MaybeCallable | FieldValueKind::FunctionCall(..) | FieldValueKind::FieldRef(_) => ValueType::Any,
+            FieldValueKind::Unknown | FieldValueKind::MaybeCallable | FieldValueKind::FunctionCall { .. } | FieldValueKind::FieldRef(_) => ValueType::Any,
         };
         let expr_idx = ExprId(EXT_BASE + exprs.len());
         exprs.push(Expr::Literal(vt.clone()));
@@ -737,11 +738,12 @@ fn populate_table_fields(
         if let Some(val) = str_val {
             string_literals.insert(expr_idx, val);
         }
-        if let FieldValueKind::FunctionCall(callee, _, _) = kind {
+        if let FieldValueKind::FunctionCall { callee, arg_refs, .. } = kind {
             nested_calls.push(NestedCtorCall {
                 table: table_local_idx,
                 field: name.clone(),
                 callee: callee.clone(),
+                arg_refs: arg_refs.clone(),
                 placeholder: expr_idx,
             });
         }
@@ -1672,6 +1674,15 @@ fn resolve_funcall_chain(
     chain: &[String],
     ctx: &GlobalLookupCtx,
 ) -> Option<ValueType> {
+    let func_idx = resolve_funcall_function(chain, ctx)?;
+    ctx.functions[func_idx.ext_offset()].return_annotations.first().cloned()
+}
+
+/// The function a callee chain (see [`resolve_funcall_chain`]) names.
+fn resolve_funcall_function(
+    chain: &[String],
+    ctx: &GlobalLookupCtx,
+) -> Option<FunctionIndex> {
     if chain.is_empty() { return None; }
 
     // Single-name chain: global function call like CreateFrame()
@@ -1681,7 +1692,7 @@ fn resolve_funcall_chain(
         let sym = &ctx.symbols[sym_idx.ext_offset()];
         let vt = sym.versions.last()?.resolved_type.as_ref()?;
         if let ValueType::Function(Some(func_idx)) = vt {
-            return ctx.functions[func_idx.ext_offset()].return_annotations.first().cloned();
+            return Some(*func_idx);
         }
         return None;
     }
@@ -1711,11 +1722,104 @@ fn resolve_funcall_chain(
     let func_name = &chain[chain.len()-1];
     let local_idx = current_table.ext_offset();
     let field = lookup_field_with_parents(ctx.tables, local_idx, func_name)?;
-    let expr = &ctx.exprs[field.expr.ext_offset()];
-    if let Expr::FunctionDef(func_idx) = expr {
-        ctx.functions[func_idx.ext_offset()].return_annotations.first().cloned()
-    } else {
-        None
+    match ctx.exprs[field.expr.ext_offset()] {
+        Expr::FunctionDef(func_idx) => Some(func_idx),
+        _ => None,
+    }
+}
+
+/// [`bind_call_return`] for a call of `callee` with the arguments `arg_refs`
+/// names, each resolved by `name_type`. One resolving to an anonymous table binds
+/// nothing: a field typed by it would alias that table, so a write through the
+/// field would land on the argument.
+fn bound_call_return(
+    callee: &[String],
+    arg_refs: &crate::annotations::CallArgRefs,
+    ctx: &GlobalLookupCtx,
+    name_type: impl Fn(&[String]) -> Option<ValueType>,
+) -> Option<ValueType> {
+    if arg_refs.is_empty() {
+        return None;
+    }
+    let func_idx = resolve_funcall_function(callee, ctx)?;
+    let anonymous = |t: &ValueType| matches!(t, ValueType::Table(Some(idx)) if ctx.tables[idx.ext_offset()].class_name.is_none());
+    let arg_types: Vec<Option<ValueType>> = arg_refs.iter()
+        .map(|names| names.as_deref().and_then(&name_type).filter(|vt| match vt {
+            ValueType::Intersection(members) | ValueType::Union(members) => !members.iter().any(anonymous),
+            other => !anonymous(other),
+        }))
+        .collect();
+    bind_call_return(func_idx, &arg_types, ctx)
+}
+
+/// The return type of a call to `func_idx` with its generics bound from
+/// `arg_types`, the types of its arguments in parameter order (the receiver first
+/// for a method call), as the per-file engine binds them: a parameter typed by a
+/// generic binds it, and the arguments past the positional parameters bind a
+/// variadic one (`CreateFromMixins(M)`'s `& ...M` is `M`) — here only when all of
+/// them are known, since an intersection missing one would lack its members.
+/// `None` unless the return uses a generic and all it uses are bound, so a
+/// partially bound return never stands in for the call.
+fn bind_call_return(func_idx: FunctionIndex, arg_types: &[Option<ValueType>], ctx: &GlobalLookupCtx) -> Option<ValueType> {
+    let func = &ctx.functions[func_idx.ext_offset()];
+    let ret = func.return_annotations.first().filter(|ret| ret.contains_type_variable())?;
+    let is_generic = |name: &str| func.generics.iter().any(|(n, _)| n == name);
+    let mut subs: HashMap<&str, ValueType> = HashMap::default();
+    for (i, &param) in func.args.iter().enumerate() {
+        let Some(Some(arg)) = arg_types.get(i) else { continue };
+        // A backtick parameter takes a class name, not a value of the class.
+        if func.param_annotations.get(i).is_some_and(crate::annotations::annotation_contains_backtick) {
+            continue;
+        }
+        let bound = match ctx.symbols[param.ext_offset()].versions.first().and_then(|v| v.resolved_type.as_ref()) {
+            Some(ValueType::TypeVariable(name)) => Some((name, arg.clone())),
+            // An optional parameter, `T?`.
+            Some(ValueType::Union(members)) => members.iter().find_map(|m| match m {
+                ValueType::TypeVariable(name) => Some((name, arg.strip_nil())),
+                _ => None,
+            }),
+            _ => None,
+        };
+        if let Some((name, ty)) = bound.filter(|(name, _)| is_generic(name)) {
+            subs.entry(name.as_str()).or_insert(ty);
+        }
+    }
+    if func.is_vararg
+        && let Some((variadic, _)) = func.generics.iter().find(|(n, _)| n.starts_with("..."))
+        && let Some(mut rest) = arg_types.get(func.args.len()..).and_then(|rest| rest.iter().cloned().collect::<Option<Vec<_>>>())
+        && !rest.is_empty()
+    {
+        let bound = if rest.len() == 1 { rest.remove(0) } else { ValueType::Intersection(rest) };
+        subs.insert(variadic.as_str(), bound);
+    }
+    let bound = substitute_type_vars(ret, &subs);
+    (!bound.contains_type_variable()).then_some(bound)
+}
+
+/// `vt` with each type variable `subs` binds replaced, nested intersections
+/// flattened.
+fn substitute_type_vars(vt: &ValueType, subs: &HashMap<&str, ValueType>) -> ValueType {
+    match vt {
+        ValueType::TypeVariable(name) => subs.get(name.as_str()).cloned().unwrap_or_else(|| vt.clone()),
+        ValueType::Union(members) => {
+            ValueType::make_union(members.iter().map(|m| substitute_type_vars(m, subs)).collect())
+        }
+        ValueType::Intersection(members) => {
+            let mut flat: Vec<ValueType> = Vec::new();
+            for m in members {
+                let inner = match substitute_type_vars(m, subs) {
+                    ValueType::Intersection(inner) => inner,
+                    other => vec![other],
+                };
+                for t in inner {
+                    if !flat.contains(&t) {
+                        flat.push(t);
+                    }
+                }
+            }
+            if flat.len() == 1 { flat.remove(0) } else { ValueType::Intersection(flat) }
+        }
+        _ => vt.clone(),
     }
 }
 
@@ -1984,16 +2088,39 @@ impl BuildContext {
         }
     }
 
-    /// The type of the call a field is assigned (`X.f = Call()`): the callee's
-    /// return, else the class its first string argument or the field names.
-    fn call_return_type(&self, callee_chain: &[String], first_string_arg: Option<&str>, field_name: &str) -> Option<ValueType> {
-        // Filter out TypeVariable — unresolved generics are not useful as field types
-        resolve_funcall_chain(callee_chain, &self.global_lookup_ctx())
-            .filter(|vt| !vt.contains_type_variable())
+    /// The type of the call a field is assigned (`X.f = Call(args)`): the callee's
+    /// return, its generics bound from `args`, else the class its first string
+    /// argument or the field names.
+    fn call_return_type(
+        &self,
+        callee_chain: &[String],
+        first_string_arg: Option<&str>,
+        arg_refs: &crate::annotations::CallArgRefs,
+        field_name: &str,
+    ) -> Option<ValueType> {
+        self.call_type(callee_chain, arg_refs)
             // A string literal argument naming a known class (e.g.
             // `EnumType.New("BANKING_FRAME", ...)` creates class BANKING_FRAME).
             .or_else(|| first_string_arg.and_then(|name| self.classes.get(name)).map(|&idx| ValueType::Table(Some(idx))))
             .or_else(|| self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx))))
+    }
+
+    /// The type of a call of `callee` with the arguments `arg_refs` names: its
+    /// return with its generics bound from them, else its declared return.
+    fn call_type(&self, callee: &[String], arg_refs: &crate::annotations::CallArgRefs) -> Option<ValueType> {
+        let ctx = self.global_lookup_ctx();
+        bound_call_return(callee, arg_refs, &ctx, |names| self.name_ref_type(names))
+            // Filter out TypeVariable — unresolved generics are not useful as field types
+            .or_else(|| resolve_funcall_chain(callee, &ctx).filter(|vt| !vt.contains_type_variable()))
+    }
+
+    /// The type of the global or field path `names` (a call argument), or the
+    /// class a lone name is — a `@class` local's, renamed by the scan.
+    fn name_ref_type(&self, names: &[String]) -> Option<ValueType> {
+        resolve_field_ref_chain(names, &self.global_lookup_ctx()).or_else(|| match names {
+            [name] => self.classes.get(name).map(|&idx| ValueType::Table(Some(idx))),
+            _ => None,
+        })
     }
 
     /// Type the call-valued constructor entries logged during the build from the
@@ -2004,11 +2131,7 @@ impl BuildContext {
             if !call.is_pending(&self.tables) {
                 continue;
             }
-            let Some(vt) = resolve_funcall_chain(&call.callee, &self.global_lookup_ctx())
-                .filter(|vt| !vt.contains_type_variable())
-            else {
-                continue;
-            };
+            let Some(vt) = self.call_type(&call.callee, &call.arg_refs) else { continue };
             call.resolve_to(vt, &mut self.tables, &mut self.exprs);
         }
     }
@@ -2113,7 +2236,7 @@ impl BuildContext {
             // (e.g. `BaseFrame = DefineClass("BaseFrame", Container)`) — treat as a
             // class global so the class registration path sets the correct Table type
             // instead of Variable with resolved_type None.
-            if let ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(..)) = &g.kind
+            if let ExternalGlobalKind::Variable(FieldValueKind::FunctionCall { .. }) = &g.kind
                 && self.classes.contains_key(&g.name) {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
@@ -2439,7 +2562,7 @@ impl BuildContext {
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
-                        FieldValueKind::FunctionCall(..) => None, // deferred below
+                        FieldValueKind::FunctionCall { .. } => None, // deferred below
                         FieldValueKind::FieldRef(_) => None, // deferred below
                         // Both handled in the second pass (gated out above when returns is empty).
                         FieldValueKind::Unknown | FieldValueKind::MaybeCallable => unreachable!(),
@@ -2747,7 +2870,7 @@ impl BuildContext {
         //      `DEFAULT_CHAT_FRAME = ChatFrame1` → look up ChatFrame1's type (Frame).
         for g in globals {
             let resolved_type = match &g.kind {
-                ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee, _, _)) => {
+                ExternalGlobalKind::Variable(FieldValueKind::FunctionCall { callee, .. }) => {
                     resolve_funcall_chain(callee, &self.global_lookup_ctx())
                 }
                 ExternalGlobalKind::Variable(FieldValueKind::FieldRef(names)) => {
@@ -2778,7 +2901,7 @@ impl BuildContext {
 
         // Deferred: resolve FunctionCall table fields now that all functions/tables are built
         for g in globals {
-            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg, _)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall { callee: callee_chain, first_string_arg, arg_refs, .. }) = &g.kind {
                 if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
@@ -2789,7 +2912,7 @@ impl BuildContext {
                 // The call's object holds the methods defined through the field.
                 if let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name) {
                     let call_type = if g.returns.is_empty() {
-                        self.call_return_type(callee_chain, first_string_arg.as_deref(), field_name)
+                        self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name)
                     } else {
                         self.resolve_annotation(&g.returns[0])
                     };
@@ -2815,7 +2938,7 @@ impl BuildContext {
                     continue;
                 }
 
-                let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), field_name);
+                let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name);
                 // A call the scan can't type leaves a constructor entry in place.
                 if resolved.is_none() && is_ctor_entry {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -5183,7 +5306,9 @@ function Plain:IsShown() end
             name, ExternalGlobalKind::Variable(FieldValueKind::FieldRef(vec![target.to_string()])),
         );
         let mut call = ExternalGlobal::for_test(
-            "A4", ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(vec!["MakeThing".to_string()], None, Vec::new())),
+            "A4", ExternalGlobalKind::Variable(FieldValueKind::FunctionCall {
+                callee: vec!["MakeThing".to_string()], first_string_arg: None, literal_args: Vec::new(), arg_refs: Vec::new(),
+            }),
         );
         call.source_path = Some(PathBuf::from("defs.lua"));
         call.assigned_call_offset = Some(40);

@@ -79,3 +79,37 @@ end
 function PanelMixin.StyledFormatter:IsStyled()
     return true
 end
+
+-- A generic call binds the generics of its callee from the arguments that name
+-- a global or a field path: `CreateFromMixins(M)` is an `M`.
+---@generic ...M
+---@param ... ...M
+---@return & ...M
+function CreatePanelFromMixins(...) end
+
+PanelMixin.CountFormatter = CreatePanelFromMixins(PanelFormatter)
+
+---@return number
+function PanelMixin.CountFormatter:GetUnitCount()
+    return 1
+end
+
+PanelUtil.CountFormatter = CreatePanelFromMixins(PanelFormatter)
+
+-- So does a constructor entry's call.
+PanelPresets = { Formatter = CreatePanelFromMixins(PanelFormatter) }
+
+-- An argument naming a plain table binds nothing: the field would be that table.
+PanelUtil.Copy = CreatePanelFromMixins(PanelConstants)
+
+-- A method call's arguments follow its receiver.
+PanelFactory = {}
+
+---@generic T
+---@param proto T
+---@return T
+function PanelFactory:Clone(proto)
+    return proto
+end
+
+PanelUtil.ClonedFormatter = PanelFactory:Clone(PanelFormatter)

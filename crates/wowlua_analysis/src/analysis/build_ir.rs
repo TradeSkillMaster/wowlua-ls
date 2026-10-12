@@ -1152,7 +1152,8 @@ impl<'a> Analysis<'a> {
                 if let Some(mut table_idx) = self.ir.find_method_receiver_table(root_name, scope_idx) {
                     let mut resolved = true;
                     let mut accessor_visibility: Option<Visibility> = None;
-                    for intermediate in &names[1..names.len()-1] {
+                    let intermediates = &names[1..names.len() - 1];
+                    for (i, intermediate) in intermediates.iter().enumerate() {
                         // Check for transparent @accessor on the current table
                         if let Some(vis) = self.ir.get_accessor(table_idx, intermediate.as_str()) {
                             accessor_visibility = Some(vis);
@@ -1160,8 +1161,17 @@ impl<'a> Analysis<'a> {
                         }
                         if let Some(field) = self.ir.get_field(table_idx, intermediate) {
                             let field_expr = field.expr;
+                            let last_write = field.extra_exprs.last().copied().unwrap_or(field_expr);
+                            let annotated = field.annotation.is_some();
                             if let Some(sub_idx) = self.ir.find_table_index(field_expr) {
                                 table_idx = sub_idx;
+                            } else if i + 1 == intermediates.len()
+                                && !annotated
+                                && !last_write.is_external()
+                                && let Some(object) = self.ir.call_object_table(last_write)
+                            {
+                                // `R.f = Call()`: the method belongs to the call's object.
+                                table_idx = object;
                             } else {
                                 resolved = false;
                                 break;

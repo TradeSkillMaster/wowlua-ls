@@ -17,3 +17,6 @@ G_REPLACED = { A = MakeThing() }
 
 -- A global table's own constructor entries, top-level and nested.
 G_ENTRIES = { A = MakeThing(), sub = { B = MakeThing() } }
+
+-- A generic callee's generics are bound from the arguments the scan names.
+NS.COPIES = { A = CopyOf(Factory) }

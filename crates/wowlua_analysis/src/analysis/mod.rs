@@ -722,6 +722,10 @@ pub struct Ir {
     /// Writes to a field of a table field (`self.header.cells = ...`), read by
     /// the cross-file `@class` field harvest. See `SubFieldWrite`.
     pub sub_field_writes: Vec<SubFieldWrite>,
+    /// The table holding the methods defined through a field a call is assigned
+    /// (`R.f = Call()` + `function R.f:m()`), by that call. See
+    /// [`Self::call_object_table`].
+    pub call_objects: HashMap<ExprId, TableIndex>,
     pub call_resolutions: HashMap<ExprId, CallResolution>,
     pub and_guarded_call_exprs: HashSet<ExprId>,
     /// Every expression evaluated only under a short-circuit `and` chain's
@@ -2018,6 +2022,66 @@ impl Ir {
         let t = self.table(*idx);
         let &class = t.parent_classes.first()?;
         (t.class_name.is_some() && self.table(class).class_name == t.class_name).then_some(ValueType::Table(Some(class)))
+    }
+
+    /// The table to hold the methods defined through a field whose value `expr` is
+    /// the result of a call (`R.f = Call()` + `function R.f:m()`), created on first
+    /// use: the methods belong to the object that call returns, which the call
+    /// then resolves to ([`Self::call_object_type`]).
+    pub(super) fn call_object_table(&mut self, expr: ExprId) -> Option<TableIndex> {
+        let mut call = expr;
+        for _ in 0..8 {
+            match self.expr(call) {
+                Expr::FunctionCall { .. } => {
+                    let next = TableIndex(self.tables.len());
+                    let object = *self.call_objects.entry(call).or_insert(next);
+                    if object == next {
+                        self.tables.push(TableInfo::default());
+                    }
+                    return Some(object);
+                }
+                Expr::Grouped(inner) => call = *inner,
+                Expr::SymbolRef(sym_idx, ver_idx) if !sym_idx.is_external() => {
+                    call = self.sym(*sym_idx).versions[*ver_idx].type_source?;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// `ty`, the type of a call whose object holds methods (`object`, see
+    /// [`Self::call_object_table`]), as that object: a class it is an instance of
+    /// replaced by `object` made an instance of that class — as the workspace
+    /// build keeps a field's methods (`keep_call_field_methods`) — or, without a
+    /// class, `object` added. A call that may return nil still may.
+    pub(super) fn call_object_type(&mut self, object: TableIndex, ty: &ValueType) -> ValueType {
+        let mut members = match ty.strip_nil() {
+            ValueType::Intersection(members) => members,
+            table @ ValueType::Table(_) => vec![table],
+            _ => return ty.clone(),
+        };
+        let class = members.iter().enumerate().find_map(|(i, m)| match m {
+            ValueType::Table(Some(idx)) if *idx != object && self.table(*idx).class_name.is_some() => Some((i, *idx)),
+            _ => None,
+        });
+        if let Some((i, class_idx)) = class {
+            if self.tables[object.val()].class_name.is_none() {
+                let class = self.table(class_idx);
+                let class_name = class.class_name.clone();
+                let mut parents = vec![class_idx];
+                parents.extend(class.parent_classes.iter().copied().filter(|&p| p != class_idx));
+                let t = &mut self.tables[object.val()];
+                t.class_name = class_name;
+                t.parent_classes = parents;
+                t.metatable_index = Some(class_idx);
+            }
+            members[i] = ValueType::Table(Some(object));
+        } else if !members.contains(&ValueType::Table(Some(object))) {
+            members.push(ValueType::Table(Some(object)));
+        }
+        let object_ty = if members.len() == 1 { members.remove(0) } else { ValueType::Intersection(members) };
+        if ty.contains_nil() { ValueType::make_union(vec![object_ty, ValueType::Nil]) } else { object_ty }
     }
 
     pub fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
@@ -3392,6 +3456,7 @@ impl<'a> Analysis<'a> {
                 g_table_idx,
                 field_assignments: Vec::new(),
                 sub_field_writes: Vec::new(),
+                call_objects: HashMap::default(),
                 call_resolutions: HashMap::default(),
                 and_guarded_call_exprs: HashSet::default(),
                 and_guarded_flavor_exprs: HashMap::default(),

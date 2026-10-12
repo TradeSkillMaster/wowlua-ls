@@ -3749,8 +3749,12 @@ impl<'a> Analysis<'a> {
         let expr = self.expr(expr_id).clone();
         match &expr {
             Expr::FunctionCall { func, args, arg_ranges, ret_index, discarded: _, is_method_call, .. } => {
-                self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, super::resolve_call::CallSiteInfo {
+                let ty = self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, super::resolve_call::CallSiteInfo {
                     is_method_call: *is_method_call,
+                })?;
+                Some(match self.ir.call_objects.get(&expr_id) {
+                    Some(&object) => self.ir.call_object_type(object, &ty),
+                    None => ty,
                 })
             }
 

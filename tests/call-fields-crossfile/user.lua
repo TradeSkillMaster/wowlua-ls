@@ -32,3 +32,9 @@ local mixed = ns.Mixed
 --    ^ hover: (local) mixed: Frame {
 local same = ns.Same
 --    ^ hover: (local) same: Frame & CallFieldRowTemplate
+local widgetFormatted = CallFieldWidgets.Formatter:Format()
+--    ^ hover: (local) widgetFormatted: string
+local widgetUnits = CallFieldWidgets.Formatter:GetUnits()
+--    ^ hover: (local) widgetUnits: number
+local sharedUnits = CallFieldWidgets.Shared:GetUnits()
+--    ^ hover: (local) sharedUnits: number

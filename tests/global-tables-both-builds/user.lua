@@ -43,3 +43,15 @@ local styled = PanelMixin.StyledFormatter:IsStyled()
 --    ^ hover: (local) styled: boolean
 local styledPadding = PanelMixin.StyledFormatter.padding
 --    ^ hover: (local) styledPadding: number
+local countFormatted = PanelMixin.CountFormatter:Format(5)
+--    ^ hover: (local) countFormatted: string
+local unitCount = PanelMixin.CountFormatter:GetUnitCount()
+--    ^ hover: (local) unitCount: number
+local plainCount = PanelUtil.CountFormatter
+--    ^ hover: (local) plainCount: PanelFormatter
+local cloned = PanelUtil.ClonedFormatter
+--    ^ hover: (local) cloned: PanelFormatter
+local presetFormatter = PanelPresets.Formatter
+--    ^ hover: (local) presetFormatter: PanelFormatter
+local copy = PanelUtil.Copy
+--    ^ hover: (local) copy: table

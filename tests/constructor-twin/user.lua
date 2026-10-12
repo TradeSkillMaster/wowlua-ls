@@ -35,5 +35,7 @@ local gA = G_ENTRIES.A
 --    ^ hover: (local) gA: Widget
 local gB = G_ENTRIES.sub.B
 --    ^ hover: (local) gB: Widget
+local copied = NS.COPIES.A
+--    ^ hover: (local) copied: Factory
 
-_G.useConstructorEntries = { a, b, c, e, f, readConfig, declared, declaredAbove, replaced, gReplaced, shadowed, gA, gB }
+_G.useConstructorEntries = { a, b, c, e, f, readConfig, declared, declaredAbove, replaced, gReplaced, shadowed, gA, gB, copied }

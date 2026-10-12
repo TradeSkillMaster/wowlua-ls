@@ -28,6 +28,13 @@ local Config = {}
 ---@class Factory
 Factory = {}
 
+---@generic T
+---@param proto T
+---@return T
+function CopyOf(proto)
+    return proto
+end
+
 ---@return Widget
 function Factory.Make()
     return Widget

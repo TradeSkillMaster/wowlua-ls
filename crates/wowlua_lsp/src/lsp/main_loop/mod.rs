@@ -3272,6 +3272,29 @@ mod tests {
     }
 
     #[test]
+    fn named_call_argument_edits_rebuild_where_bound() {
+        // A field's call binds its callee's generics from the arguments the scan
+        // names, so renaming one rebuilds; a global's call records none, so the
+        // same edit there doesn't.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: &str| {
+            let tree = crate::syntax::parser::parse(src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+        let _ = rebuild("MainFrame = CreateFrame(\"Frame\", nil, UIParent)\n");
+        assert!(
+            matches!(rebuild("MainFrame = CreateFrame(\"Frame\", nil, Minimap)\n"), RebuildScope::None),
+            "a global's call arguments must not trigger a rebuild",
+        );
+        let _ = rebuild("Panels = {}\nPanels.Formatter = CreateFromMixins(FormatterA)\n");
+        assert!(
+            !matches!(rebuild("Panels = {}\nPanels.Formatter = CreateFromMixins(FormatterB)\n"), RebuildScope::None),
+            "a field's named call argument must trigger a rebuild",
+        );
+    }
+
+    #[test]
     fn returns_enum_edits_trigger_rebuild() {
         // A `@returns-enum` call's argument values are the members other files see.
         let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));

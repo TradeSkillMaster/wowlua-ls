@@ -171,6 +171,12 @@ pub fn infer_type_category(expr: &Expression<'_>) -> Option<InferredTypeCategory
     }
 }
 
+/// A call's arguments in parameter order, a method call's receiver first: the
+/// name chain of the global or field path each names, renamed like the callee,
+/// or `None`. The build binds the callee's generics from them
+/// (`CreateFromMixins(M)` is an `M`). Empty when no argument is named.
+pub type CallArgRefs = Vec<Option<Vec<std::string::String>>>;
+
 /// **Serialized into the precomputed-stub blob** (via
 /// `ExternalGlobalKind::TableField` → `ExternalGlobal.kind` →
 /// `PrecomputedStubs.stub_globals`), so variants must stay **append-only**:
@@ -187,15 +193,19 @@ pub enum FieldValueKind {
     Nil,
     Table(Vec<(std::string::String, FieldValueKind)>),
     Function,
-    /// A call: the callee's name chain, its first string-literal argument (a
-    /// class-name hint for factories), and — when every argument is a string
-    /// literal — all of their values (the members an `@returns-enum` call builds;
-    /// empty otherwise).
-    FunctionCall(
-        Vec<std::string::String>,
-        Option<std::string::String>,
-        Vec<std::string::String>,
-    ),
+    /// A call.
+    FunctionCall {
+        /// The callee's name chain.
+        callee: Vec<std::string::String>,
+        /// Its first string-literal argument: a class-name hint for factories.
+        first_string_arg: Option<std::string::String>,
+        /// All its arguments' values when every one is a string literal (the
+        /// members an `@returns-enum` call builds); empty otherwise.
+        literal_args: Vec<std::string::String>,
+        /// Its arguments naming a global or a field path, where a build binds the
+        /// callee's generics from them.
+        arg_refs: CallArgRefs,
+    },
     FieldRef(Vec<std::string::String>),
     /// Existence-only field the coarse scan couldn't type — registered as `any`
     /// (the honest "unknown") so reads stay clean without fabricating a shape. NOT
@@ -1095,7 +1105,9 @@ pub fn scan_method_funcall_self_fields(
                 kind: ExternalGlobalKind::TableField(
                     Vec::new(),
                     field_name,
-                    FieldValueKind::FunctionCall(callee_names, first_string_arg, Vec::new()),
+                    FieldValueKind::FunctionCall {
+                        callee: callee_names, first_string_arg, literal_args: Vec::new(), arg_refs: Vec::new(),
+                    },
                 ),
                 params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
                 overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false,

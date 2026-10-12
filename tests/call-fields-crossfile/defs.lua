@@ -51,6 +51,33 @@ ns.Mixed = CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")
 ns.Mixed = UIParent
 ns.Same = CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")
 
+-- Methods defined through a field written a call belong to the object the call
+-- returns, which keeps its members, here as in the other files: on a table of
+-- this file or a local one, and through a local the call initializes.
+---@class CallFieldFormatter
+CallFieldFormatter = {}
+---@return string
+function CallFieldFormatter:Format() return "" end
+
+CallFieldWidgets.Formatter = CreateFromMixins(CallFieldFormatter)
+---@return number
+function CallFieldWidgets.Formatter:GetUnits() return 1 end
+local units = CallFieldWidgets.Formatter:GetUnits()
+--    ^ hover: (local) units: number
+local formatted = CallFieldWidgets.Formatter:Format()
+--    ^ hover: (local) formatted: string
+CallFieldWidgets.Formatter:GetSpan()
+--                         ^ diag: undefined-field
+local panels = {}
+panels.Frame = CreateFrame("Frame")
+function panels.Frame:OnShown() end
+panels.Frame:OnShown()
+panels.Frame:Show()
+local sharedFormatter = CreateFromMixins(CallFieldFormatter)
+CallFieldWidgets.Shared = sharedFormatter
+function CallFieldWidgets.Shared:GetUnits() return 1 end
+sharedFormatter:GetUnits()
+
 -- The defining file reads its own writes.
 local ownRow = ns.Row
 --    ^ hover: (local) ownRow: Frame & CallFieldRowTemplate

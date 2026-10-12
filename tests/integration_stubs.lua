@@ -1662,3 +1662,6 @@ local stubUnitCount = MonthlyActivitiesFrameMixin.TimeLeftFormatter:GetDesiredUn
 --    ^ hover: (local) stubUnitCount: number
 local stubFlatUnitCount = MonthlyActivitiesFrameMixin.GetDesiredUnitCount
 --                                                    ^ diag: undefined-field
+-- The field is the call's object, with the members of the mixins it copies.
+MonthlyActivitiesFrameMixin.TimeLeftFormatter:Format(5)
+--                                            ^ hover: (method) function SecondsFormatterMixin:Format(seconds, abbreviation)
