@@ -325,11 +325,8 @@ impl WorkspaceState {
         pg.set_document_overrides(Arc::clone(&self.document_overrides));
         log::debug!("Workspace globals built; {}", pg.arena_edit_summary());
         self.pre_globals = Arc::new(pg);
-        self.ws_generation += 1;
-        // Publish the new generation so any in-flight background warm (computed
-        // against the prior generation) sees the mismatch and aborts early
-        // instead of running to completion and being discarded.
-        self.live_generation.store(self.ws_generation, Ordering::Relaxed);
+        self.rebuilt_since_refresh = true;
+        self.bump_generation();
         // Intentionally retain `cached_ws_diagnostics` (now stale: its stored
         // generation no longer matches `ws_generation`). The generation mismatch
         // already prevents it from being served as fresh, but keeping the entries
@@ -337,6 +334,16 @@ impl WorkspaceState {
         // (2) `handle_workspace_diagnostic` serve them while a background warm is
         // in flight (avoiding a blocking synchronous recompute / diagnostic
         // flicker). A fresh full warm overwrites them when no prior is reusable.
+    }
+
+    /// Advance `ws_generation` and publish it to `live_generation`, so any in-flight
+    /// background warm (computed against the prior generation) sees the mismatch
+    /// and aborts early instead of running to completion and being discarded. Bump
+    /// only through here: a warm for the current generation cancels itself while the
+    /// two differ, and its empty result would replace the closed-file diagnostics.
+    pub(super) fn bump_generation(&mut self) {
+        self.ws_generation += 1;
+        self.live_generation.store(self.ws_generation, Ordering::Relaxed);
     }
 
     /// All workspace `.lua` paths (the set warmed for closed-file diagnostics).
@@ -445,6 +452,8 @@ impl WorkspaceState {
             live_generation: Arc::new(AtomicU64::new(0)),
             xfile_ref_cache: std::sync::Mutex::new(super::XfileRefCache::default()),
             edited_uris: HashSet::default(),
+            rebuilt_since_refresh: false,
+            closed_file_hashes: HashMap::default(),
         }
     }
 }

@@ -1393,15 +1393,32 @@ pub(super) fn handle_notification(
 
                     // Parse once, reuse for both workspace check and analysis
                     let tree = parse_lua(&text);
+                    let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                    // Keep the deferred harvest's in-memory document override
+                    // in sync so the harvester sees the editor's text, not disk.
+                    if !file_path.as_os_str().is_empty()
+                        && let Ok(mut overrides) = ws.document_overrides.write()
+                    {
+                        overrides.insert(file_path.clone(), text.clone());
+                    }
 
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     // didOpen only marks other docs dirty for the next Phase 4 cycle,
                     // which performs the actual (possibly incremental) warm. We just
                     // need the boolean "did anything rebuild" here.
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws).is_rebuild();
+                    // Other files took this file from its saved content, or from the
+                    // disk a close reverted them to (IntelliJ reopens a closed tab's
+                    // unsaved edits): a buffer that differs replaces what they harvested.
+                    let seen = ws.closed_file_hashes.remove(&file_path);
+                    if !rebuilt
+                        && ws.ws_file_globals.contains_key(&file_path)
+                        && seen.unwrap_or_else(|| content_hash(&saved_text(&file_path))) != content_hash(&text)
+                    {
+                        drop_harvests_from(&[&file_path], documents, ws, client);
+                    }
                     let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                     result.plugin_diag_codes = ws.plugin_codes();
-                    let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     // A freshly (re)opened doc is reconciled — drop any stale edited
                     // flag (e.g. an edit-then-reopen with no intervening didClose) so
                     // it doesn't keep this doc off the batch-warm fast-path.
@@ -1409,13 +1426,6 @@ pub(super) fn handle_notification(
                         ws.edited_uris.remove(&file_path);
                     }
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                    // Keep the deferred harvest's in-memory document override
-                    // in sync so the harvester sees the editor's text, not disk.
-                    if let Some(path) = uri_to_abs_path(&uri)
-                        && let Ok(mut overrides) = ws.document_overrides.write()
-                    {
-                        overrides.insert(path, text.clone());
-                    }
                     documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                     if rebuilt {
                         if let Some(ref token) = open_token {
@@ -1484,8 +1494,43 @@ pub(super) fn handle_notification(
                     is_full_rescan_trigger(e.uri.as_str())
                         && change_participates_in_scan(&e.uri, ws)
                 );
-                if needs_rescan {
+                // Workspace `.lua` files no editor has open, which other files see as
+                // their content on disk: e.g. a save after the editor closed the file
+                // (IntelliJ keeps a closed tab's unsaved edits until it autosaves), a
+                // checkout, or a rename (the old path deleted, the new one created).
+                let open_paths: HashSet<PathBuf> = documents.keys()
+                    .filter_map(|k| uri_to_abs_path(&lsp_types::Uri::from_str(k).ok()?))
+                    .collect();
+                let mut closed_lua: Vec<(lsp_types::Uri, PathBuf)> = Vec::new();
+                for e in &params.changes {
+                    if closed_lua.len() > MAX_CLOSED_FILE_RECONCILES {
+                        break;
+                    }
+                    if e.uri.as_str().ends_with(".lua")
+                        && let Some(path) = uri_to_abs_path(&e.uri)
+                        && !open_paths.contains(&path)
+                        && (ws.ws_file_globals.contains_key(&path)
+                            || (uri_to_path(&e.uri, &ws.roots).is_some() && change_participates_in_scan(&e.uri, ws)))
+                        && !closed_lua.iter().any(|(_, p)| *p == path)
+                    {
+                        closed_lua.push((e.uri.clone(), path));
+                    }
+                }
+                if needs_rescan || closed_lua.len() > MAX_CLOSED_FILE_RECONCILES {
                     rescan_workspace_with_progress(connection, documents, ws, analysis_token);
+                } else {
+                    let changed: Vec<_> = closed_lua.into_iter()
+                        .filter_map(|(uri, path)| {
+                            let saved = saved_text(&path);
+                            let unchanged = ws.closed_file_hashes.get(&path) == Some(&content_hash(&saved))
+                                // A new file the scan would skip (or one already gone).
+                                || (saved.is_empty() && !ws.ws_file_globals.contains_key(&path));
+                            (!unchanged).then(|| (uri, path, parse_lua(&saved)))
+                        })
+                        .collect();
+                    if !changed.is_empty() {
+                        reconcile_closed_files(&changed, documents, ws, client);
+                    }
                 }
                 if params.changes.iter().any(|e| e.uri.as_str().ends_with(".lua") && !documents.contains_key(e.uri.as_str())) {
                     invalidate_xfile_refs(ws);
@@ -1494,66 +1539,91 @@ pub(super) fn handle_notification(
         }
         "textDocument/didClose" => {
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
-                let uri_str = params.text_document.uri.to_string();
-                let is_stub = is_stub_path(&params.text_document.uri);
+                let uri = params.text_document.uri;
+                let uri_str = uri.to_string();
+                let is_stub = is_stub_path(&uri);
                 // Cross-file reference searches now read this file from disk, whose
                 // text cached results may predate (or never saw, if it was open).
                 if !is_stub && uri_str.ends_with(".lua") {
                     invalidate_xfile_refs(ws);
                 }
+                let doc = documents.remove(&uri_str);
+                // Remove the in-memory document override + edited flag on close.
+                let path = uri_to_abs_path(&uri);
+                let edited = path.as_ref().is_some_and(|p| ws.edited_uris.remove(p));
+                if let Some(p) = &path
+                    && let Ok(mut overrides) = ws.document_overrides.write()
+                {
+                    overrides.remove(p);
+                }
+                // Other files now see the file's content on disk. If they may have
+                // seen other text — edits discarded on close, or ones not yet
+                // reconciled — take the file from disk.
+                let reconciled = match (&doc, &path) {
+                    (Some(doc), Some(path))
+                        if !is_stub && doc.analysis.is_some() && ws.ws_file_globals.contains_key(path) =>
+                    {
+                        let saved = saved_text(path);
+                        let hash = content_hash(&saved);
+                        if edited || content_hash(doc.pending_text.as_ref().unwrap_or(&doc.text)) != hash {
+                            let files = [(uri.clone(), path.clone(), parse_lua(&saved))];
+                            reconcile_closed_files(&files, documents, ws, client);
+                            let [(_, _, tree)] = files;
+                            Some(tree)
+                        } else {
+                            ws.closed_file_hashes.insert(path.clone(), hash);
+                            None
+                        }
+                    }
+                    _ => None,
+                };
                 // Stub files never participate in workspace diagnostics.
                 // Defense-in-depth: also check is_meta (analysis may be None
                 // for stubs whose background analysis hasn't completed yet).
-                let is_meta_doc = documents.get(&uri_str).is_some_and(|d|
+                let is_meta_doc = doc.as_ref().is_some_and(|d|
                     d.analysis.as_ref().is_some_and(|a| a.is_meta())
                 );
                 if is_stub || is_meta_doc {
-                    documents.remove(&uri_str);
-                    // Remove the in-memory document override + edited flag on close.
-                    if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
-                        ws.edited_uris.remove(&path);
-                        if let Ok(mut overrides) = ws.document_overrides.write() {
-                            overrides.remove(&path);
-                        }
-                    }
                     return;
                 }
-                // Capture the document's last-known diagnostics before removing.
-                // If the document is dirty (pending Phase 4 reanalysis, e.g. user
-                // saved and closed within the 500ms debounce window), fall back to
-                // re-analyzing from disk so the cache reflects the saved content.
-                // Otherwise use cached diagnostics to preserve plugin results that
-                // disk re-analysis can't reproduce.
-                let is_dirty = documents.get(&uri_str).is_some_and(|d| d.dirty);
-                let doc_diags = if is_dirty {
+                // Capture the document's last-known diagnostics. If it was just taken
+                // from disk, or is dirty (pending Phase 4 reanalysis), analyze the file
+                // on disk so the cache reflects the saved content. Otherwise use cached
+                // diagnostics to preserve plugin results that disk re-analysis can't
+                // reproduce.
+                let doc_diags = if let Some(tree) = &reconciled {
+                    let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, tree);
+                    result.plugin_diag_codes = ws.plugin_codes();
+                    Some(build_file_diagnostics(&uri, tree, &result, tree.source(), &[], ws))
+                } else if doc.as_ref().is_some_and(|d| d.dirty) {
                     // Re-analyze from disk to pick up the saved changes.
-                    uri_to_abs_path(&params.text_document.uri)
+                    path.as_ref()
                         .and_then(|path| {
-                            let text = crate::syntax::read_source_file(&path).ok()?;
-                            if is_toc_extension(&path) {
+                            let text = crate::syntax::read_source_file(path).ok()?;
+                            if is_toc_extension(path) {
                                 let toc = crate::toc::parse_toc(&text);
                                 let toc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
                                 let toc_diags = crate::toc::diagnostics::run_diagnostics(&toc, &toc_dir);
                                 return Some(convert_toc_diagnostics(toc_diags, &text));
                             }
-                            if crate::has_shebang(&text) || is_ignored_uri(&params.text_document.uri, &ws.configs) {
+                            if crate::has_shebang(&text) || is_ignored_uri(&uri, &ws.configs) {
                                 return Some(Vec::new());
                             }
                             let tree = parse_lua(&text);
                             let mut result = analyze_lua_parsed(
-                                &params.text_document.uri, &ws.pre_globals, &ws.configs, &tree,
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
                             );
                             result.plugin_diag_codes = ws.plugin_codes();
                             Some(build_file_diagnostics(
-                                &params.text_document.uri, &tree, &result, &text, &[], ws,
+                                &uri, &tree, &result, &text, &[], ws,
                             ))
                         })
                 } else {
-                    documents.get(&uri_str).and_then(|doc| {
+                    doc.as_ref().and_then(|doc| {
                         if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
                             doc.cached_diagnostics.clone().or_else(|| {
                                 Some(build_file_diagnostics(
-                                    &params.text_document.uri, tree, analysis,
+                                    &uri, tree, analysis,
                                     &doc.text, &doc.plugin_diags, ws,
                                 ))
                             })
@@ -1562,14 +1632,6 @@ pub(super) fn handle_notification(
                         }
                     })
                 };
-                documents.remove(&uri_str);
-                // Remove the in-memory document override + edited flag on close.
-                if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
-                    ws.edited_uris.remove(&path);
-                    if let Ok(mut overrides) = ws.document_overrides.write() {
-                        overrides.remove(&path);
-                    }
-                }
                 // Update cached workspace diagnostics with the document's
                 // last-known diagnostics so the Problems panel stays accurate
                 // after the file is closed.
@@ -1591,6 +1653,10 @@ pub(super) fn handle_notification(
     }
 }
 
+/// Closed `.lua` files changed on disk at once (a checkout) past which one parallel
+/// workspace rescan is cheaper than reconciling them one by one.
+const MAX_CLOSED_FILE_RECONCILES: usize = 32;
+
 /// Whether a saved/changed file requires a full workspace rescan.
 ///
 /// These file types feed the directory scan rather than the per-file Lua
@@ -1604,8 +1670,9 @@ pub(super) fn handle_notification(
 ///   config and are only rebuilt by a full rescan, so without this a newly added
 ///   saved variable would false-positive as `undefined-global` until reload.
 ///
-/// Lua files refresh via the normal `didChange` → `maybe_rebuild_workspace`
-/// path and are intentionally excluded here.
+/// Lua files refresh per file — open ones via `didChange` →
+/// `maybe_rebuild_workspace`, closed ones via `reconcile_closed_files` — and are
+/// intentionally excluded here.
 pub(super) fn is_full_rescan_trigger(uri: &str) -> bool {
     uri.ends_with(".wowluarc.json") || uri.ends_with(".xml") || uri.ends_with(".toc")
 }
@@ -1627,7 +1694,8 @@ pub(super) fn change_participates_in_scan(uri: &lsp_types::Uri, ws: &WorkspaceSt
 
 /// Thin wrapper over [`rescan_workspace_from_disk`] that guards on a workspace
 /// root and reports progress. Driven by `didSave`/`didChangeWatchedFiles` for any
-/// [`is_full_rescan_trigger`] file (config, XML, or TOC).
+/// [`is_full_rescan_trigger`] file (config, XML, or TOC), and by a watched-file
+/// batch changing more than [`MAX_CLOSED_FILE_RECONCILES`] closed Lua files.
 pub(super) fn rescan_workspace_with_progress(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
@@ -1637,7 +1705,7 @@ pub(super) fn rescan_workspace_with_progress(
     if ws.roots.is_empty() {
         return;
     }
-    log::debug!("rescanning workspace from disk (config, XML, or TOC change)");
+    log::debug!("rescanning workspace from disk (config, XML, or TOC change, or many closed Lua files changed)");
     if let Some(token) = analysis_token {
         send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
             message: Some("Rescanning workspace...".to_string()),
@@ -1700,6 +1768,8 @@ pub(super) fn rescan_workspace_from_disk(
     ws.ws_file_dynamic_prefixes = file_dynamic_prefixes;
     ws.ws_file_callback_registries = file_callback_registries;
     ws.ws_file_string_consts = file_string_consts;
+    // Every closed file was just taken from disk, so no earlier record holds.
+    ws.closed_file_hashes.clear();
     ws.rebuild_caches();
     ws.rebuild();
     reanalyze_open_documents(documents, &ws.pre_globals, &ws.configs, ws.ws_generation);

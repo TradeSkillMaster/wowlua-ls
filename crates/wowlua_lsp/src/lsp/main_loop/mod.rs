@@ -236,8 +236,9 @@ struct WorkspaceState {
     /// Union of all per-file callable class names, rebuilt by `rebuild_caches`.
     cached_callable_classes: HashSet<String>,
     plugin_engine: Option<crate::plugins::PluginEngine>,
-    /// Monotonically increasing counter bumped on every workspace rebuild.
-    /// Used to invalidate `cached_ws_diagnostics`.
+    /// Monotonically increasing counter bumped on every workspace rebuild, and
+    /// when other files' view of a file changes without one. Used to invalidate
+    /// `cached_ws_diagnostics`. Advance it only with `bump_generation`.
     ws_generation: u64,
     /// Cached diagnostics for unopened workspace files, keyed by URI string.
     /// Populated lazily on first `workspace/diagnostic` request and invalidated
@@ -254,11 +255,13 @@ struct WorkspaceState {
     /// main loop responsive instead of blocking on a full re-analysis.
     warm_in_flight: bool,
     /// Set by `handle_workspace_diagnostic` when the cache is stale but we
-    /// don't want to block the main loop with a synchronous warm. The main
-    /// loop checks this flag and spawns a background warm instead.
+    /// don't want to block the main loop with a synchronous warm, and when other
+    /// files' view of a file changed outside Phase 4 (`reconcile_closed_files`,
+    /// `drop_harvests_from`). The main loop checks this flag and spawns a
+    /// background warm instead.
     pending_lazy_warm: bool,
     /// Shared mirror of `ws_generation` readable by in-flight background warm
-    /// threads. Bumped (with `ws_generation`) on every rebuild so a warm whose
+    /// threads. Bumped with it (`bump_generation`) so a warm whose
     /// target generation no longer matches can abort early instead of running a
     /// full ~24s re-analysis to completion only to have its result discarded.
     /// This keeps rapid edits (each forcing a rebuild) from stacking up
@@ -295,6 +298,15 @@ struct WorkspaceState {
     /// batched with no rebuild and no deferred-cache invalidation, leaving cross-
     /// file consumers stale until the file is reopened.
     edited_uris: HashSet<PathBuf>,
+    /// Set by every `rebuild()` — in Phase 4 or outside it (didOpen, didClose,
+    /// watched files, a rescan). The main loop turns it into a refresh of every
+    /// kind, code lenses included: a rebuild changes what each open document shows.
+    rebuilt_since_refresh: bool,
+    /// [`content_hash`] of the disk text the cross-file state last took a closed
+    /// file from (on `didClose` or a watched-file change), so a watched-file event
+    /// that changes nothing — the save just before a close — is skipped. A full
+    /// rescan, which takes every closed file from disk, clears them.
+    closed_file_hashes: HashMap<PathBuf, u64>,
 }
 
 /// Generation-scoped store backing [`WorkspaceState::xfile_ref_cache`]. Holds
@@ -725,6 +737,12 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
                             glob_pattern: lsp_types::GlobPattern::String("**/*.xml".to_string()),
                             kind: None,
                         },
+                        // A closed Lua file is seen as its content on disk, which can
+                        // change without an open document (see didChangeWatchedFiles).
+                        lsp_types::FileSystemWatcher {
+                            glob_pattern: lsp_types::GlobPattern::String("**/*.lua".to_string()),
+                            kind: None,
+                        },
                     ],
                 }
             ).unwrap()),
@@ -864,6 +882,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         live_generation: Arc::new(AtomicU64::new(0)),
         xfile_ref_cache: std::sync::Mutex::new(XfileRefCache::default()),
         edited_uris: HashSet::default(),
+        rebuilt_since_refresh: false,
+        closed_file_hashes: HashMap::default(),
     };
     ws.set_stubs(stub_globals, stub_classes);
     let plugin_paths = ws.configs.all_plugins();
@@ -1046,6 +1066,8 @@ fn main_loop(
     // refresh and errors once 32 pile up, so we merge the burst and flush it once
     // the workspace goes idle (below).
     let mut owed_refresh = OwedRefresh::default();
+    // Nothing is open yet, so the startup build owes the editor no refresh.
+    ws.rebuilt_since_refresh = false;
 
     // Background stub-file analysis channel. Stub files are parsed + analyzed
     // off the main thread so large generated files (e.g. ClassicGlobals.lua,
@@ -1198,6 +1220,15 @@ fn main_loop(
             }
         }
 
+        if std::mem::take(&mut ws.rebuilt_since_refresh) {
+            queue_refresh(
+                &mut owed_refresh,
+                client.code_lens_refresh,
+                client.semantic_tokens_refresh,
+                client.inlay_hint_refresh,
+                client.diagnostic_refresh,
+            );
+        }
         let has_dirty = documents.values().any(|d| d.dirty);
 
         // Flush coalesced refresh requests once the workspace is idle — no dirty
@@ -1481,8 +1512,8 @@ fn main_loop(
                 false
             };
 
-            // Track whether a workspace rebuild occurred so we can send
-            // refresh requests afterward (cross-file state changed).
+            // Track whether a workspace rebuild occurred so we can warm the
+            // closed-file diagnostics afterward (cross-file state changed).
             // The batch path (try_batch_analyze) never rebuilds — it falls
             // back to sequential when a rebuild would be needed.
             let mut had_workspace_rebuild = false;
@@ -1533,9 +1564,7 @@ fn main_loop(
                     // which early-returns for out-of-root files. Clearing only there
                     // would leak the entry and permanently force such docs off the
                     // batch-warm fast-path for the rest of the session.
-                    if !file_path.as_os_str().is_empty() {
-                        ws.edited_uris.remove(&file_path);
-                    }
+                    let was_edited = !file_path.as_os_str().is_empty() && ws.edited_uris.remove(&file_path);
                     // TOC documents: re-parse as TOC and skip the Lua pipeline.
                     if doc.toc.is_some() {
                         let text = doc.pending_text.unwrap_or(doc.text);
@@ -1612,8 +1641,9 @@ fn main_loop(
                                     other_doc.dirty = true;
                                 }
                             }
-                        } else if has_new_text && !file_path.as_os_str().is_empty() {
-                            // Content changed but the coarse workspace scan didn't, so
+                        } else if was_edited {
+                            // Content changed (Phase 2 may already have consumed the
+                            // edit's pending text) but the coarse workspace scan didn't, so
                             // no rebuild fired (a rebuild would drop the whole deferred
                             // memo and dirty every open doc). A deferred cross-file type
                             // harvested FROM this file — a body-derived return, a
@@ -1637,7 +1667,7 @@ fn main_loop(
                             // (Phase 4 treats an equal generation as "analysis still valid").
                             // Unlike a rebuild this dirties only true dependents, not all tabs.
                             if marked_dependent {
-                                ws.ws_generation += 1;
+                                ws.bump_generation();
                             }
                         }
                     }
@@ -1707,26 +1737,17 @@ fn main_loop(
             // (to prevent stale positions causing visual jumps / wrong
             // highlights), so a refresh is needed to restore them once
             // re-analysis completes.  Code lenses only need a refresh after
-            // workspace rebuilds (cross-file state).  These are queued, not sent
+            // workspace rebuilds (cross-file state), which the loop queues for
+            // every rebuild (`rebuilt_since_refresh`).  These are queued, not sent
             // now: the loop flushes the merged set once no dirty docs remain
             // (see the idle-flush above) so a rebuild storm collapses to one
             // refresh burst.
-            if had_workspace_rebuild {
-                queue_refresh(
-                    &mut owed_refresh,
-                    client.code_lens_refresh,
-                    client.semantic_tokens_refresh,
-                    client.inlay_hint_refresh,
-                    client.diagnostic_refresh,
-                );
-            } else {
-                queue_refresh(
-                    &mut owed_refresh,
-                    false, client.semantic_tokens_refresh,
-                    client.inlay_hint_refresh,
-                    client.diagnostic_refresh,
-                );
-            }
+            queue_refresh(
+                &mut owed_refresh,
+                false, client.semantic_tokens_refresh,
+                client.inlay_hint_refresh,
+                client.diagnostic_refresh,
+            );
 
             // Push diagnostics after Phase 4 for push-only clients.
             // Pull-model clients (Neovim, VS Code) get fresh diagnostics
@@ -3997,6 +4018,386 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    const WIDGET_SAVED: &str = "---@class Widget\nlocal Widget = {}\n\nfunction Widget:Init()\n    self.label = 1 + 2\nend\n";
+    const WIDGET_READER: &str = "---@type Widget\nlocal w\nlocal label = w.label\nlocal count = WIDGET_COUNT\n";
+
+    /// A scanned workspace, nothing open, of `writer.lua` (saved as `saved`) and
+    /// `reader.lua`, which reads `Widget.label` (typed by re-analyzing the writer, not
+    /// by the coarse scan) and the `WIDGET_COUNT` global. Returns the dir, the writer's
+    /// and reader's URIs, the workspace and its documents.
+    fn widget_workspace(tag: &str, saved: &str) -> (PathBuf, lsp_types::Uri, lsp_types::Uri, WorkspaceState, HashMap<String, Document>) {
+        let dir = std::env::temp_dir().join(format!("wowlua_closed_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("writer.lua"), saved).unwrap();
+        std::fs::write(dir.join("reader.lua"), WIDGET_READER).unwrap();
+        let mut ws = WorkspaceState::for_test(Some(dir.clone()));
+        let mut documents = HashMap::default();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+        let writer = abs_path_to_uri(&dir.join("writer.lua")).unwrap();
+        let reader = abs_path_to_uri(&dir.join("reader.lua")).unwrap();
+        (dir, writer, reader, ws, documents)
+    }
+
+    /// The type a fresh analysis of the reader (what Phase 4 re-runs) gives `local <name>`.
+    fn reader_type(ws: &WorkspaceState, reader_uri: &lsp_types::Uri, name: &str) -> Option<String> {
+        let tree = parse_lua(WIDGET_READER);
+        let result = analyze_lua_parsed(reader_uri, &ws.pre_globals, &ws.configs, &tree);
+        let offset = WIDGET_READER.find(&format!("local {name}")).unwrap() + "local ".len();
+        result.hover_at(&tree, offset as u32).map(|h| h.type_str)
+    }
+
+    fn open_text(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, uri: &lsp_types::Uri, text: &str) {
+        notify(documents, ws, "textDocument/didOpen", lsp_types::DidOpenTextDocumentParams {
+            text_document: lsp_types::TextDocumentItem {
+                uri: uri.clone(), language_id: "lua".to_string(), version: 1, text: text.to_string(),
+            },
+        });
+    }
+
+    fn disk_changed(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, uri: &lsp_types::Uri) {
+        notify(documents, ws, "workspace/didChangeWatchedFiles", lsp_types::DidChangeWatchedFilesParams {
+            changes: vec![lsp_types::FileEvent { uri: uri.clone(), typ: lsp_types::FileChangeType::CHANGED }],
+        });
+    }
+
+    /// Closing a file without saving discards its edits for other files too. Here the
+    /// edits (a new global, a retyped field, a read of an undefined global) had already
+    /// been reconciled into the workspace — reopening with the unsaved text leaves the
+    /// state Phase 4 leaves — so other files saw them until the close.
+    #[test]
+    fn closing_without_saving_reverts_other_files_to_the_saved_file() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("discard", WIDGET_SAVED);
+        open_text(&mut documents, &mut ws, &reader_uri, WIDGET_READER);
+        let unsaved = format!("{}WIDGET_COUNT = 0\nprint(UNSAVED_ONLY)\n", WIDGET_SAVED.replace("1 + 2", "\"x\" .. \"y\""));
+        open_text(&mut documents, &mut ws, &writer_uri, &unsaved);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: string"));
+        assert_eq!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+        documents.get_mut(&reader_uri.to_string()).unwrap().dirty = false;
+        ws.cached_ws_diagnostics = Some((ws.ws_generation, Vec::new()));
+
+        close_doc(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: number"));
+        assert_ne!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+        assert!(documents[&reader_uri.to_string()].dirty, "the open reader is re-analyzed");
+        let (_, cached) = ws.cached_ws_diagnostics.as_ref().unwrap();
+        let (_, writer_diags) = cached.iter().find(|(u, _)| *u == writer_uri.to_string()).unwrap();
+        assert!(
+            !writer_diags.iter().any(|d| d.message.contains("UNSAVED_ONLY")),
+            "the closed file's own diagnostics are the saved file's: {writer_diags:?}",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Edits closed (discarded) before Phase 4 reconciled them never reached the scan,
+    /// but a reader analyzed meanwhile took the field type from the open buffer.
+    #[test]
+    fn closing_drops_types_other_files_took_from_the_discarded_buffer() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("unreconciled", WIDGET_SAVED);
+        open_text(&mut documents, &mut ws, &writer_uri, WIDGET_SAVED);
+        notify(&mut documents, &mut ws, "textDocument/didChange", lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier { uri: writer_uri.clone(), version: 2 },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: None, range_length: None, text: WIDGET_SAVED.replace("1 + 2", "\"x\" .. \"y\""),
+            }],
+        });
+        open_text(&mut documents, &mut ws, &reader_uri, WIDGET_READER);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: string"));
+        let generation = ws.ws_generation;
+
+        close_doc(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: number"));
+        assert!(documents[&reader_uri.to_string()].dirty, "the open reader is re-analyzed");
+        assert!(ws.ws_generation > generation, "re-analyses aren't served the old analyses");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Closing a file whose buffer matches the disk (here up to line endings, as
+    /// IntelliJ holds a CRLF file) changes nothing for other files, and neither does
+    /// the watched-file event of its save arriving after the close.
+    #[test]
+    fn closing_an_unchanged_file_leaves_other_files_alone() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("unchanged", &WIDGET_SAVED.replace('\n', "\r\n"));
+        open_text(&mut documents, &mut ws, &reader_uri, WIDGET_READER);
+        open_text(&mut documents, &mut ws, &writer_uri, WIDGET_SAVED);
+        documents.get_mut(&reader_uri.to_string()).unwrap().dirty = false;
+        let generation = ws.ws_generation;
+
+        close_doc(&mut documents, &mut ws, &writer_uri);
+        disk_changed(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(ws.ws_generation, generation);
+        assert!(!documents[&reader_uri.to_string()].dirty);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// IntelliJ keeps a closed tab's unsaved edits and saves them later: the close
+    /// reverts other files to the disk, and the save's watched-file event brings the
+    /// edits back. Events for an open file are left to its buffer.
+    #[test]
+    fn closed_file_changed_on_disk_reaches_other_files() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("watched", WIDGET_SAVED);
+        open_text(&mut documents, &mut ws, &reader_uri, WIDGET_READER);
+        let unsaved = format!("{}WIDGET_COUNT = 0\n", WIDGET_SAVED.replace("1 + 2", "\"x\" .. \"y\""));
+        open_text(&mut documents, &mut ws, &writer_uri, &unsaved);
+        disk_changed(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: string"), "open buffer wins");
+
+        close_doc(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: number"));
+
+        std::fs::write(dir.join("writer.lua"), &unsaved).unwrap();
+        documents.get_mut(&reader_uri.to_string()).unwrap().dirty = false;
+        disk_changed(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: string"));
+        assert_eq!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+        assert!(documents[&reader_uri.to_string()].dirty, "the open reader is re-analyzed");
+
+        let generation = ws.ws_generation;
+        disk_changed(&mut documents, &mut ws, &writer_uri);
+        assert_eq!(ws.ws_generation, generation, "an event without a content change is skipped");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opening a file with a buffer that differs from what other files took it from —
+    /// IntelliJ reopens a closed tab's unsaved edits — gives them the buffer's types.
+    #[test]
+    fn reopening_an_unsaved_buffer_reaches_other_files() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("reopened", WIDGET_SAVED);
+        open_text(&mut documents, &mut ws, &reader_uri, WIDGET_READER);
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: number"));
+
+        open_text(&mut documents, &mut ws, &writer_uri, &WIDGET_SAVED.replace("1 + 2", "\"x\" .. \"y\""));
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: string"));
+        assert!(documents[&reader_uri.to_string()].dirty, "the open reader is re-analyzed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rebuild outside Phase 4 — here a didOpen and a didClose that change the
+    /// workspace's declarations — still has the editor re-request code lenses
+    /// ("N implementations" and usages read cross-file state). Drives the real main loop.
+    #[test]
+    fn rebuild_outside_phase4_refreshes_code_lenses() {
+        let (dir, writer_uri, reader_uri, ws, _) = widget_workspace("lens", WIDGET_SAVED);
+        let (server, client) = Connection::memory();
+        let driver = std::thread::spawn(move || {
+            let notify = |method: &str, params: serde_json::Value| {
+                client.sender.send(Message::Notification(Notification::new(method.to_string(), params))).unwrap();
+            };
+            let open = |uri: &lsp_types::Uri, text: &str| notify("textDocument/didOpen", serde_json::json!({
+                "textDocument": { "uri": uri, "languageId": "lua", "version": 1, "text": text },
+            }));
+            // Whether a code-lens refresh request arrives within `wait`.
+            let lens_refresh = |wait: Duration| {
+                let deadline = Instant::now() + wait;
+                while let Ok(msg) = client.receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    if let Message::Request(r) = msg && r.method == "workspace/codeLens/refresh" {
+                        return true;
+                    }
+                }
+                false
+            };
+            open(&reader_uri, WIDGET_READER);
+            let on_unchanged_open = lens_refresh(Duration::from_secs(2));
+            open(&writer_uri, &format!("{WIDGET_SAVED}WIDGET_COUNT = 0\n"));
+            let on_open = lens_refresh(Duration::from_secs(10));
+            notify("textDocument/didClose", serde_json::json!({ "textDocument": { "uri": writer_uri } }));
+            let on_close = lens_refresh(Duration::from_secs(10));
+            client.sender.send(Message::Request(Request::new(
+                RequestId::from(1), "shutdown".to_string(), serde_json::Value::Null,
+            ))).unwrap();
+            (on_unchanged_open, on_open, on_close)
+        });
+        let client_support = ClientSupport { code_lens_refresh: true, ..ClientSupport::default() };
+        main_loop(server, ws, client_support).unwrap();
+        let (on_unchanged_open, on_open, on_close) = driver.join().unwrap();
+        assert!(!on_unchanged_open, "opening a file that changes nothing rebuilds nothing");
+        assert!(on_open, "a didOpen rebuild refreshes code lenses");
+        assert!(on_close, "a didClose rebuild refreshes code lenses");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A full rescan takes every closed file from disk, so the record of an earlier
+    /// take must not make a later watched-file event look like no change.
+    #[test]
+    fn rescan_forgets_closed_file_records() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("rescanned", WIDGET_SAVED);
+        open_text(&mut documents, &mut ws, &writer_uri, WIDGET_SAVED);
+        close_doc(&mut documents, &mut ws, &writer_uri);
+        std::fs::write(dir.join("writer.lua"), format!("{WIDGET_SAVED}WIDGET_COUNT = 0\n")).unwrap();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+        assert_eq!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+
+        std::fs::write(dir.join("writer.lua"), WIDGET_SAVED).unwrap();
+        disk_changed(&mut documents, &mut ws, &writer_uri);
+        assert_ne!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An edit that re-dirties the files that harvested from it advances the
+    /// generation; the warm that the next pull spawns must not cancel itself and
+    /// replace every closed file's diagnostics with its empty result. Drives the
+    /// real main loop as a pull client.
+    #[test]
+    fn closed_file_diagnostics_survive_an_edit_read_cross_file() {
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("warm", WIDGET_SAVED);
+        std::fs::write(dir.join("other.lua"), "print(NOT_DEFINED_ANYWHERE)\n").unwrap();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+        let other_uri = abs_path_to_uri(&dir.join("other.lua")).unwrap().to_string();
+        let (server, client) = Connection::memory();
+        let driver = std::thread::spawn(move || {
+            let next_id = std::cell::Cell::new(0);
+            let request = |method: &str, params: serde_json::Value| {
+                next_id.set(next_id.get() + 1);
+                let id = RequestId::from(next_id.get());
+                client.sender.send(Message::Request(Request::new(id.clone(), method.to_string(), params))).unwrap();
+                loop {
+                    match client.receiver.recv_timeout(Duration::from_secs(30)).expect("server response") {
+                        Message::Response(r) if r.id == id => return r.result.unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            };
+            let notify = |method: &str, params: serde_json::Value| {
+                client.sender.send(Message::Notification(Notification::new(method.to_string(), params))).unwrap();
+            };
+            let open = |uri: &lsp_types::Uri, text: &str| notify("textDocument/didOpen", serde_json::json!({
+                "textDocument": { "uri": uri, "languageId": "lua", "version": 1, "text": text },
+            }));
+            // The closed file's diagnostic count in the workspace report, if listed.
+            let other_diags = || request("workspace/diagnostic", serde_json::json!({ "previousResultIds": [] }))["items"]
+                .as_array().unwrap()
+                .iter()
+                .find(|report| report["uri"] == other_uri.as_str())
+                .map(|report| report["items"].as_array().unwrap().len());
+            let label_type = || request("textDocument/hover", serde_json::json!({
+                "textDocument": { "uri": reader_uri }, "position": { "line": 2, "character": 6 },
+            }))["contents"]["value"].as_str().unwrap_or_default().to_string();
+            let wait_for = |done: &dyn Fn() -> bool| {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !done() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            };
+
+            wait_for(&|| other_diags().is_some_and(|n| n > 0));
+            open(&writer_uri, WIDGET_SAVED);
+            open(&reader_uri, WIDGET_READER);
+            notify("textDocument/didChange", serde_json::json!({
+                "textDocument": { "uri": writer_uri, "version": 2 },
+                "contentChanges": [{ "text": WIDGET_SAVED.replace("1 + 2", "\"x\" .. \"y\"") }],
+            }));
+            wait_for(&|| label_type().contains("string"));
+            // Past the warm's settle delay, so a self-cancelled warm would have landed.
+            let mut seen = Vec::new();
+            let deadline = Instant::now() + Duration::from_millis(2500);
+            while Instant::now() < deadline {
+                seen.push(other_diags());
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            request("shutdown", serde_json::Value::Null);
+            seen
+        });
+        let client_support = ClientSupport { diagnostic_refresh: true, ..ClientSupport::default() };
+        main_loop(server, ws, client_support).unwrap();
+        let seen = driver.join().unwrap();
+        assert!(seen.iter().all(|n| n.is_some_and(|n| n > 0)), "closed file's diagnostics over time: {seen:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Renaming a closed file reports its old path deleted and the new one created:
+    /// its declarations move with it, and leave once it's deleted.
+    #[test]
+    fn renamed_closed_file_keeps_its_declarations() {
+        let saved = format!("{WIDGET_SAVED}WIDGET_COUNT = 0\n");
+        let (dir, writer_uri, reader_uri, mut ws, mut documents) = widget_workspace("renamed", &saved);
+        let renamed = dir.join("renamed.lua");
+        let renamed_uri = abs_path_to_uri(&renamed).unwrap();
+        let events = |changes: &[(&lsp_types::Uri, lsp_types::FileChangeType)]| lsp_types::DidChangeWatchedFilesParams {
+            changes: changes.iter().map(|(uri, typ)| lsp_types::FileEvent { uri: (*uri).clone(), typ: *typ }).collect(),
+        };
+        std::fs::rename(dir.join("writer.lua"), &renamed).unwrap();
+        notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", events(&[
+            (&writer_uri, lsp_types::FileChangeType::DELETED),
+            (&renamed_uri, lsp_types::FileChangeType::CREATED),
+        ]));
+        assert_eq!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+        assert_eq!(reader_type(&ws, &reader_uri, "label").as_deref(), Some("(local) label: number"));
+
+        std::fs::remove_file(&renamed).unwrap();
+        notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", events(&[
+            (&renamed_uri, lsp_types::FileChangeType::DELETED),
+        ]));
+        assert_ne!(reader_type(&ws, &reader_uri, "count").as_deref(), Some("(local) count: number"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An edit reaches other files even when an interactive request re-analyzed the
+    /// edited file before Phase 4 did (IntelliJ requests completion while typing),
+    /// consuming its pending text: Phase 4 must still drop the types other files took
+    /// from the old text. Drives the real main loop.
+    #[test]
+    fn edit_reaches_other_files_after_completion_consumed_it() {
+        let (dir, writer_uri, reader_uri, ws, _) = widget_workspace("completion", WIDGET_SAVED);
+        let (server, client) = Connection::memory();
+        let driver = std::thread::spawn(move || {
+            let next_id = std::cell::Cell::new(0);
+            let request = |method: &str, params: serde_json::Value| {
+                next_id.set(next_id.get() + 1);
+                let id = RequestId::from(next_id.get());
+                client.sender.send(Message::Request(Request::new(id.clone(), method.to_string(), params))).unwrap();
+                loop {
+                    match client.receiver.recv_timeout(Duration::from_secs(30)).expect("server response") {
+                        Message::Response(r) if r.id == id => return r.result.unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            };
+            let notify = |method: &str, params: serde_json::Value| {
+                client.sender.send(Message::Notification(Notification::new(method.to_string(), params))).unwrap();
+            };
+            let open = |uri: &lsp_types::Uri, text: &str| notify("textDocument/didOpen", serde_json::json!({
+                "textDocument": { "uri": uri, "languageId": "lua", "version": 1, "text": text },
+            }));
+            open(&writer_uri, WIDGET_SAVED);
+            open(&reader_uri, WIDGET_READER);
+            let label_type = || request("textDocument/hover", serde_json::json!({
+                "textDocument": { "uri": reader_uri }, "position": { "line": 2, "character": 6 },
+            }))["contents"]["value"].as_str().unwrap_or_default().to_string();
+            let before = label_type();
+
+            notify("textDocument/didChange", serde_json::json!({
+                "textDocument": { "uri": writer_uri, "version": 2 },
+                "contentChanges": [{ "text": WIDGET_SAVED.replace("1 + 2", "\"x\" .. \"y\"") }],
+            }));
+            request("textDocument/completion", serde_json::json!({
+                "textDocument": { "uri": writer_uri }, "position": { "line": 0, "character": 0 },
+            }));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut after = label_type();
+            while !after.contains("string") && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+                after = label_type();
+            }
+            request("shutdown", serde_json::Value::Null);
+            (before, after)
+        });
+        main_loop(server, ws, ClientSupport::default()).unwrap();
+        let (before, after) = driver.join().unwrap();
+        assert!(before.contains("label: number"), "{before}");
+        assert!(after.contains("label: string"), "{after}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn crossfile_diagnostics_separated_from_per_file() {
         // compute_ws_diagnostics must return cross-file unused-function items
@@ -4351,30 +4752,10 @@ mod tests {
     }
 
     /// Build a `WorkspaceState` (with cross-file `pre_globals` and the per-file
-    /// path index) over a directory of `.lua` files, for cross-file query tests.
+    /// scan maps) over a directory of `.lua` files, for cross-file query tests.
     fn build_ws_for_dir(dir: &std::path::Path) -> WorkspaceState {
-        let mut configs = crate::config::ProjectConfigs::default();
-        configs.try_load(dir);
-        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&dir.to_path_buf()), &mut configs);
-        let mut sa = scan.aliases;
-        crate::annotations::register_event_type_aliases(&mut sa, &scan.events);
-        let ipp = configs.implicit_protected_prefix_for(dir);
-        let mut pg = PreResolvedGlobals::build(
-            &scan.globals, &scan.classes, &sa, ipp,
-            &scan.addon_ns_class_files, &scan.callable_classes,
-        );
-        pg.merge_events(&scan.events);
-
         let mut ws = WorkspaceState::for_test(Some(dir.to_path_buf()));
-        ws.pre_globals = Arc::new(pg);
-        ws.configs = Arc::new(configs);
-        // The disk scan enumerates `ws_file_globals.keys()`; values are unused
-        // there (cross-file resolution reads `pre_globals`), so seed empty vecs.
-        let paths = collect_lua_paths(dir, &mut crate::config::ProjectConfigs::default());
-        for p in paths {
-            ws.ws_file_globals.insert(p, Vec::new());
-        }
-        ws.ws_generation = 1;
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
         ws
     }
 
@@ -4516,7 +4897,7 @@ mod tests {
         // Advancing the generation invalidates the cache. With user.lua gone from
         // disk the reference can no longer be recovered.
         let mut ws2 = ws;
-        ws2.ws_generation += 1;
+        ws2.bump_generation();
         let locs3 = find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, true, false, &documents, &ws2)
             .expect("target resolves");
         assert!(

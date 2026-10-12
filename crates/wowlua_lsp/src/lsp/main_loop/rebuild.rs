@@ -282,6 +282,17 @@ impl RebuildScope {
 }
 
 pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> RebuildScope {
+    let scope = update_file_scan(uri, root, ws);
+    if scope.is_rebuild() {
+        ws.rebuild();
+    }
+    scope
+}
+
+/// Re-scan `uri`'s declarations from `root` into the `ws_file_*` maps and report
+/// how the workspace must be rebuilt, without rebuilding it, so several files can
+/// share one rebuild.
+pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> RebuildScope {
     use crate::annotations::scan_defclass_calls;
 
     let file_path = match uri_to_path(uri, &ws.roots) {
@@ -519,7 +530,7 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
 
     if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed || events_changed || callbacks_changed {
         log::info!(
-            "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={} self_fields={} events={})",
+            "Workspace rebuild triggered by {} (globals={} classes={} aliases={} defclasses={} self_fields={} events={})",
             file_path.display(),
             globals_changed,
             classes_changed,
@@ -528,7 +539,6 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
             self_fields_changed,
             events_changed,
         );
-        ws.rebuild();
         // defclass/self-field/event changes are hard to express as a precise set
         // of changed declaration names (they flow through builder chains and
         // method bodies), so fall back to a Full warm in those cases. When only
@@ -541,6 +551,81 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
         }
     } else {
         RebuildScope::None
+    }
+}
+
+/// `path`'s text on disk as the workspace scan sees it: empty when the file is
+/// gone or unreadable, or has a shebang (the scan skips both).
+pub(super) fn saved_text(path: &Path) -> String {
+    crate::syntax::read_source_file(path)
+        .ok()
+        .filter(|text| !crate::has_shebang(text))
+        .unwrap_or_default()
+}
+
+/// Line-ending-insensitive hash of a file's text. An editor buffer may hold a CRLF
+/// file with LF line breaks (IntelliJ's always does), which changes nothing.
+pub(super) fn content_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for line in text.lines() {
+        line.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Make the cross-file state reflect `files` — workspace `.lua` files no editor has
+/// open, each with its tree parsed from [`saved_text`] — since what other files see
+/// of a closed file is its content on disk. Open documents that may have read the
+/// old content are re-dirtied, and closed files' cached diagnostics retired.
+pub(super) fn reconcile_closed_files(
+    files: &[(lsp_types::Uri, PathBuf, SyntaxTree)],
+    documents: &mut HashMap<String, Document>,
+    ws: &mut WorkspaceState,
+    client: &ClientSupport,
+) {
+    let mut scope = RebuildScope::None;
+    for (uri, path, tree) in files {
+        scope = scope.merge(update_file_scan(uri, crate::syntax::SyntaxNode::new_root(tree), ws));
+        ws.closed_file_hashes.insert(path.clone(), content_hash(tree.source()));
+    }
+    if scope.is_rebuild() {
+        ws.rebuild();
+        for doc in documents.values_mut() {
+            if doc.analysis.is_some() {
+                doc.dirty = true;
+            }
+        }
+        if client.diagnostic_refresh {
+            ws.pending_lazy_warm = true;
+        }
+    } else {
+        let paths: Vec<&Path> = files.iter().map(|(_, path, _)| path.as_path()).collect();
+        drop_harvests_from(&paths, documents, ws, client);
+    }
+}
+
+/// Other files' view of `paths` changed without a rebuild: drop the types harvested
+/// from their old text (returns, `@class` fields, ..., which the scan doesn't show),
+/// re-dirty the open documents that read them, and retire closed files' cached
+/// diagnostics, which may have read them too.
+pub(super) fn drop_harvests_from(
+    paths: &[&Path],
+    documents: &mut HashMap<String, Document>,
+    ws: &mut WorkspaceState,
+    client: &ClientSupport,
+) {
+    for path in paths {
+        ws.pre_globals.invalidate_deferred_for_file(path);
+    }
+    for doc in documents.values_mut() {
+        if doc.analysis.as_ref().is_some_and(|a| paths.iter().any(|p| a.deferred_dep_files().contains(*p))) {
+            doc.dirty = true;
+        }
+    }
+    ws.bump_generation();
+    if client.diagnostic_refresh {
+        ws.pending_lazy_warm = true;
     }
 }
 
