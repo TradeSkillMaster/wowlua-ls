@@ -535,7 +535,57 @@ pub fn populate_class_fields(
     }
 }
 
-/// Resolve class inheritance: transitive `parent_classes` via topological sort,
+/// The `parent_classes` of the class at `node` (table `class_idx`) and the
+/// `table<K,V>` key/value types it inherits. `parents` holds each class node's
+/// declared parents: the parent's table and, when it is declared in the same
+/// set, its node.
+///
+/// The ancestors the class already has (a workspace class reusing a stub
+/// class's name keeps the stub's), then its parents in declaration order, each
+/// followed by its own ancestors: the first parent wins on field collisions.
+/// (CreateFromMixins classes get last-wins applied later by
+/// `apply_mixin_parent_inheritance`, scoped so plain multi-parent classes —
+/// e.g. XML FontString templates — keep this order.) A parent declared in the
+/// same set is walked through depth first instead of read as linked, so the
+/// order never depends on which class is linked first, and an inheritance
+/// cycle (`GameTooltip : GameTooltipTemplate` and `GameTooltipTemplate :
+/// GameTooltip` in the FrameXML annotations), which leaves no member to link
+/// first, needs no special case. The key/value types come from the first
+/// parent the walk reaches that has them.
+fn class_ancestors(
+    node: usize,
+    class_idx: TableIndex,
+    parents: &[Vec<(TableIndex, Option<usize>)>],
+    tables: &LayeredVec<TableInfo>,
+) -> (Vec<TableIndex>, Option<(ValueType, ValueType)>) {
+    let class = &tables[class_idx.ext_offset()];
+    let mut ancestors = class.parent_classes.clone();
+    let mut key_value = None;
+    let mut walked = vec![node];
+    let mut walk = vec![(node, 0)];
+    while let Some((at, next)) = walk.pop() {
+        let Some(&(parent_idx, parent_node)) = parents[at].get(next) else { continue };
+        walk.push((at, next + 1));
+        let parent = &tables[parent_idx.ext_offset()];
+        for idx in std::iter::once(parent_idx).chain(parent.parent_classes.iter().copied()) {
+            if idx != class_idx && !ancestors.contains(&idx) {
+                ancestors.push(idx);
+            }
+        }
+        if class.key_type.is_none() && key_value.is_none()
+            && let (Some(key), Some(value)) = (&parent.key_type, &parent.value_type)
+        {
+            key_value = Some((key.clone(), value.clone()));
+        }
+        if let Some(parent_node) = parent_node && !walked.contains(&parent_node) {
+            walked.push(parent_node);
+            walk.push((parent_node, 0));
+        }
+    }
+    (ancestors, key_value)
+}
+
+/// Resolve class inheritance: transitive `parent_classes` ([`class_ancestors`]),
 /// `table<K,V>` parent key/value propagation, direct-parent `parent_type_bindings`,
 /// and the two field-substitution passes (`@requires` constraint subs and
 /// `@built-name` overrides). Operates directly on the IR arenas so both build
@@ -558,7 +608,7 @@ pub fn resolve_inheritance(
     tables: &mut LayeredVec<TableInfo>,
     exprs: &mut LayeredVec<Expr>,
 ) {
-    // Resolve direct `table<K,V>` parents before the topo sort so
+    // Resolve direct `table<K,V>` parents before linking ancestors so
     // transitive inheritance can propagate key_type/value_type to children.
     for class in class_decls.iter() {
         let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
@@ -576,137 +626,53 @@ pub fn resolve_inheritance(
         }
     }
 
-    // Resolve inheritance via topological sort. Without topo sort, a child
-    // processed before its parent would miss transitive ancestors
-    // (e.g. DestroyingScrollTable → ScrollTable → List → Element).
+    // Link each class to its ancestors (`class_ancestors`).
     {
-        // Resolve each class's parent names to the base class to link, handling
-        // identity-forwarding parameterized parents (`Child<T> : Parent<T>`).
-        // Indexed parallel to `class_decls`.
-        let lookup_parents: Vec<Vec<String>> = class_decls.iter()
-            .map(|c| c.parents.iter()
-                .filter_map(|p| crate::annotations::parent_link_with_bindings(p).map(|(b, _)| b))
+        // One node per class name, with the parents of all its declarations: a
+        // class can be declared more than once (an override re-declaring
+        // `@class Frame`, a workspace class spread over files). Parent names
+        // resolve to the base class to link (`Child<T> : Parent<T>`);
+        // self-references (`@class WorldFrame : WorldFrame` from the
+        // FramexmlAnnotations submodule) are skipped.
+        let mut names: Vec<&str> = Vec::new();
+        let mut node_of: HashMap<&str, usize> = HashMap::default();
+        let mut parent_names: Vec<Vec<String>> = Vec::new();
+        for class in class_decls {
+            let node = *node_of.entry(class.name.as_str()).or_insert_with(|| {
+                names.push(class.name.as_str());
+                parent_names.push(Vec::new());
+                names.len() - 1
+            });
+            for parent in &class.parents {
+                let Some((base, _)) = crate::annotations::parent_link_with_bindings(parent) else { continue };
+                if base != class.name && !parent_names[node].contains(&base) {
+                    parent_names[node].push(base);
+                }
+            }
+        }
+        let parents: Vec<Vec<(TableIndex, Option<usize>)>> = parent_names.iter()
+            .map(|node_parents| node_parents.iter()
+                .filter_map(|name| Some((*classes.get(name.as_str())?, node_of.get(name.as_str()).copied())))
                 .collect())
             .collect();
-        let mut class_index: HashMap<&str, usize> = HashMap::default();
-        for (i, class) in class_decls.iter().enumerate() {
-            class_index.insert(&class.name, i);
-        }
-        let mut children_of: HashMap<&str, Vec<usize>> = HashMap::default();
-        let mut in_degree: Vec<usize> = vec![0; class_decls.len()];
-        for (i, parents) in lookup_parents.iter().enumerate() {
-            for parent_name in parents {
-                // Only count in-degree for parents that are also in this class set
-                if class_index.contains_key(parent_name.as_str()) {
-                    children_of.entry(parent_name.as_str()).or_default().push(i);
-                    in_degree[i] += 1;
-                }
-            }
-        }
-        // Kahn's algorithm: start with roots (in_degree == 0)
-        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
-        for (i, &deg) in in_degree.iter().enumerate() {
-            if deg == 0 { queue.push_back(i); }
-        }
-        let mut order: Vec<usize> = Vec::with_capacity(class_decls.len());
-        let mut processed_names: HashSet<&str> = HashSet::default();
-        while let Some(idx) = queue.pop_front() {
-            let name = class_decls[idx].name.as_str();
-            // Skip duplicate class names (same class from multiple files)
-            if !processed_names.insert(name) { continue; }
-            order.push(idx);
-            if let Some(kids) = children_of.get(name) {
-                for &kid in kids {
-                    in_degree[kid] = in_degree[kid].saturating_sub(1);
-                    if in_degree[kid] == 0 { queue.push_back(kid); }
-                }
-            }
-        }
-        // Append any remaining (cycles) so they still get partial resolution
-        for i in 0..class_decls.len() {
-            if in_degree[i] > 0 && processed_names.insert(class_decls[i].name.as_str()) {
-                order.push(i);
-            }
-        }
-        // Compute transitive parent_classes for each unique class (from topo order).
-        for &idx in &order {
-            let class = &class_decls[idx];
-            if class.parents.is_empty() { continue; }
-            let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
-            let child_local = child_table_idx.ext_offset();
-            let mut transitive_parents: Vec<TableIndex> = tables[child_local].parent_classes.clone();
-            // Declaration order: for a plain `@class X : A, B` the first parent wins
-            // on field collisions. (CreateFromMixins classes get last-wins applied
-            // later by `apply_mixin_parent_inheritance`, scoped so plain multi-parent
-            // classes — e.g. XML FontString templates — keep this order.)
-            for parent_name in &lookup_parents[idx] {
-                if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
-                    if !transitive_parents.contains(&parent_idx) {
-                        transitive_parents.push(parent_idx);
-                    }
-                    // Add all of parent's ancestors (already computed due to topo order)
-                    let parent_local = parent_idx.ext_offset();
-                    for &ancestor in &tables[parent_local].parent_classes {
-                        if !transitive_parents.contains(&ancestor) {
-                            transitive_parents.push(ancestor);
-                        }
-                    }
-                }
-            }
+        // Each class's ancestors are read from the lists as they stand, so all
+        // are worked out before any is written.
+        let linked: Vec<_> = names.iter().enumerate()
+            .filter(|&(node, _)| !parents[node].is_empty())
+            .filter_map(|(node, name)| {
+                let &class_idx = classes.get(*name)?;
+                Some((class_idx, class_ancestors(node, class_idx, &parents, tables)))
+            })
+            .collect();
+        for (class_idx, (ancestors, key_value)) in linked {
+            let class_local = class_idx.ext_offset();
             // Only write a change: a write copies a shared stub table (`LayeredVec`).
-            if tables[child_local].parent_classes != transitive_parents {
-                tables[child_local].parent_classes = transitive_parents;
+            if tables[class_local].parent_classes != ancestors {
+                tables[class_local].parent_classes = ancestors;
             }
-            // Inherit key_type/value_type from parent class chain
-            if tables[child_local].key_type.is_none() {
-                for parent_name in &lookup_parents[idx] {
-                    if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
-                        let parent_local = parent_idx.ext_offset();
-                        if let (Some(kt), Some(vt)) = (
-                            tables[parent_local].key_type.clone(),
-                            tables[parent_local].value_type.clone(),
-                        ) {
-                            tables[child_local].key_type = Some(kt);
-                            tables[child_local].value_type = Some(vt);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        // Accumulate parents from duplicate ClassDecl entries (same name, different parents).
-        // The topo sort only processed one entry per name, but duplicates may have
-        // additional parents (e.g. defclass scan adds a specific parent while the
-        // built-name scan adds an empty-parent entry for the same class).
-        // Note: iterates in insertion order, not topo order. This is safe because
-        // duplicates are typically leaf classes (from @built-name), not parents.
-        for (ci, class) in class_decls.iter().enumerate() {
-            if class.parents.is_empty() { continue; }
-            let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
-            let child_local = child_table_idx.ext_offset();
-            let mut accum = tables[child_local].parent_classes.clone();
-            let mut changed = false;
-            for parent_name in &lookup_parents[ci] {
-                if let Some(&parent_idx) = classes.get(parent_name.as_str())
-                    // Skip self-referential parents (`@class X : X`). The
-                    // NumyAddon/FramexmlAnnotations submodule generates these
-                    // for XML-defined globals whose frame type matches the
-                    // element name (e.g. `<WorldFrame name="WorldFrame">`
-                    // becomes `@class WorldFrame : WorldFrame`).
-                    && parent_idx != child_table_idx
-                    && !accum.contains(&parent_idx) {
-                        accum.push(parent_idx);
-                        changed = true;
-                        let parent_local = parent_idx.ext_offset();
-                        for &ancestor in &tables[parent_local].parent_classes {
-                            if !accum.contains(&ancestor) {
-                                accum.push(ancestor);
-                            }
-                        }
-                    }
-            }
-            if changed {
-                tables[child_local].parent_classes = accum;
+            if let Some((key, value)) = key_value {
+                tables[class_local].key_type = Some(key);
+                tables[class_local].value_type = Some(value);
             }
         }
     }

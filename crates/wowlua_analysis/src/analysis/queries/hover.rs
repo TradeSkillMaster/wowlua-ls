@@ -48,13 +48,16 @@ impl AnalysisResult {
                     // When the receiver is a union type, collect additional function
                     // signatures from other union members for the hover display.
                     if !is_g_env && receiver_tables.len() > 1 {
-                        // Dedupe by resolved function: an inherited method (e.g. a
-                        // widget method defined on `Frame`) is reachable through every
-                        // union member that inherits it, so `find_all_fields_in_tables`
-                        // reports it once per member — all resolving to the same
-                        // function. Show each distinct signature only once.
+                        // What each member resolves the method to — not each of its
+                        // ancestors' own definitions, which include ones an override
+                        // shadows (`Region:Hide` under `Frame:Hide`). Dedupe by
+                        // resolved function: an inherited method (e.g. a widget
+                        // method defined on `Frame`) is reachable through every
+                        // union member that inherits it. Show each distinct
+                        // signature only once.
                         let mut seen_funcs: HashSet<FunctionIndex> = HashSet::from_iter([*func_idx]);
-                        let all_fields = self.find_all_fields_in_tables(&receiver_tables, &field_name);
+                        let all_fields = receiver_tables.iter()
+                            .filter_map(|&t| self.get_field(t, &field_name).map(|fi| (t, fi.expr)));
                         for (alt_table_idx, alt_expr_id) in all_fields {
                             if alt_table_idx == table_idx { continue; }
                             let Some(ValueType::Function(Some(alt_func_idx))) = self.resolve_expr_type(alt_expr_id) else { continue };

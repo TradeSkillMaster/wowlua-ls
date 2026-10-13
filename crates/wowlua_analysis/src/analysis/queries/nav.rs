@@ -333,7 +333,7 @@ impl AnalysisResult {
     /// Collect all (table_idx, expr_id) pairs for a field across multiple tables
     /// and their parent classes. Checks direct fields first, then parent classes.
     /// Each table appears at most once (deduped). Used by `find_field_in_tables`
-    /// (first match) and hover (all matches for union receiver display).
+    /// (first match) and union-receiver references (all matches).
     pub(super) fn find_all_fields_in_tables(&self, table_indices: &[TableIndex], field_name: &str) -> Vec<(TableIndex, ExprId)> {
         let mut results = Vec::new();
         let mut seen_tables: HashSet<TableIndex> = HashSet::default();

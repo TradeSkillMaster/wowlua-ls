@@ -812,6 +812,23 @@ do
 --        ^ hover: (local) hooked: boolean
 end
 
+-- ── Completion offers every ancestor's methods on Frame subclasses ──
+-- (an override re-declaring `@class Frame` used to cut Frame's ancestors
+-- such as ScriptRegion from Button, CheckButton, …)
+do
+    local btn = CreateFrame("Button")
+    btn:SetPropagateMouseClicks(true)
+--                 ^ comp: SetPropagateKeyboardInput, SetPropagateMouseClicks, SetPropagateMouseMotion
+    local cb = CreateFrame("CheckButton")
+    cb:SetPoint("CENTER")
+--          ^ comp: SetPoint, SetPointsOffset
+    -- a method on an intersection shows what each member resolves it to, not
+    -- also the definitions an override shadows (`Region:IsVisible`)
+    local bd = CreateFrame("Frame", nil, nil, "BackdropTemplate")
+    local visible = bd:IsVisible()
+--                     ^ hover: (method) function Frame:IsVisible()\n-> isVisible: boolean
+end
+
 -- ── Script handler arguments: OnEnter/OnLeave motion, OnMouseUp upInside ──
 do
     local f = CreateFrame("Frame")

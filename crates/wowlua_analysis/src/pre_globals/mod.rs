@@ -4989,9 +4989,9 @@ mod tests {
 
     #[test]
     fn build_on_stubs_deep_workspace_inheritance() {
-        // Regression test: build_on_stubs must use topological sort for workspace
-        // class inheritance, otherwise children processed before parents miss
-        // transitive ancestors (e.g. D → C → B → A, D only gets C).
+        // Regression test: in build_on_stubs a workspace class declared before its
+        // parents must still get its transitive ancestors (e.g. D → C → B → A:
+        // linking children before parents gave D only C).
         let stubs_base = PreResolvedGlobals::empty();
 
         // Deliberately order classes child-first to expose the bug
@@ -5019,6 +5019,90 @@ mod tests {
         let c_parents = &result.tables[c_idx.ext_offset()].parent_classes;
         assert!(c_parents.contains(&b_idx), "C should have B as parent");
         assert!(c_parents.contains(&a_idx), "C should have A as ancestor");
+    }
+
+    /// Class `name`'s `parent_classes`, by name.
+    fn parent_names<'a>(result: &'a PreResolvedGlobals, name: &str) -> Vec<&'a str> {
+        result.tables[result.classes[name].ext_offset()].parent_classes.iter()
+            .map(|&p| result.tables[p.ext_offset()].class_name.as_deref().unwrap_or(""))
+            .collect()
+    }
+
+    /// The ancestors a class declared more than once gets through its parented
+    /// declaration reach its descendants, even when a parentless declaration of
+    /// it (an override adding methods to `Frame`) has no ancestors to wait for.
+    fn assert_duplicate_decl_ancestors_reach_descendants(result: &PreResolvedGlobals) {
+        assert_eq!(parent_names(result, "Frame"), ["Region", "ScriptRegion"]);
+        assert_eq!(parent_names(result, "Button"), ["Frame", "Region", "ScriptRegion"]);
+        assert_eq!(parent_names(result, "CheckButton"), ["Button", "Frame", "Region", "ScriptRegion"]);
+    }
+
+    #[test]
+    fn duplicate_class_decl_ancestors_reach_descendants() {
+        let classes = vec![
+            make_class("ScriptRegion", &[], &[]),
+            make_class("Region", &["ScriptRegion"], &[]),
+            make_class("Frame", &["Region"], &[]),
+            make_class("Button", &["Frame"], &[]),
+            make_class("CheckButton", &["Button"], &[]),
+            make_class("Frame", &[], &[]),
+        ];
+        let result = PreResolvedGlobals::build(
+            &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
+        );
+        assert_duplicate_decl_ancestors_reach_descendants(&result);
+
+        let result = PreResolvedGlobals::build_on_stubs(
+            &PreResolvedGlobals::empty(), &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
+        );
+        assert_duplicate_decl_ancestors_reach_descendants(&result);
+    }
+
+    #[test]
+    fn inheritance_cycle_members_get_every_ancestor() {
+        // `Tooltip : TooltipTemplate` and `TooltipTemplate : Tooltip` (as the
+        // FrameXML annotations declare `GameTooltip`): each member of the cycle
+        // inherits everything the other reaches, in its own declaration order.
+        let classes = vec![
+            make_class("Region", &[], &[]),
+            make_class("Frame", &["Region"], &[]),
+            make_class("Tooltip", &["Frame"], &[]),
+            make_class("ArtTemplate", &[], &[]),
+            make_class("SharedTemplate", &["Tooltip", "ArtTemplate"], &[]),
+            make_class("TooltipTemplate", &["Tooltip", "SharedTemplate"], &[]),
+            make_class("Tooltip", &["Tooltip", "TooltipTemplate"], &[]),
+        ];
+        let result = PreResolvedGlobals::build(
+            &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
+        );
+        assert_eq!(parent_names(&result, "Tooltip"), ["Frame", "Region", "TooltipTemplate", "SharedTemplate", "ArtTemplate"]);
+        assert_eq!(parent_names(&result, "TooltipTemplate"), ["Tooltip", "Frame", "Region", "SharedTemplate", "ArtTemplate"]);
+    }
+
+    #[test]
+    fn class_below_inheritance_cycle_keeps_declaration_order() {
+        // `D : C, E` where C's ancestors form a cycle (`A : B`, `B : A`): what C
+        // reaches comes before E, as below any other parent, so D gets `x` and
+        // its `table<K,V>` key type from A, not F — in either declaration order.
+        let mut classes = vec![
+            make_class("D", &["C", "E"], &[]),
+            make_class("C", &["A"], &[]),
+            make_class("A", &["B", "table<number, boolean>"], &[("x", "number")]),
+            make_class("B", &["A"], &[]),
+            make_class("E", &["F"], &[]),
+            make_class("F", &["table<string, boolean>"], &[("x", "string")]),
+        ];
+        for _ in 0..2 {
+            let result = PreResolvedGlobals::build(
+                &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
+            );
+            assert_eq!(parent_names(&result, "D"), ["C", "A", "B", "E", "F"]);
+            let d = result.classes["D"].ext_offset();
+            let x = lookup_field_with_parents(&result.tables, d, "x").expect("D inherits x");
+            assert_eq!(x.annotation, Some(ValueType::Number));
+            assert_eq!(result.tables[d].key_type, Some(ValueType::Number));
+            classes.reverse();
+        }
     }
 
     #[test]
