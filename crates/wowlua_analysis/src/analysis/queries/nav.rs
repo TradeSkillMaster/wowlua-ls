@@ -970,12 +970,10 @@ impl AnalysisResult {
             t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::LeftSquareBracket));
 
         let table_idx = if let Some(child) = child_ident {
-            // Resolve child identifier first
-            let inner_idx = self.resolve_identifier_to_table(&child, scope_offset)?;
             if has_bracket {
-                // Bracket index: get value_type
-                let value_type = self.table(inner_idx).value_type.as_ref()?;
-                let bracket_idx = Self::extract_table_idx(value_type)?;
+                // Bracket index: the receiver's element type
+                let value_type = self.bracket_receiver_element_type(&child, scope_offset)?;
+                let bracket_idx = Self::extract_table_idx(&value_type)?;
                 // Chain any remaining direct Name tokens as field accesses
                 let mut idx = bracket_idx;
                 for name_tok in &child_names {
@@ -985,17 +983,15 @@ impl AnalysisResult {
                     idx = Self::extract_table_idx(&ft)?;
                 }
                 idx
-            } else if !child_names.is_empty() {
+            } else {
                 // Chain direct Name tokens as field accesses (parser2 DotAccess has
                 // child NameRef for the base and direct Name for the field)
-                let mut idx = inner_idx;
+                let mut idx = self.resolve_identifier_to_table(&child, scope_offset)?;
                 for name_tok in &child_names {
                     let name = name_tok.text().to_string();
                     idx = self.resolve_field_or_g_env(idx, &name)?;
                 }
                 idx
-            } else {
-                inner_idx
             }
         } else if let Some(funcall_node) = child_funcall {
             // FunctionCall child: resolve call return type to table, then chain fields
@@ -1030,6 +1026,19 @@ impl AnalysisResult {
             return None;
         };
         Some(table_idx)
+    }
+
+    /// The element type `t[k]` reads off the bracket receiver `node`: its
+    /// table's `value_type`, or the element type of a list or map carried
+    /// across files inline (`TableShape`).
+    fn bracket_receiver_element_type(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<ValueType> {
+        if let Some(idx) = self.resolve_identifier_to_table(node, scope_offset) {
+            return self.table(idx).value_type.clone();
+        }
+        let ty = self.resolve_identifier_to_type(node, scope_offset)?;
+        let mut shapes = Vec::new();
+        ty.collect_shape_containers(&mut shapes);
+        shapes.first().and_then(|s| s.value_type.as_deref().cloned())
     }
 
     /// Resolve an identifier node to its full resolved type (intersection-aware).

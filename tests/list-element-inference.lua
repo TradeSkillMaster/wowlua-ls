@@ -150,6 +150,181 @@ end
 local pushed = viaPush()
 --    ^ hover: (local) pushed: ListItem[]
 
+-- ── A table with named fields ───────────────────────────────────────────────
+
+-- Elements written into a table that also has named fields read as those
+-- elements, not as its named fields; the fields keep their own types.
+local function counted()
+    local t = { n = 0 }
+    tinsert(t, "a")
+    local first = t[1]
+    --    ^ hover: (local) first: string
+    local n = t.n
+    --    ^ hover: (local) n: number
+    local appended = { n = 0 }
+    appended[#appended + 1] = findItem()
+    local appendedFirst = appended[1]
+    --    ^ hover: (local) appendedFirst: ListItem
+    local indexed = { n = 0 }
+    indexed[1] = "x"
+    local indexedFirst = indexed[1]
+    --    ^ hover: (local) indexedFirst: string
+end
+
+-- ── A list held in a field ──────────────────────────────────────────────────
+
+-- A list built in a field takes its element type from what's added through the
+-- field: inserts and `#t + 1` appends, also through a local holding the list.
+local listState = { queue = {} }
+
+---@param item ListItem
+local function enqueueItem(item)
+    tinsert(listState.queue, item)
+end
+
+local function appendLabels()
+    listState.queue[#listState.queue + 1] = findItem()
+    local held = listState.queue
+    held[#held + 1] = "label"
+end
+
+local function drainQueue()
+    for _, entry in ipairs(listState.queue) do
+        local drained = entry
+        --    ^ hover: (local) drained: ListItem | string
+    end
+    local head = listState.queue[1]
+    --    ^ hover: (local) head: ListItem | string
+end
+
+-- ...and on `self`, across methods.
+---@class ListOwner
+local ListOwner = {}
+
+function ListOwner:Init()
+    self.items = {}
+end
+
+---@param item ListItem
+function ListOwner:Add(item)
+    tinsert(self.items, item)
+end
+
+function ListOwner:FirstCount()
+    local owned = self.items[1]
+    --    ^ hover: (local) owned: ListItem
+    return owned.count
+end
+
+-- ...also created lazily where it's first added to (`t.f = t.f or {}`), and for
+-- a local falling back to a new table.
+---@param item ListItem
+function ListOwner:Queue(item)
+    self.pending = self.pending or {}
+    tinsert(self.pending, item)
+end
+
+function ListOwner:NextPending()
+    local queued = self.pending[1]
+    --    ^ hover: (local) queued: ListItem
+    return queued
+end
+
+local lazyState = {}
+---@param item ListItem
+local function remember(item)
+    lazyState.seen = lazyState.seen or {}
+    lazyState.seen[#lazyState.seen + 1] = item
+end
+local function firstSeen()
+    local seen = lazyState.seen[1]
+    --    ^ hover: (local) seen: ListItem
+    return seen
+end
+
+---@param item ListItem
+local function collectInto(item)
+    local fallback
+    local into = fallback or {}
+    tinsert(into, item)
+    local collectedFirst = into[1]
+    --    ^ hover: (local) collectedFirst: ListItem
+end
+
+-- A table literal of positional elements matches a class declaring `[N]`
+-- fields, also while some of its elements are unknown.
+---@class LogLine
+---@field [1] number
+---@field [2] string
+
+---@type LogLine?
+local currentLine
+
+---@param log LogLine[]
+function ListOwner:Replay(log, ts, event, ...)
+    self.extraLines = self.extraLines or {}
+    self.extraLines[#self.extraLines + 1] = {0, event, ...}
+    local line
+    if #self.extraLines > 0 then
+        line = self.extraLines[#self.extraLines]
+        line[1] = ts
+    else
+        line = log[1]
+    end
+    currentLine = line
+end
+
+-- Settling a list's element type doesn't hold back an `x == y` narrowing:
+-- `fixed == left` makes `fixed` non-nil before `node` reads it, so the
+-- parameter types inferred from these mutually recursive calls stay `number`.
+---@class Graph
+local Graph = {}
+
+---@param node number
+---@return number, number
+function Graph:GetEnds(node) return 1, 2 end
+
+---@param node number
+---@return any
+function Graph:GetKind(node) return nil end
+
+---@param node number
+---@return fun(): number
+function Graph:Children(node) return function() return 1 end end
+
+local walker = { stack = {} }
+
+---@param graph Graph
+function walker.Visit(graph, node)
+    local kind = graph:GetKind(node)
+    local base = #walker.stack
+    for child in graph:Children(node) do
+        tinsert(walker.stack, child)
+    end
+    while #walker.stack > base do
+        local child = tremove(walker.stack, base + 1)
+        walker.Visit(graph, child)
+    end
+    return walker.Fold(graph, node)
+end
+
+---@param graph Graph
+function walker.Fold(graph, node)
+    --                      ^ hover: (param) node: number
+    local left, right = graph:GetEnds(node)
+    local leftKind = graph:GetKind(left)
+    local rightKind = graph:GetKind(right)
+    local fixed = (leftKind == 1 and left) or (rightKind == 1 and right) or nil
+    if leftKind == 2 then
+        node = left
+    elseif leftKind == 3 and fixed == left then
+        node = fixed
+    elseif leftKind == 4 and fixed == right then
+        node = fixed
+    end
+    return walker.Visit(graph, node)
+end
+
 -- ── Negative controls ───────────────────────────────────────────────────────
 
 -- An annotated list keeps its declared element type; inserts are checked against it.
@@ -162,6 +337,29 @@ tinsert(declared, "not an item")
 local letters = { "a" }
 tinsert(letters, 5)
 --               ^ diag: type-mismatch
+
+-- A field declaring its type keeps it; inserts through the field are checked.
+local typedState = {
+    ---@type string[]
+    names = {},
+}
+tinsert(typedState.names, 5)
+--                        ^ diag: type-mismatch
+
+-- A table written other keys through a field is a map — often scratch state
+-- reused for unrelated contents — which what's added through the field doesn't
+-- type: its elements read `any`, and passing it on isn't checked against an insert.
+---@param result table<number, string>
+local function fillNames(result) end
+
+local scratch = { temp = {} }
+local function reuseScratch(slot)
+    tinsert(scratch.temp, 5)
+    scratch.temp["_" .. slot] = "name"
+    fillNames(scratch.temp)
+    local reused = scratch.temp[1]
+    --    ^ hover: (local) reused: any
+end
 
 -- A generic call with no `T`-typed argument stores nothing.
 local untouched = {}

@@ -4,28 +4,6 @@ use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub struct FieldTypeMismatch;
 
-/// A scan-fabricated bare `table` placeholder that is never an authoritative
-/// field type: either `Table(None)` (a parked bare `table` with no `TableInfo`
-/// to flag), or a `Table(Some(idx))` whose table carries [`TableInfo::placeholder`]
-/// — the existing "workspace-scan placeholder, parked because a call's return
-/// type couldn't be resolved" marker, set at the addon-namespace parking sites
-/// and consumed symmetrically by `is_table_subtype_impl`. The self-field/global
-/// scan parks one of these on a field whose only writer it couldn't type but is
-/// known to be a table (a `{}` constructor whose shape it couldn't capture, an
-/// addon-namespace funcall whose chain stayed unresolved), so it carries no shape
-/// and no author annotation and must never override an actual write type. (A
-/// fully type-unknown writer — a chained call that may return a non-table — parks
-/// `Any` instead, which is universally assignable and never reaches this check.)
-/// A scan-inferred table that *does* carry a shape (an unflagged table with real
-/// fields) is not a placeholder and is handled by the structural-table path below.
-fn is_bare_scan_placeholder(analysis: &AnalysisResult, vt: &ValueType) -> bool {
-    match vt {
-        ValueType::Table(None) => true,
-        ValueType::Table(Some(idx)) => analysis.table(*idx).placeholder,
-        _ => false,
-    }
-}
-
 /// Build related info pointing to a field declaration if it has a source range
 /// and belongs to a local (non-external) table.
 fn field_declared_here(table_idx: TableIndex, field_info: &FieldInfo) -> Vec<RelatedInfo> {
@@ -50,7 +28,7 @@ impl DiagnosticPass for FieldTypeMismatch {
             // self-field/global scan, not an author annotation — so a `table` it
             // fabricated is never authoritative for an actual write type.
             if field_info.from_scan {
-                // Bare `table` placeholder (see `is_bare_scan_placeholder`). The
+                // Bare `table` placeholder (see `Ir::is_bare_scan_placeholder`). The
                 // scan knew the field's writer was a table but couldn't capture its
                 // shape (a `{}` constructor, an addon-namespace funcall whose chain
                 // stayed unresolved) and parked a bare `table`. It is a "shape
@@ -58,7 +36,7 @@ impl DiagnosticPass for FieldTypeMismatch {
                 // skip for ANY actual, including the very table write that produced
                 // the placeholder. (A fully type-unknown writer parks `Any`, which
                 // is universally assignable and never reaches this branch.)
-                if is_bare_scan_placeholder(analysis, expected) {
+                if analysis.ir.is_bare_scan_placeholder(expected) {
                     continue;
                 }
                 // Scan-inferred *structural* table (a constructor shape captured

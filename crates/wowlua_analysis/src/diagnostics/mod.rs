@@ -637,6 +637,8 @@ pub fn unwrap_to_inner_expr(ir: &crate::analysis::Ir, mut id: ExprId) -> ExprId 
 ///   fields may be nil at runtime even though the LS resolves them as non-nil.
 /// - **dynamic bracket indices**: dictionary/array lookups return nil for
 ///   missing keys / out-of-bounds indices at runtime.
+/// - **list element reads through a call** (`tremove(list)`): nil for an
+///   empty list, like an out-of-bounds index.
 /// - **unannotated parameters**: backward inference may resolve to a non-nil
 ///   type, but the parameter is intended to be optional.
 /// - **locals assigned from uncertain sources**: a local whose defining
@@ -649,6 +651,7 @@ pub fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) 
     || is_lateinit_local_ref(analysis, expr_id)
     || is_field_without_direct_annotation(analysis, expr_id)
     || is_dynamic_bracket_index(analysis, expr_id)
+    || is_element_read_call(analysis, expr_id)
     || is_unannotated_param_ref(analysis, expr_id)
     || is_symbol_from_uncertain_source(analysis, expr_id)
     || is_flavor_restricted_global(analysis, expr_id)
@@ -835,6 +838,23 @@ fn is_dynamic_bracket_index(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
     any_table_has_value_type(analysis, &table_type)
 }
 
+/// Call returning an element of a list it's passed (`tremove(list)`: a `V`
+/// return of a `@generic V` with a `V[]` parameter): like a dynamic index, an
+/// empty list or missing position yields nil at runtime.
+fn is_element_read_call(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    use crate::annotations::AnnotationType;
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::FunctionCall { func, ret_index, .. } = analysis.expr(id) else { return false };
+    let Some(ValueType::Function(Some(func_idx))) = analysis.resolve_expr_type(*func).map(ValueType::into_strip_opaque) else {
+        return false;
+    };
+    let f = analysis.func(func_idx);
+    let Some(AnnotationType::Simple(element)) = f.return_annotations_raw.get(*ret_index) else { return false };
+    f.generics.iter().any(|(name, _)| name == element)
+        && f.param_annotations.iter().any(|p| matches!(p,
+            AnnotationType::Array(inner) if matches!(inner.as_ref(), AnnotationType::Simple(n) if n == element)))
+}
+
 /// Unannotated function parameter: backward inference may resolve to a non-nil
 /// type, but the parameter may be intended as optional.
 fn is_unannotated_param_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
@@ -864,7 +884,15 @@ fn is_symbol_from_uncertain_source(analysis: &AnalysisResult, expr_id: ExprId) -
     if sym_idx.is_external() { return false; }
     let sym = analysis.ir.sym(*sym_idx);
     let Some(ver) = sym.versions.get(*ver_idx) else { return false };
-    let Some(src) = ver.type_source else { return false };
+    let Some(mut src) = ver.type_source else { return false };
+    // A version restoring the symbol after a narrowing (`x and y`) reads the
+    // same value: follow it back to the definition.
+    for _ in 0..16 {
+        let Expr::SymbolRef(alias_sym, alias_ver) = analysis.expr(src) else { break };
+        if alias_sym != sym_idx { break; }
+        let Some(next) = sym.versions.get(*alias_ver).and_then(|v| v.type_source) else { break };
+        src = next;
+    }
     is_lateinit_field_access(analysis, src)
     || is_lateinit_local_ref(analysis, src)
     || is_field_without_direct_annotation(analysis, src)
@@ -907,6 +935,7 @@ fn any_table_lacks_own_field_annotation(analysis: &AnalysisResult, ty: &ValueTyp
 fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
     match ty {
         ValueType::Table(Some(idx)) => analysis.table(*idx).value_type.is_some(),
+        ValueType::TableShape(shape) => shape.value_type.is_some(),
         ValueType::Union(types) | ValueType::Intersection(types) => {
             types.iter().any(|t| any_table_has_value_type(analysis, t))
         }

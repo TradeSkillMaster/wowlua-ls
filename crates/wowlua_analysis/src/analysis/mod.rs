@@ -805,6 +805,16 @@ pub struct Ir {
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
     pub pending_bracket_assigns: Vec<(String, ScopeIndex, ExprId)>,
+    /// This file's tables whose elements read `any` once nothing types them:
+    /// those written to a field over the workspace scan's bare `table` for it
+    /// (`type_scanned_fields_by_own_writes`, …), read as through the scan's
+    /// type, and maps held in a field, which their writes don't type
+    /// (`collect_deferred_element_writes`).
+    pub unknown_element_tables: HashSet<TableIndex>,
+    /// Bracket assignments into a table only a field holds (`self.items[k] = v`,
+    /// or `l[k] = v` after `local l = self.items`): (table expr, key, value),
+    /// resolved when the fixpoint starts (`collect_deferred_element_writes`).
+    pub deferred_element_writes: Vec<(ExprId, ExprId, ExprId)>,
     /// Per-file overlay of precise `Function`s for deferred (body-derived)
     /// external functions this file references. Populated lazily by the
     /// cross-file harvester (`ensure_overlay`): the value is the coarse external
@@ -1877,6 +1887,220 @@ impl Ir {
             | Expr::AssignNarrow { inner, .. } => self.find_receiver_table_index(*inner, follow_declared, depth + 1),
             _ => self.find_table_index(expr_id),
         }
+    }
+
+    /// The tables of this file an element write through `expr` (`tinsert(expr, v)`,
+    /// `expr[k] = v`) stores into: the table `expr` holds, or for a field read
+    /// (`self.items`, `private.list`) the tables the field's writes assign. Empty
+    /// when `expr` may hold any other value (a `nil` write aside), including a
+    /// field declaring a type, which types its elements instead.
+    pub(super) fn element_write_tables(&self, expr: ExprId) -> Vec<TableIndex> {
+        let mut tables = Vec::new();
+        if !self.collect_element_write_tables(expr, 0, &mut tables, &mut Vec::new()) {
+            tables.clear();
+        }
+        tables
+    }
+
+    /// The field `expr` reads — `X.f`, or a local bound to one — as its
+    /// receiver's table and the field's name.
+    pub(super) fn field_read_target(&self, expr: ExprId) -> Option<(TableIndex, String)> {
+        let mut expr = expr;
+        for depth in 0..8 {
+            expr = match self.expr(expr) {
+                Expr::FieldAccess { table, field, .. } => {
+                    return self.find_receiver_table_index(*table, true, depth + 1).map(|base| (base, field.clone()));
+                }
+                Expr::SymbolRef(sym_idx, ver_idx) => self.sym(*sym_idx).versions[*ver_idx].type_source?,
+                Expr::Grouped(inner)
+                | Expr::StripNil(inner)
+                | Expr::StripFalsy(inner)
+                | Expr::AssignNarrow { inner, .. } => *inner,
+                _ => return None,
+            };
+        }
+        None
+    }
+
+    /// The function `expr` names, found without resolving it: a function
+    /// definition, a field holding one (`table.insert`), or a symbol bound to
+    /// either.
+    pub(super) fn named_function(&self, expr: ExprId, depth: usize) -> Option<FunctionIndex> {
+        if depth > 8 {
+            return None;
+        }
+        match self.expr(expr) {
+            Expr::FunctionDef(f) | Expr::Literal(ValueType::Function(Some(f))) => Some(*f),
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                let ver = &self.sym(*sym_idx).versions[*ver_idx];
+                match (ver.type_source, &ver.resolved_type) {
+                    (Some(type_source), _) => self.named_function(type_source, depth + 1),
+                    (None, Some(ValueType::Function(Some(f)))) => Some(*f),
+                    _ => None,
+                }
+            }
+            Expr::FieldAccess { table, field, .. } => {
+                let fi = self.find_receiver_table_index(*table, true, depth + 1)
+                    .and_then(|base| self.get_field(base, field))?;
+                match &fi.annotation {
+                    Some(ValueType::Function(Some(f))) => Some(*f),
+                    _ => self.named_function(fi.expr, depth + 1),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether table `idx` takes its element type from the elements written into
+    /// it: it isn't annotated, a `@class`, or built with positional elements.
+    pub(super) fn element_type_from_writes(&self, idx: TableIndex) -> bool {
+        let t = self.table(idx);
+        !t.value_type_annotated && t.array_fields.is_empty() && t.class_name.is_none()
+    }
+
+    /// [`Self::element_write_tables`]: false when `expr` may hold a value that
+    /// isn't one of this file's tables.
+    fn collect_element_write_tables(
+        &self,
+        expr: ExprId,
+        depth: usize,
+        tables: &mut Vec<TableIndex>,
+        fields: &mut Vec<(TableIndex, String)>,
+    ) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let next = match self.expr(expr) {
+            Expr::Literal(ValueType::Nil) => return true,
+            Expr::FieldAccess { table, field, .. } => {
+                let Some(base) = self.find_receiver_table_index(*table, true, depth + 1) else { return false };
+                let Some(fi) = self.get_field(base, field).filter(|fi| fi.annotation.is_none()) else {
+                    return false;
+                };
+                // A write reading the field it writes (`t.f = t.f or {}`) holds
+                // nothing the field's other writes don't.
+                let key = (base, field.clone());
+                if fields.contains(&key) {
+                    return true;
+                }
+                fields.push(key);
+                let all = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
+                    .all(|write| self.collect_element_write_tables(write, depth + 1, tables, fields));
+                fields.pop();
+                return all;
+            }
+            // `x or {}` holds what `x` does or the table it falls back to.
+            Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs } => {
+                return self.collect_element_write_tables(*rhs, depth + 1, tables, fields)
+                    && self.collect_element_write_tables(*lhs, depth + 1, tables, fields);
+            }
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                let source = self.sym(*sym_idx).versions[*ver_idx].type_source;
+                // A local declared without a value holds nil.
+                if source.is_none() && !sym_idx.is_external() && !self.param_symbols.contains(sym_idx) {
+                    return true;
+                }
+                source
+            }
+            Expr::Grouped(inner)
+            | Expr::StripNil(inner)
+            | Expr::StripFalsy(inner)
+            | Expr::AssignNarrow { inner, .. } => Some(*inner),
+            _ => None,
+        };
+        if let Some(next) = next {
+            return self.collect_element_write_tables(next, depth + 1, tables, fields);
+        }
+        let Some(idx) = self.find_table_index(expr).filter(|idx| !idx.is_external()) else {
+            return false;
+        };
+        if !tables.contains(&idx) {
+            tables.push(idx);
+        }
+        true
+    }
+
+    /// A scan-fabricated bare `table` placeholder that is never an authoritative
+    /// field type: either `Table(None)` (a parked bare `table` with no `TableInfo`
+    /// to flag), or a `Table(Some(idx))` whose table carries [`TableInfo::placeholder`]
+    /// — the existing "workspace-scan placeholder, parked because a call's return
+    /// type couldn't be resolved" marker, set at the addon-namespace parking sites
+    /// and consumed symmetrically by `is_table_subtype_impl`. The self-field/global
+    /// scan parks one of these on a field whose only writer it couldn't type but is
+    /// known to be a table (a `{}` constructor whose shape it couldn't capture, an
+    /// addon-namespace funcall whose chain stayed unresolved), so it carries no shape
+    /// and no author annotation and must never override an actual write type. (A
+    /// fully type-unknown writer — a chained call that may return a non-table — parks
+    /// `Any` instead, which is universally assignable.) A scan-inferred table that
+    /// *does* carry a shape (an unflagged table with real fields) is not a placeholder.
+    pub fn is_bare_scan_placeholder(&self, vt: &ValueType) -> bool {
+        match vt {
+            ValueType::Table(None) => true,
+            ValueType::Table(Some(idx)) => self.table(*idx).placeholder,
+            _ => false,
+        }
+    }
+
+    /// A table type the workspace scan gave a field that says no more than "a
+    /// table": a bare placeholder (`is_bare_scan_placeholder`), or the empty
+    /// anonymous table it builds for `ns.list = {}` when no file adds fields or
+    /// elements to it — this file's included (`overlay_fields`).
+    pub fn is_shapeless_scan_table(&self, vt: &ValueType) -> bool {
+        if self.is_bare_scan_placeholder(vt) {
+            return true;
+        }
+        let ValueType::Table(Some(idx)) = vt else { return false };
+        let t = self.table(*idx);
+        idx.is_external()
+            && t.class_name.is_none()
+            && t.fields.is_empty()
+            && t.value_type.is_none()
+            && t.key_type.is_none()
+            && t.parent_classes.is_empty()
+            && t.metatable_index.is_none()
+            && t.call_func.is_none()
+            && self.overlay_fields.get(idx).is_none_or(|fields| fields.is_empty())
+    }
+
+    /// Whether writing `rhs` to field `fi` (`table.field`) types the field in this file over a
+    /// type the workspace scan gave it that says no more than "a table"
+    /// (`is_shapeless_scan_table`): `rhs` is a list or record (`writes_unkeyed_table`).
+    pub(super) fn write_types_shapeless_scan_field(&self, fi: &FieldInfo, table: TableIndex, field: &str, rhs: ExprId) -> bool {
+        fi.from_scan
+            && fi.annotation_text.is_none()
+            && fi.annotation.as_ref().is_some_and(|a| self.is_shapeless_scan_table(a))
+            && self.writes_unkeyed_table(rhs, table, field)
+    }
+
+    /// Record the tables of this file `writes` hold in `unknown_element_tables`.
+    pub(super) fn mark_unknown_element_tables(&mut self, writes: impl IntoIterator<Item = ExprId>) {
+        for write in writes {
+            if let Some(idx) = self.find_table_index(write).filter(|idx| !idx.is_external()) {
+                self.unknown_element_tables.insert(idx);
+            }
+        }
+    }
+
+    /// Whether `expr`, written to field `field` of table `table`, is a table of
+    /// this file built without `[k] = v` entries (`{}`, `{ a, b }`, `{ x = 1 }`,
+    /// possibly through a local, or as the fallback of a lazy
+    /// `t.field = t.field or {}`): a list or a record. A map built in a field —
+    /// often settings or scratch state — would read every entry's type back
+    /// through any key; any other `x or {}` holds what `x` does, saved data say.
+    pub(super) fn writes_unkeyed_table(&self, expr: ExprId, table: TableIndex, field: &str) -> bool {
+        let expr = match self.expr(expr) {
+            Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs }
+                if matches!(self.expr(*lhs), Expr::FieldAccess { table: receiver, field: read, .. }
+                    if read == field && self.find_receiver_table_index(*receiver, true, 0) == Some(table)) => *rhs,
+            _ => expr,
+        };
+        self.find_table_index(expr).is_some_and(|idx| {
+            let t = self.table(idx);
+            !idx.is_external()
+                && t.constructor_bracket_count == 0
+                && t.class_name.is_none()
+                && !t.value_type_annotated
+        })
     }
 
     /// Whether a write to the external field `fi` is typed by its own value `rhs`
@@ -3209,6 +3433,10 @@ pub struct Analysis<'a> {
     /// `call_element_writes` per (call, argument position), kept once the call's
     /// callee and arguments have resolved.
     call_element_write_memo: HashMap<(ExprId, usize), Vec<ExprId>>,
+    /// Set once the fixpoint has nothing left to try: reads that waited on
+    /// element types that never resolved then take what they can
+    /// (`Ir::unknown_element_tables`, a table's named fields).
+    elements_settled: bool,
     /// Deferred class-equality narrowings from `x == EXPR` / `x ~= EXPR` where EXPR
     /// can't be classified at build time. Each entry: (sym_idx, expr_id, scope_idx).
     /// Processed in resolve: if EXPR's type is a class table, narrow sym_idx to that class
@@ -3323,6 +3551,10 @@ pub struct Analysis<'a> {
     pub event_handler_method_payloads: HashMap<FunctionIndex, (Vec<ValueType>, Vec<usize>)>,
     /// Named handler methods with conflicting payloads (see above) — left untyped.
     pub event_handler_method_conflicts: HashSet<FunctionIndex>,
+    /// The params of each named handler method a registration typed (the leading
+    /// signature params, `event`, and the payload ones), which a direct call of
+    /// the method isn't checked against. A conflict reverts only the payload ones.
+    pub event_handler_typed_params: HashMap<FunctionIndex, HashSet<usize>>,
     /// Cache of an event payload's resolved param types, keyed by
     /// `(event_type_name, event_name)`. Resolving `table<K,V>`/`T[]` payload
     /// param types materializes fresh `TableInfo` arena entries; caching keeps the
@@ -3479,6 +3711,8 @@ impl<'a> Analysis<'a> {
                 field_annotation_owner: HashMap::default(),
                 ctor_placeholder_fields: crate::collections::HashSet::default(),
                 pending_bracket_assigns: Vec::new(),
+                deferred_element_writes: Vec::new(),
+                unknown_element_tables: HashSet::default(),
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),
                 call_fields_checked: HashSet::default(),
@@ -3506,6 +3740,7 @@ impl<'a> Analysis<'a> {
             table_call_args: HashMap::default(),
             table_arg_calls: HashMap::default(),
             call_element_write_memo: HashMap::default(),
+            elements_settled: false,
             deferred_class_eq_narrowings: Vec::new(),
             deferred_event_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
@@ -3546,11 +3781,13 @@ impl<'a> Analysis<'a> {
             vararg_user_annotated_fns: HashSet::default(),
             event_handler_method_payloads: HashMap::default(),
             event_handler_method_conflicts: HashSet::default(),
+            event_handler_typed_params: HashMap::default(),
             event_payload_type_cache: HashMap::default(),
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();
+        analysis.type_scanned_fields_by_own_writes();
         analysis.share_duplicate_class_fields();
         analysis.ir.index_function_body_scopes();
         analysis.mark_external_mixins_open();
@@ -3873,9 +4110,10 @@ pub fn is_table_subtype_impl(
                 }
             }
             // A plain table literal structurally matches a `@class` when it
-            // provides all the class's required fields.
+            // provides all the class's required fields (positional elements
+            // providing `[N]` ones).
             if at.class_name.is_none() && bt.class_name.is_some()
-                && !at.fields.is_empty()
+                && (!at.fields.is_empty() || !at.array_fields.is_empty())
                 && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
                     return true;
                 }
@@ -4321,5 +4559,30 @@ mod stats_tests {
     fn coverage_counts_optional_any_as_unresolved() {
         let stats = analyze("---@type any?\nlocal maybe = nil\nlocal n = 1\n").stats();
         assert_eq!((stats.symbols, stats.resolved_symbols), (2, 1));
+    }
+}
+
+#[cfg(test)]
+mod element_write_tests {
+    use super::*;
+
+    /// A lazy `t.f = t.f or {}` writes the list or record it falls back to;
+    /// another value's `x or {}` holds what `x` does (saved data, say), so it
+    /// doesn't type the field like a table this file builds.
+    #[test]
+    fn or_fallback_is_a_written_table_only_for_lazy_init() {
+        let src = "local T = {}\n\
+                   function T:Queue() self.queue = self.queue or {} end\n\
+                   function T:Load(saved) self.options = saved.options or {} end\n";
+        let tree = crate::syntax::parser::Parser::new(src).parse();
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());
+        analysis.resolve_types();
+        let result = analysis.into_result();
+        let written = |field: &str| {
+            let fa = result.ir.field_assignments.iter().find(|fa| fa.field_name == field).expect("field write");
+            result.ir.writes_unkeyed_table(fa.actual_expr, fa.table_idx, field)
+        };
+        assert!(written("queue"));
+        assert!(!written("options"));
     }
 }

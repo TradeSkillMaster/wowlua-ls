@@ -27,7 +27,7 @@ fn op_symbol(op: Operator) -> &'static str {
 /// Valid for strings and tables (which may have `__len`).
 fn supports_length(ty: &ValueType) -> bool {
     match ty {
-        ValueType::String(_) | ValueType::Table(_) | ValueType::Userdata => true,
+        ValueType::String(_) | ValueType::Table(_) | ValueType::TableShape(_) | ValueType::Userdata => true,
         ValueType::Any | ValueType::TypeVariable(_) => true,
         ValueType::Union(types) => {
             // Strip nil, then check all remaining members support length.

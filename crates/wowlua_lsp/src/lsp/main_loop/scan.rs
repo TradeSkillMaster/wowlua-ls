@@ -630,7 +630,8 @@ pub fn scan_paths_with_overrides(
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                    let mut found = scan_defclass_calls_with_context(root, &defclass_ctx, ipp);
+                    let addon_name = configs.and_then(|c| c.addon_name_for(p));
+                    let mut found = scan_defclass_calls_with_context(root, &defclass_ctx, ipp, addon_name.as_deref());
                     for decl in &mut found {
                         if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                             decl.def_path = Some(p.clone());
@@ -1100,7 +1101,8 @@ pub(super) fn complete_directory_scan(
                 let mut found = Vec::new();
                 let ipp = configs.implicit_protected_prefix_for(p);
                 if needs_defclass {
-                    found.extend(scan_defclass_calls_with_context(root, &defclass_ctx, ipp));
+                    let addon_name = configs.addon_name_for(p);
+                    found.extend(scan_defclass_calls_with_context(root, &defclass_ctx, ipp, addon_name.as_deref()));
                 }
                 if needs_built_name {
                     found.extend(scan_built_name_calls_with_context(root, &built_ctx, ipp));

@@ -48,9 +48,12 @@ Addon:RegisterEvent("ADDON_LOADED", "OnAddonLoaded")
 function Addon:OnConflicted(event, payload)
     local p = payload
 --        ^ hover: (local) p: ?
+    local conflictedEvent = event
+--        ^ hover: (local) conflictedEvent: string
 end
 Addon:RegisterEvent("ADDON_LOADED", "OnConflicted")
 Addon:RegisterEvent("BAG_UPDATE", "OnConflicted")
+Addon:OnConflicted(nil, nil)
 
 -- A conflicted handler that reads raw `...`: the varargs must be left untyped too —
 -- the first-registered event's payload must not leak in through the vararg cache.
@@ -60,3 +63,12 @@ function Addon:OnConflictedVararg(event, ...)
 end
 Addon:RegisterEvent("ADDON_LOADED", "OnConflictedVararg")
 Addon:RegisterEvent("BAG_UPDATE", "OnConflictedVararg")
+
+-- A handler typed by the event it's registered for is still the addon's own
+-- method: calling it directly isn't checked against the event's payload.
+function Addon:OnInventory(event, unit)
+    local ev = event
+--        ^ hover: (local) ev: string
+end
+Addon:RegisterEvent("UNIT_INVENTORY_CHANGED", "OnInventory")
+Addon:OnInventory(nil, "player")

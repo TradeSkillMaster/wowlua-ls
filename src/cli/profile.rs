@@ -155,7 +155,7 @@ pub fn run(dir: PathBuf) -> CliResult {
         let root = syntax::SyntaxNode::new_root(&tree);
         let t = std::time::Instant::now();
         for _ in 0..10 {
-            let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false);
+            let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false, None);
             let _ = annotations::scan_built_name_calls(root, &all_globals, false);
         }
         let dur = t.elapsed() / 10;
@@ -193,7 +193,7 @@ pub fn run(dir: PathBuf) -> CliResult {
             let root = syntax::SyntaxNode::new_root(&tree);
             let _ = annotations::scan_file_globals(root, Some(slowest));
             let _ = annotations::scan_all_annotations(root);
-            let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false);
+            let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false, None);
             let _ = annotations::scan_built_name_calls(root, &all_globals, false);
             let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
             analysis.resolve_types();

@@ -141,7 +141,8 @@ impl AnalysisResult {
     /// - Actual's first return type must be `is_assignable_to` expected's first return.
     ///   Unannotated functions use their body-inferred return type; only when inference
     ///   produces nothing does the return default to Any.
-    /// - `any` on either side satisfies anything (baked into `is_assignable_to`).
+    /// - `any` on either side satisfies anything (baked into `is_assignable_to`), and
+    ///   an actual `_` param or method `self` its body never reads takes any type.
     /// - Vararg on either side disables arity enforcement (but param/return types still
     ///   compared at their declared positions).
     /// - One side is a generic `Function(None)` → always compatible (the loose fallback
@@ -214,8 +215,12 @@ impl AnalysisResult {
         // trailing params don't need to match — the callee is designed to work
         // without them, so the caller's arg type at that position is irrelevant.
         for (pos, &actual_sym) in actual_params.iter().take(actual_required).enumerate() {
-            // `_` params opt out of the value, so their type is irrelevant.
-            if matches!(&self.sym(actual_sym).id, SymbolIdentifier::Name(n) if n == "_") {
+            // `_` params opt out of the value, and so does a method's `self` its body
+            // never reads (`self.Update` passed as a plain callback): their type is
+            // irrelevant.
+            if matches!(&self.sym(actual_sym).id, SymbolIdentifier::Name(n) if n == "_")
+                || (actual_has_self && pos + skip_self == 0 && !self.referenced_symbols.contains(&actual_sym))
+            {
                 continue;
             }
             let actual_ty = self.ir.param_decl_type(self.func(actual_idx), pos + skip_self).cloned()

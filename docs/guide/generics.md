@@ -372,7 +372,7 @@ The LS infers generic bindings from multiple sources:
 
 Inference runs per-call and doesn't persist. Each call site resolves its own bindings independently.
 
-A function marked `@stores-into N` does type the list it stores into: a local table created as `{}` and passed as argument `N`, a `T[]` parameter, gets, as elements, the types of the arguments passed for that signature's `T` parameters. The built-in stubs mark `table.insert`, so `table.insert(list, item)` makes `list` an `Item[]`. Mark your own insert helpers the same way:
+A function marked `@stores-into N` does type the list it stores into: a table created as `{}`, held in a local or a field, and passed as argument `N`, a `T[]` parameter, gets, as elements, the types of the arguments passed for that signature's `T` parameters. The built-in stubs mark `table.insert`, so `table.insert(list, item)` makes `list` an `Item[]`. Mark your own insert helpers the same way:
 
 ```lua
 ---@generic T

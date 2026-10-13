@@ -460,6 +460,11 @@ pub fn populate_class_fields(
             };
             let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
             let bare_inferred = class.bare_inferred_field_names.contains(field_name);
+            // A field another declaration of the class authors keeps its type over
+            // one this declaration's scan inferred.
+            if bare_inferred && ctx.tables[local_idx].fields.get(field_name).is_some_and(|f| !f.from_scan) {
+                continue;
+            }
             if let Some(vt) = vt {
                 let expr_idx = ExprId(EXT_BASE + ctx.exprs.len());
                 ctx.exprs.push(Expr::Literal(vt.clone()));

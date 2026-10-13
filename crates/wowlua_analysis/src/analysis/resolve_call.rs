@@ -1197,6 +1197,9 @@ impl<'a> Analysis<'a> {
             // its element type from the stored values, so checking it against `T[]`
             // would check the list against one of its own values.
             let expected_type = expected_type.filter(|_| !self.call_stores_into(*arg_expr_id));
+            // A handler method's parameter typed by the payload of an event it handles
+            // declares no type a direct call (`self:OnUpdate(nil, "player")`) must match.
+            let expected_type = expected_type.filter(|_| !self.event_payload_param(func_idx, i + self_offset));
             // Skip backtick params (type-name string literals)
             let skip_backtick = matching_overload.is_none()
                 && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick);
@@ -2644,6 +2647,7 @@ impl<'a> Analysis<'a> {
                         if let Some(v) = self.ir.param_decl_version_mut(target_func_idx, self_off + pos) {
                             v.resolved_type = Some(vt);
                         }
+                        self.event_handler_typed_params.entry(target_func_idx).or_default().insert(self_off + pos);
                     }
                 }
             }
@@ -2743,6 +2747,9 @@ impl<'a> Analysis<'a> {
                     v.resolved_type = None;
                 }
             }
+            if let Some(typed) = self.event_handler_typed_params.get_mut(&method_idx) {
+                typed.retain(|pos| !set_params.contains(pos));
+            }
             self.event_handler_method_payloads.remove(&method_idx);
             self.event_handler_method_conflicts.insert(method_idx);
             // Also drop the first registration's payload for the method's raw `...`
@@ -2758,8 +2765,15 @@ impl<'a> Analysis<'a> {
         let set_params: Vec<usize> = (payload_start..payload_start + vararg_types.len())
             .filter(|&pos| self.param_untyped(method_idx, pos))
             .collect();
+        self.event_handler_typed_params.entry(method_idx).or_default().extend(set_params.iter().copied());
         self.event_handler_method_payloads.insert(method_idx, (vararg_types.to_vec(), set_params));
         true
+    }
+
+    /// Whether parameter `pos` of `func_idx` is typed by an event registration of
+    /// the method (`event_handler_typed_params`) rather than declared.
+    fn event_payload_param(&self, func_idx: FunctionIndex, pos: usize) -> bool {
+        self.event_handler_typed_params.get(&func_idx).is_some_and(|params| params.contains(&pos))
     }
 
     /// Whether local function `func_idx` declares a parameter `pos` that is still
@@ -2983,11 +2997,13 @@ impl<'a> Analysis<'a> {
         (matching_overload, overload_self_offset, ambiguous_overload_ret_type)
     }
 
-    /// Index the calls receiving each local table constructor as an argument
-    /// (`table_call_args`). A table that is annotated, a `@class`, or built with
-    /// positional elements is skipped: its element type doesn't come from what
-    /// calls store into it.
-    pub(super) fn collect_table_call_args(&mut self) {
+    /// Index the calls receiving local table constructors as an argument
+    /// (`table_call_args`), directly or through a field holding them
+    /// (`Ir::element_write_tables`). An argument that may hold a table that is
+    /// annotated, a `@class`, built with positional elements, or one of
+    /// `field_maps` is skipped: its element type doesn't come from what calls
+    /// store into it.
+    pub(super) fn collect_table_call_args(&mut self, field_maps: &HashSet<TableIndex>) {
         let mut table_call_args: HashMap<TableIndex, Vec<(ExprId, usize)>> = HashMap::default();
         let mut table_arg_calls: HashMap<ExprId, (ExprId, usize)> = HashMap::default();
         for (call, expr) in self.ir.local_exprs() {
@@ -2995,13 +3011,15 @@ impl<'a> Analysis<'a> {
             for (pos, &arg) in args.iter().enumerate() {
                 // Per-slot copies of a multi-return call share its argument exprs.
                 if table_arg_calls.contains_key(&arg) { continue; }
-                let Some(table_idx) = self.ir.find_table_index(arg) else { continue };
-                if table_idx.is_external() { continue; }
-                let t = self.ir.table(table_idx);
-                if t.value_type_annotated || !t.array_fields.is_empty() || t.class_name.is_some() {
+                let tables = self.ir.element_write_tables(arg);
+                if tables.is_empty()
+                    || !tables.iter().all(|idx| self.ir.element_type_from_writes(*idx) && !field_maps.contains(idx))
+                {
                     continue;
                 }
-                table_call_args.entry(table_idx).or_default().push((call, pos));
+                for table_idx in tables {
+                    table_call_args.entry(table_idx).or_default().push((call, pos));
+                }
                 table_arg_calls.insert(arg, (call, pos));
             }
         }
@@ -4759,6 +4777,12 @@ impl<'a> Analysis<'a> {
     }
 
     fn caller_types_mutually_compatible(&self, caller_types: &[ValueType]) -> bool {
+        // Callers that all pass `any` agree (`intersect_pair` leaves `any` to its
+        // caller). One passing `any` among typed ones still disagrees: letting it
+        // agree changes which stall rounds run, leaving call results stale.
+        if caller_types.iter().all(|t| matches!(t, ValueType::Any)) {
+            return true;
+        }
         for (i, a) in caller_types.iter().enumerate() {
             for b in &caller_types[i + 1..] {
                 if intersect_pair(a, b).is_some() { continue; }

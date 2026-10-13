@@ -1706,8 +1706,52 @@ impl<'a> Analysis<'a> {
                 && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                     *cached_multi_ret_call = Some(expr_id);
                 }
+            self.record_field_element_write(ident, scope_idx, expr_id);
         }
         self.record_indexed_write_sites(ident, names, scope_idx);
+    }
+
+    /// Record `a.b[key] = value` as an element write into the table `a.b` holds,
+    /// found when the fixpoint starts (`Ir::deferred_element_writes`): a list or
+    /// map built in a field (`self.items[#self.items + 1] = v`).
+    fn record_field_element_write(&mut self, ident: Identifier<'a>, scope_idx: ScopeIndex, value: ExprId) {
+        let node = ident.syntax();
+        if node.kind() != SyntaxKind::BracketAccess {
+            return;
+        }
+        // The key was lowered with the rest of the target's keys.
+        let Some(key_node) = node.children().nth(1) else { return };
+        let r = key_node.text_range();
+        let (start, end) = (u32::from(r.start()), u32::from(r.end()));
+        let Some(&(key, _, _)) = self.ir.bracket_index_sites.iter().rev().find(|&&(_, s, e)| (s, e) == (start, end)) else {
+            return;
+        };
+        let Some(table) = node.children().next().and_then(|base| self.field_chain_expr(base, scope_idx)) else {
+            return;
+        };
+        self.ir.deferred_element_writes.push((table, key, value));
+    }
+
+    /// The read of a plain `a.b.c` chain, built without recording a field access
+    /// site.
+    fn field_chain_expr(&mut self, node: SyntaxNode<'a>, scope_idx: ScopeIndex) -> Option<ExprId> {
+        let name = node.children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .last()?
+            .text()
+            .to_string();
+        match node.kind() {
+            SyntaxKind::NameRef => {
+                let sym_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
+                Some(self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx))))
+            }
+            SyntaxKind::DotAccess => {
+                let table = self.field_chain_expr(node.children().next()?, scope_idx)?;
+                Some(self.ir.push_expr(Expr::FieldAccess { table, field: name, field_range: None }))
+            }
+            _ => None,
+        }
     }
 
     /// Whether a string-keyed bracket write (`m["a"] = v`, `self.m["a"] = v`)
@@ -2029,6 +2073,27 @@ impl<'a> Analysis<'a> {
                     && let Some(fi) = self.ir.tables[cur_table.val()].fields.get_mut(field_name)
                 {
                     fi.extra_exprs.push(expr_id);
+                } else if inline_annotation.is_none()
+                    && self.ir.get_field(cur_table, field_name)
+                        .is_some_and(|f| self.ir.write_types_shapeless_scan_field(f, cur_table, field_name, expr_id))
+                {
+                    // The table this file writes types the field over the scan's
+                    // empty copy of it (`ns.Module.items = {}`).
+                    self.ir.mark_unknown_element_tables([expr_id]);
+                    let assign_range = ident.syntax().text_range();
+                    self.ir.insert_overlay_field(cur_table, field_name.clone(), FieldInfo {
+                        expr: expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: Visibility::Public,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                        lateinit: false,
+                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                        flavor_guard: 0,
+                        description: None,
+                        from_scan: false,
+                    });
                 } else if inline_annotation.is_none()
                     && func_id.is_none()
                     && let Some(ValueType::Table(Some(scan_table))) = self.ir.get_field(cur_table, field_name)
@@ -2415,6 +2480,10 @@ impl<'a> Analysis<'a> {
                             self.ir.pending_bracket_assigns.push((
                                 root_name.clone(), scope_idx, expr_id,
                             ));
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                                let base = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
+                                self.ir.deferred_element_writes.push((base, key_id, expr_id));
+                            }
                         }
                     }
             }
@@ -2536,6 +2605,18 @@ impl<'a> Analysis<'a> {
                 // Track multi-return siblings from function calls
                 if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
                     multi_return_group.push((*ret_index, symbol_idx));
+                }
+                // A global a file-level `@defclass` call creates (`MyAddon =
+                // LibStub("AceAddon-3.0"):NewAddon("MyAddon")`) is that class, as
+                // for a local: its methods and `self` writes land on it now.
+                if func_id.is_none()
+                    && assign_annotations.class.is_none()
+                    && !self.ir.symbol_type_annotations.contains_key(&symbol_idx)
+                    && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. })
+                    && let Some(&class_idx) = self.defclass_vars.get(root_name)
+                {
+                    let class_expr = self.ir.push_expr(Expr::Literal(ValueType::Table(Some(class_idx))));
+                    self.ir.set_type_source(symbol_idx, class_expr);
                 }
                 if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
                     // Reassignment path for @type-annotated variables:

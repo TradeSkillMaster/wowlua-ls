@@ -42,8 +42,8 @@
 //! coarse scan type decayed to a **placeholder** — either `any` (a runtime
 //! `self.x = <expr>` the scanner couldn't type at all) or a bare `table`
 //! (`Table(None)`: a top-level `Class.field = <unresolvable call>` write the scan
-//! *heuristically assumes* is a table but whose shape it couldn't capture). On first
-//! read of such a field,
+//! *heuristically assumes* is a table but whose shape it couldn't capture, or the
+//! `table` it annotates a field written `{}` with). On first read of such a field,
 //! `ensure_field_overlay` re-runs the engine on *every* file that declares **or
 //! assigns** the class's fields and installs a precise `FieldInfo` into the per-file
 //! `overlay_fields`, so `get_field` transparently returns the definition-site type.
@@ -60,11 +60,13 @@
 //! each field's RHS types are unioned across all those files (so a field assigned a
 //! class in one and cleared to nil in another lands as `T?`).
 //!
-//! **The eligible placeholders carry no author annotation.** Both the `any` and the
+//! **The eligible placeholders carry no author annotation.** The `any` and the
 //! bare-`table` placeholder are scan-inferred with a `None` annotation, so a
 //! `field-type-mismatch` never fired against them (`had_annotation_at_build` is
 //! false) — sharpening them cannot regress that check even for a field later cleared
-//! to nil. An *explicit* `@field x table` and the `callable_or_unknown`
+//! to nil. The `table` the scan annotates a field written `{}` with (`from_scan`, no
+//! `annotation_text`) is checked only in a file that writes the field, which types it
+//! from its own writes rather than a harvest. An *explicit* `@field x table` and the `callable_or_unknown`
 //! forwarded-callable placeholder are deliberately excluded ([`field_is_coarse_placeholder`]):
 //! the former carries an annotation, the latter a callable guess a non-callable-class
 //! sharpen would false-positive `cannot-call`. Those are the regression-prone slice
@@ -1327,11 +1329,13 @@ fn analyze_file(
 
     // Build per-file AnalysisConfig from project configs if available,
     // otherwise use defaults. The key settings are `correlated_return_overloads`
-    // and `backward_param_types` which affect what the engine infers.
+    // and `backward_param_types` which affect what the engine infers, and the
+    // addon folder name the file's `...` holds (`NewAddon(addonName)` names it).
     let config = match &ext.project_configs {
         Some(configs) => AnalysisConfig {
             correlated_return_overloads: configs.correlated_return_overloads_for(path),
             backward_param_types: configs.backward_param_types_for(path),
+            addon_folder_name: configs.addon_name_for(path),
             ..AnalysisConfig::default()
         },
         None => AnalysisConfig::default(),
@@ -1845,9 +1849,9 @@ fn contains_coarse_placeholder(ty: &ValueType) -> bool {
 }
 
 /// True when a coarse external `@class` field is a cross-file placeholder eligible
-/// for a precise overlay upgrade. Two placeholder shapes qualify, both **carrying no
-/// author annotation** so a `field-type-mismatch` never fired against them
-/// (`had_annotation_at_build` is false) and sharpening them cannot regress that check:
+/// for a precise overlay upgrade. Three placeholder shapes qualify, all **carrying
+/// no author annotation**, so `field-type-mismatch` holds no author contract against
+/// them:
 /// - **`any`** — an explicit `any` annotation, or (the common scan case) no
 ///   annotation with an `Expr::Literal(Any)` placeholder expr: a runtime field the
 ///   scan couldn't type at all (`FieldValueKind::Unknown`);
@@ -1860,8 +1864,13 @@ fn contains_coarse_placeholder(ty: &ValueType) -> bool {
 ///   instead (the self-field scanner's any-over-table policy), so it falls in the
 ///   `any` case above, not here. Already refined *same-file* by the resolver from the
 ///   field's own local assignment; the overlay extends that refinement cross-file.
+/// - **the scan's bare `table` annotation** — `from_scan` with no `annotation_text`:
+///   the type the scan parks on a field written `{}` (`self.items = {}`;
+///   `Ir::is_bare_scan_placeholder`), so a list the defining file builds in it
+///   reads its elements in other files. A file writing the field types it from its
+///   own writes instead, so `field-type-mismatch` never checks against the harvest.
 ///
-/// An *explicit* `@field x table` (`Some(Table(None))`) and the `callable_or_unknown`
+/// An *explicit* `@field x table` (`Some(Table(None))`, never `from_scan`) and the `callable_or_unknown`
 /// forwarded-callable placeholder are deliberately excluded: the former carries an
 /// author annotation (so `had_annotation_at_build` is true and a sharpen could
 /// surface a nil `field-type-mismatch`), the latter a deliberate callable guess that
@@ -1878,6 +1887,13 @@ pub(crate) fn field_is_coarse_placeholder(fi: &crate::types::FieldInfo, ext: &Pr
                 ext.expr(fi.expr),
                 Expr::Literal(ValueType::Any) | Expr::Literal(ValueType::Table(None))
             ))
+        || (fi.from_scan
+            && fi.annotation_text.is_none()
+            && match &fi.annotation {
+                Some(ValueType::Table(None)) => true,
+                Some(ValueType::Table(Some(idx))) => ext.try_table(*idx).is_some_and(|t| t.placeholder),
+                _ => false,
+            })
 }
 
 /// Follow a simple `local b = a` alias chain to the ultimate bound variable, so a

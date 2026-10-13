@@ -612,3 +612,16 @@ Addon:Print("hello")                           -- from AceConsole-3.0
 `AceConsole-3.0`, so their instance methods resolve on the addon object (and on
 `self` inside its methods) without hand-writing `---@class MyAddon : AceEvent-3.0, …`.
 This is built into the bundled Ace3 typings for `NewAddon` and `NewModule`.
+
+An addon named by the file's `...` is the class named after its folder (the one
+holding its `.toc`), the same class `GetAddon(addonName)` returns in every other
+file of the addon:
+
+```lua
+local addonName, ns = ...
+local Addon = LibStub("AceAddon-3.0"):NewAddon(addonName, "AceEvent-3.0")
+
+function Addon:OnInitialize()
+    self.queue = {} -- other files read `Addon.queue` with its element type
+end
+```

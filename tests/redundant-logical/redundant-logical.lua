@@ -228,6 +228,30 @@ _use((dict["missing"] or 9999) < 5)
 local arr = {}
 _use(arr[10] or 0)
 
+-- Popping an empty list yields nil too (`tremove(pool) or {}`, a reusable-table
+-- pool), though the element type is a table: a call returning a `V[]`
+-- argument's element is an element read.
+---@generic V
+---@param list V[]
+---@return V
+local function popEntry(list) return table.remove(list) end
+
+---@generic V
+---@param list V[]
+---@param value V
+---@stores-into 1
+local function pushEntry(list, value) end
+
+local pool = {}
+local function releaseEntry()
+    pushEntry(pool, { reused = true })
+end
+local function acquireEntry()
+    local entry = popEntry(pool) or {}
+    return entry
+end
+_use(releaseEntry, acquireEntry)
+
 -- A lookup grouped in an `or`: the `or` takes the element type, but a missing key
 -- yields its right side, which may be false, so the `and` is not redundant.
 ---@param key string
@@ -875,3 +899,17 @@ local function _useFalseOperand()
     _use(v)
 end
 _use(_useFalseOperand)
+
+-- An element read may be nil: re-reading it after an `x and y` narrowing (the
+-- version restoring it) is still uncertain.
+---@param names string[]
+---@param verbose boolean
+local function describeFirst(names, verbose)
+    local first = names[1]
+    local hasFirst = first and true or false
+    if verbose then
+        return hasFirst
+    elseif first and verbose == false then
+        return first
+    end
+end

@@ -29,6 +29,8 @@ struct DefclassFuncInfo {
     /// Includes the position from the primary signature plus positions derived from each
     /// `@overload` (with the implicit `self` param stripped so indices match call-site args).
     backtick_param_positions: Vec<usize>,
+    /// The primary signature's class-name position (among `backtick_param_positions`).
+    primary_name_pos: Option<usize>,
     /// True when the `...` vararg param is backtick-typed (`` @param ... `T` ``). Each
     /// string-literal argument past the class-name position then names an existing class
     /// to add as a parent of the created class — the Ace `NewAddon(name, "AceEvent-3.0", …)`
@@ -47,6 +49,8 @@ pub struct DefclassContext {
     built_name_funcs: HashMap<String, usize>,
     /// class_name → field_name → field_type, for resolving ClassName._field:Method() patterns
     class_field_types: HashMap<String, HashMap<String, AnnotationType>>,
+    /// class_name → its declarations' parents, for walking a class's ancestors.
+    class_parents: HashMap<String, Vec<String>>,
     /// leaf method name (e.g. `GenerateCallbackEvents`) → spec, for `@generates-events`
     /// detection. Keyed by leaf name so any receiver class inheriting the method matches.
     generates_events: HashMap<String, GeneratesEventsSpec>,
@@ -107,12 +111,10 @@ impl DefclassContext {
             // Collect all call-arg positions where the backtick class-name string may appear.
             // Primary signature: self is NOT in g.params, so index is direct.
             let mut backtick_seen = std::collections::BTreeSet::new();
-            if let Some(pos) = g.params.iter()
+            let primary_name_pos = g.params.iter()
                 .filter(|p| p.name != "...")
-                .position(|p| super::annotation_contains_backtick(&p.typ))
-            {
-                backtick_seen.insert(pos);
-            }
+                .position(|p| super::annotation_contains_backtick(&p.typ));
+            backtick_seen.extend(primary_name_pos);
             // Overloads: self IS the first param when present, so subtract 1.
             for ov in &g.overloads {
                 let has_self = ov.params.first().map(|p| p.name == "self").unwrap_or(false);
@@ -130,7 +132,7 @@ impl DefclassContext {
                 .any(|p| p.name == "..." && matches!(&p.typ, AnnotationType::Backtick(_)));
             defclass_funcs.insert(fp, DefclassFuncInfo {
                 parents, parent_param_idx, values_param_idx, constraint_type_args,
-                parent_generic_name, index_sig_type, backtick_param_positions, vararg_parents,
+                parent_generic_name, index_sig_type, backtick_param_positions, primary_name_pos, vararg_parents,
             });
         }
 
@@ -160,6 +162,7 @@ impl DefclassContext {
         // Build class field type map from existing class declarations for resolving
         // ClassName._field:Method() patterns (e.g. BaseFrame._STATE_SCHEMA:Extend())
         let mut class_field_types: HashMap<String, HashMap<String, AnnotationType>> = HashMap::default();
+        let mut class_parents: HashMap<String, Vec<String>> = HashMap::default();
         for class in all_classes {
             for (field_name, field_type, _) in &class.fields {
                 if !matches!(field_type, AnnotationType::Simple(s) if s == "any") {
@@ -167,6 +170,9 @@ impl DefclassContext {
                         .or_default()
                         .insert(field_name.clone(), field_type.clone());
                 }
+            }
+            if !class.parents.is_empty() {
+                class_parents.entry(class.name.clone()).or_default().extend(class.parents.iter().cloned());
             }
         }
 
@@ -181,7 +187,21 @@ impl DefclassContext {
 
         let generates_events = super::scan_callback::build_generates_events_methods(all_globals);
 
-        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs, class_field_types, generates_events, class_names }
+        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs, class_field_types, class_parents, generates_events, class_names }
+    }
+
+    /// Whether a class among `classes` or their ancestors declares a typed `field`.
+    fn ancestor_declares(&self, classes: &[String], field: &str) -> bool {
+        let mut pending: Vec<&str> = classes.iter().map(String::as_str).collect();
+        let mut seen: HashSet<&str> = HashSet::default();
+        while let Some(class) = pending.pop() {
+            if !seen.insert(class) { continue; }
+            if self.class_field_types.get(class).is_some_and(|fields| fields.contains_key(field)) {
+                return true;
+            }
+            pending.extend(self.class_parents.get(class).into_iter().flatten().map(String::as_str));
+        }
+        false
     }
 
     pub fn is_empty(&self) -> bool {
@@ -189,20 +209,68 @@ impl DefclassContext {
     }
 }
 
+/// A file's addon-name local (`file_addon_name_local`) and the addon name it holds.
+pub struct AddonNameArg<'a> {
+    pub local: Option<&'a str>,
+    pub name: Option<&'a str>,
+}
+
+impl AddonNameArg<'_> {
+    /// Whether call argument `arg` is the addon-name local.
+    pub fn holds(&self, arg: &Expression<'_>) -> bool {
+        let Expression::Identifier(ident) = arg else { return false };
+        self.local.is_some_and(|local| matches!(&ident.names()[..], [name] if name == local))
+    }
+
+    /// The class name a `@defclass` call's `args` give at the first of `positions`
+    /// holding a string literal or the addon's name, and that position. The addon's
+    /// name (`NewAddon(addonName, "AceEvent-3.0")`) ends the search even when the
+    /// addon isn't known: a later string is a mixin, not the name.
+    pub fn class_name_at(&self, args: &[Expression<'_>], positions: &[usize]) -> Option<(String, usize)> {
+        for &pos in positions {
+            match args.get(pos) {
+                Some(Expression::Literal(lit)) => {
+                    if let Some(s) = lit.get_string() {
+                        return Some((s.trim_matches(|c: char| c == '"' || c == '\'').to_string(), pos));
+                    }
+                }
+                Some(arg) if self.holds(arg) => return self.name.map(|name| (name.to_string(), pos)),
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
 /// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
 /// `all_globals` should contain globals from ALL scanned files (not just this file).
-pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
+pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl], implicit_protected_prefix: bool, addon_name: Option<&str>) -> Vec<ClassDecl> {
     let ctx = DefclassContext::new(all_globals, all_classes);
-    scan_defclass_calls_with_context(root, &ctx, implicit_protected_prefix)
+    scan_defclass_calls_with_context(root, &ctx, implicit_protected_prefix, addon_name)
+}
+
+/// The local a file binds its addon's name to: the first value of the file's
+/// `...` (`local addonName, ns = ...`).
+pub fn file_addon_name_local(block: &Block<'_>) -> Option<String> {
+    block.statements().into_iter().find_map(|stmt| {
+        let Statement::LocalAssign(assign) = stmt else { return None };
+        let exprs = assign.expression_list()?.expressions();
+        let [Expression::VarArgs(_)] = exprs[..] else { return None };
+        assign.name_list()?.names().into_iter().next()
+    })
 }
 
 /// Like `scan_defclass_calls`, but uses a pre-built `DefclassContext` to avoid
 /// rebuilding lookup tables from all_globals on every call. Use this when scanning
-/// multiple files against the same set of globals.
-pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassContext, implicit_protected_prefix: bool) -> Vec<ClassDecl> {
+/// multiple files against the same set of globals. `addon_name` is the file's
+/// addon folder name, which a class-name argument holding the addon's name
+/// (`NewAddon(addonName, …)`) names.
+pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassContext, implicit_protected_prefix: bool, addon_name: Option<&str>) -> Vec<ClassDecl> {
     let Some(block) = Block::cast(root) else { return Vec::new() };
     if ctx.defclass_funcs.is_empty() && ctx.generates_events.is_empty() { return Vec::new(); }
+    let addon_name_local = file_addon_name_local(&block);
+    let addon_name_arg = AddonNameArg { local: addon_name_local.as_deref(), name: addon_name };
 
     // Result from find_defclass_in_chain: class name, parents, constraint type arg subs, and table literal fields
     struct DefclassCallResult {
@@ -213,6 +281,9 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         table_literal_fields: Vec<DefclassFieldEntry>,
         /// Index signature type from parent class (for typing absorbed fields)
         index_sig_type: Option<AnnotationType>,
+        /// The name came from the primary signature's name position (or the addon's
+        /// name), not an overload's, which may have taken a mixin for it.
+        named_by_primary: bool,
     }
 
     // Helper: walk a FunctionCall chain to find the innermost defclass call.
@@ -221,6 +292,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
     fn find_defclass_in_chain(
         call: &FunctionCall<'_>,
         defclass_funcs: &HashMap<String, DefclassFuncInfo>,
+        addon_name_arg: &AddonNameArg<'_>,
     ) -> Option<DefclassCallResult> {
         let ident = call.identifier()?;
         let func_names = ident.names();
@@ -254,16 +326,13 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
             // Find the class-name string at any of the known backtick positions (primary or
-            // overloads).  Positions are tried in ascending call-argument index order.
-            let class_name_str = info.backtick_param_positions.iter().find_map(|&pos| {
-                if let Some(Expression::Literal(lit)) = call_args.get(pos) {
-                    lit.get_string()
-                        .map(|s| (s.trim_matches(|c: char| c == '"' || c == '\'').to_string(), pos))
-                } else {
-                    None
-                }
-            });
+            // overloads), tried in ascending call-argument index order.
+            let class_name_str = addon_name_arg.class_name_at(&call_args, &info.backtick_param_positions);
             if let Some((name, name_pos)) = class_name_str {
+                    // A name found past a variable in the primary's name position may be a
+                    // mixin the overload position mistakes for it (`NewAddon(NAME, "AceEvent-3.0")`).
+                    let named_by_primary = Some(name_pos) == info.primary_name_pos
+                        || call_args.get(name_pos).is_some_and(|arg| addon_name_arg.holds(arg));
                     let mut parents = info.parents.clone();
                     let mut constraint_type_arg_subs = Vec::new();
                     // Backtick vararg (`` @param ... `T` ``): every string-literal argument
@@ -322,19 +391,21 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             }
                         })
                         .unwrap_or_default();
-                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs, table_literal_fields, index_sig_type: info.index_sig_type.clone() });
+                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs, table_literal_fields, index_sig_type: info.index_sig_type.clone(), named_by_primary });
                 }
             return None;
         }
 
         // Not a defclass call — check if the identifier contains a nested FunctionCall (method chain)
         let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
-        find_defclass_in_chain(&nested, defclass_funcs)
+        find_defclass_in_chain(&nested, defclass_funcs, addon_name_arg)
     }
 
     let mut results: Vec<ClassDecl> = Vec::new();
     // Map local variable name → index in results (for matching constructor definitions)
     let mut var_to_result: HashMap<String, usize> = HashMap::default();
+    // Results named by their primary signature's name position (`DefclassCallResult::named_by_primary`).
+    let mut primary_named: HashSet<usize> = HashSet::default();
     let mut stmts = Vec::new();
     collect_statements_recursive(&block, &mut stmts);
 
@@ -370,7 +441,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some(mut result) = find_defclass_in_chain(&call, &ctx.defclass_funcs) {
+        if let Some(mut result) = find_defclass_in_chain(&call, &ctx.defclass_funcs, &addon_name_arg) {
             // Resolve variable parent names to actual class names via var_to_result.
             // E.g. DefineClass("Child", ParentVar) records parent as "ParentVar";
             // resolve it to the class name "ParentClass" from the earlier assignment.
@@ -461,6 +532,9 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             let idx = results.len();
             if let Some(var_name) = lhs_var_name {
                 var_to_result.insert(var_name, idx);
+            }
+            if result.named_by_primary {
+                primary_named.insert(idx);
             }
             // Use the statement's text range as the definition location
             let stmt_range = stmt.syntax().text_range();
@@ -658,6 +732,60 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             if result_idx < results.len() {
                 results[result_idx].field_built_names = names.clone();
             }
+        }
+    }
+
+    // The fields the methods of a class without a constructor write
+    // (`function Addon:OnInitialize() self.items = {} end`) exist for other files'
+    // reads: existence-only `any`, which the cross-file field harvest types from
+    // this file. A variable annotated `@class` has them scanned as that class's
+    // self-fields, a field an ancestor declares keeps its type, and a class named
+    // past a variable (`NewAddon(NAME, "AceEvent-3.0")`) may be a mixin the call
+    // only embeds.
+    let annotated_vars = super::annotation_scanning::build_var_to_class(&stmts);
+    let constructed: HashSet<String> = stmts.iter()
+        .filter_map(|stmt| match stmt {
+            Statement::FunctionDefinition(func) => func.identifier(),
+            _ => None,
+        })
+        .filter_map(|ident| match &ident.names()[..] {
+            [root_var, .., method_name] if ctx.constructor_names.contains(method_name) => Some(root_var.clone()),
+            _ => None,
+        })
+        .collect();
+    for stmt in &stmts {
+        let Statement::FunctionDefinition(func) = stmt else { continue };
+        let Some(ident) = func.identifier() else { continue };
+        let [root_var, _] = &ident.names()[..] else { continue };
+        if !ident.is_call_to_self() || constructed.contains(root_var) || annotated_vars.contains_key(root_var) { continue; }
+        let Some(&result_idx) = var_to_result.get(root_var) else { continue };
+        if !primary_named.contains(&result_idx) { continue; }
+        let Some(body) = func.block() else { continue };
+        // `self.x[k] = v` writes into a field rather than writing it.
+        let written: HashSet<String> = body.syntax().descendants()
+            .filter_map(crate::ast::Assign::cast)
+            .filter_map(|assign| assign.variable_list())
+            .flat_map(|targets| targets.identifiers())
+            .filter(|ident| !ident.is_indexed_expression())
+            .filter_map(|ident| match &ident.names()[..] {
+                [receiver, field] if receiver == "self" => Some(field.clone()),
+                _ => None,
+            })
+            .collect();
+        let entries = extract_self_fields(body, &HashMap::default(), &HashMap::default(), &HashMap::default(), &HashMap::default());
+        for entry in entries {
+            if !written.contains(&entry.name)
+                || results[result_idx].fields.iter().any(|(name, _, _)| *name == entry.name)
+                || ctx.ancestor_declares(&results[result_idx].parents, &entry.name)
+            {
+                continue;
+            }
+            if let Some(range) = entry.byte_range {
+                results[result_idx].field_ranges.entry(entry.name.clone()).or_insert(range);
+            }
+            let vis = default_visibility_for_name(&entry.name, implicit_protected_prefix);
+            results[result_idx].bare_inferred_field_names.insert(entry.name.clone());
+            results[result_idx].fields.push((entry.name, AnnotationType::Simple("any".to_string()), vis));
         }
     }
 
@@ -1145,7 +1273,7 @@ mod tests {
         let src = "local Obj = DefineClass(\"MyClass\", \"LibX\", \"LibY\")\n";
         let tree = crate::syntax::parser::parse(src);
         let root = SyntaxNode::new_root(&tree);
-        let result = scan_defclass_calls(root, &globals, &classes, false);
+        let result = scan_defclass_calls(root, &globals, &classes, false, None);
 
         let my = result.iter().find(|c| c.name == "MyClass")
             .expect("should discover MyClass from defclass call");
@@ -1164,7 +1292,7 @@ mod tests {
         let src = "local Obj = DefineClass(\"MyClass\", {}, \"LibX\")\n";
         let tree = crate::syntax::parser::parse(src);
         let root = SyntaxNode::new_root(&tree);
-        let result = scan_defclass_calls(root, &globals, &classes, false);
+        let result = scan_defclass_calls(root, &globals, &classes, false, None);
 
         let my = result.iter().find(|c| c.name == "MyClass")
             .expect("should discover MyClass from defclass call");
@@ -1219,7 +1347,7 @@ mod tests {
         let src = "local A = GetLib(\"x\"):NewAddon(\"MyAddon\", \"AceEvent-3.0\")\n";
         let tree = crate::syntax::parser::parse(src);
         let root = SyntaxNode::new_root(&tree);
-        let result = scan_defclass_calls(root, &globals, &classes, false);
+        let result = scan_defclass_calls(root, &globals, &classes, false, None);
 
         let my = result.iter().find(|c| c.name == "MyAddon")
             .expect("should discover MyAddon from a chained-receiver defclass method call");
@@ -1239,7 +1367,7 @@ mod tests {
         let src = "local A = NewAddon(\"MyAddon\", \"AceEvent-3.0\")\n";
         let tree = crate::syntax::parser::parse(src);
         let root = SyntaxNode::new_root(&tree);
-        let result = scan_defclass_calls(root, &globals, &classes, false);
+        let result = scan_defclass_calls(root, &globals, &classes, false, None);
         assert!(result.iter().all(|c| c.name != "MyAddon"),
             "a plain (non-method) call must not match the dotted-path factory by leaf name, got {:?}",
             result.iter().map(|c| &c.name).collect::<Vec<_>>());
@@ -1265,7 +1393,7 @@ mod tests {
                    Obj.MANGO = 3\n";
         let tree = crate::syntax::parser::parse(src);
         let root = SyntaxNode::new_root(&tree);
-        let result = scan_defclass_calls(root, &globals, &classes, false);
+        let result = scan_defclass_calls(root, &globals, &classes, false, None);
 
         let my = result.iter().find(|c| c.name == "MyClass")
             .expect("should discover MyClass from defclass call");

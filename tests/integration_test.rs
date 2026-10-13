@@ -1090,6 +1090,166 @@ fn list_element_inference() {
 }
 
 #[test]
+fn list_element_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/list-element-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/list-element-crossfile"),
+    });
+}
+
+#[test]
+fn list_element_class_field_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/list-element-crossfile/holder_reader.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/list-element-crossfile"),
+    });
+}
+
+#[test]
+fn list_element_declared_fields() {
+    for lua_file in [
+        "tests/list-element-crossfile/stack_proc.lua",
+        "tests/list-element-crossfile/stack_reader.lua",
+        "tests/list-element-crossfile/authored_user.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/list-element-crossfile"),
+        });
+    }
+}
+
+#[test]
+fn list_element_class_field() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/list-element-crossfile/holder.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/list-element-crossfile"),
+    });
+}
+
+#[test]
+fn list_element_namespace_fields() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/list-element-crossfile/ns_lists.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/list-element-crossfile"),
+    });
+}
+
+#[test]
+fn list_element_ace_addon_fields() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace-addon-lists/addon.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace-addon-lists"),
+    });
+}
+
+#[test]
+fn ace_addon_variable_name_lists() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace-addon-lists/VarAddon/core.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace-addon-lists"),
+    });
+}
+
+/// A workspace `PreResolvedGlobals` for `dir` scanned with the stub declarations,
+/// which the annotation harness's scan leaves out (so it knows the stubs'
+/// `@defclass` factories), and the project configs the scan loaded.
+fn scan_with_stub_decls(dir: &std::path::Path) -> (Arc<PreResolvedGlobals>, Arc<ProjectConfigs>) {
+    let stubs = lsp::load_precomputed_stubs().expect("precomputed stubs");
+    let mut project_configs = ProjectConfigs::default();
+    let scan = lsp::scan_workspace_with_stubs(
+        &[dir.to_path_buf()], &mut project_configs, &stubs.stub_globals, &stubs.stub_classes,
+        STUB_GLOBALS.creates_global_specs(),
+    );
+    let mut sa = scan.aliases;
+    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &scan.events);
+    let mut pg = PreResolvedGlobals::build_on_stubs(
+        &STUB_GLOBALS, &scan.globals, &scan.classes, &sa, false, &scan.addon_ns_class_files, &scan.callable_classes,
+    );
+    pg.merge_events(&scan.events);
+    let configs = Arc::new(project_configs);
+    pg.set_project_configs(Arc::clone(&configs));
+    (Arc::new(pg), configs)
+}
+
+/// The hovers of `locals` in `path`, and its `type-mismatch` / `undefined-field`
+/// warnings, analyzed against `pg`.
+fn scan_hovers_and_warnings(
+    pg: &Arc<PreResolvedGlobals>,
+    configs: &ProjectConfigs,
+    path: &std::path::Path,
+    locals: &[&str],
+) -> (Vec<String>, Vec<String>) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    let config = AnalysisConfig { addon_folder_name: configs.addon_name_for(path), ..AnalysisConfig::default() };
+    let mut a = Analysis::new_with_tree(&tree, Arc::clone(pg), config);
+    a.resolve_types();
+    let result = a.into_result();
+    let hovers = locals.iter().map(|local| {
+        let offset = (text.find(&format!("local {local} ")).unwrap() + "local ".len()) as u32;
+        result.hover_at(&tree, offset).expect("hover on the local").type_str
+    }).collect();
+    let warnings = result.run_diagnostics(&tree).into_iter()
+        .filter(|d| matches!(d.code, "type-mismatch" | "undefined-field"))
+        .map(|d| format!("{}: {}", d.code, d.message))
+        .collect();
+    (hovers, warnings)
+}
+
+#[test]
+fn ace_addon_scan_classes() {
+    // A `NewAddon` addon's class comes from the workspace scan, which only knows
+    // the `@defclass` factory when it scans with the stub declarations.
+    let dir = std::fs::canonicalize("tests/ace-addon-lists").unwrap();
+    let (pg, configs) = scan_with_stub_decls(&dir);
+    let analyze = |file: &str, locals: &[&str]| scan_hovers_and_warnings(&pg, &configs, &dir.join(file), locals);
+
+    // A global addon: its `self.items` list is typed by the file's inserts;
+    // `self.counts`, written keys, reads `any`.
+    let (hovers, _) = analyze("global_addon.lua", &["first", "count"]);
+    assert!(hovers[0].starts_with("(local) first: AceGlobalItem"), "{}", hovers[0]);
+    assert_eq!(hovers[1], "(local) count: any");
+
+    // An addon named by the file's `...` is its folder's class in every file: the
+    // fields its methods write are read in `module.lua` with their types, and
+    // an authored field keeps its declared type.
+    let (hovers, warnings) = analyze("VarAddon/module.lua", &["tracked", "label"]);
+    assert!(hovers[0].starts_with("(local) tracked: VarListItem"), "{}", hovers[0]);
+    assert_eq!(hovers[1], "(local) label: string");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let (_, warnings) = analyze("VarAddon/core.lua", &[]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // Without a known addon, `NewAddon(addonName, "AceEvent-3.0")` creates no
+    // class: the library name after the addon's isn't its class.
+    let (_, warnings) = analyze("variable_name.lua", &[]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn ace_addon_method_fields() {
+    // The fields a created class's methods write exist in other files, but not on
+    // a library class a mixin name was mistaken for, and not over an ancestor's.
+    let dir = std::fs::canonicalize("tests/ace-addon-scan").unwrap();
+    let (pg, configs) = scan_with_stub_decls(&dir);
+    let analyze = |file: &str, locals: &[&str]| scan_hovers_and_warnings(&pg, &configs, &dir.join(file), locals);
+
+    let (_, warnings) = analyze("other_addon.lua", &[]);
+    assert_eq!(warnings, ["undefined-field: undefined field 'secretList' on class 'OtherScanAddon'"]);
+
+    let (hovers, _) = analyze("module_reader.lua", &["libs", "baseName"]);
+    assert_eq!(hovers, ["(local) libs: string[]", "(local) baseName: string?"]);
+}
+
+#[test]
 fn deep_inheritance() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/deep-inheritance.lua",

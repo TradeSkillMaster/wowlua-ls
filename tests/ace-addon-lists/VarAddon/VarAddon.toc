@@ -1,0 +1,4 @@
+## Interface: 110200
+## Title: VarAddon
+core.lua
+module.lua

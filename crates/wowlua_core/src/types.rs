@@ -373,6 +373,18 @@ impl TableShape {
         s
     }
 
+    /// The key and element types of a container shape — an array (`T[]`) is
+    /// keyed by `number` — or `None` for a record.
+    pub fn container_types(&self) -> Option<(ValueType, &ValueType)> {
+        let value = self.value_type.as_deref()?;
+        Some((self.key_type.as_deref().cloned().unwrap_or(ValueType::Number), value))
+    }
+
+    /// Whether this is a map container (`table<K, V>`) rather than an array.
+    pub fn is_map(&self) -> bool {
+        self.key_type.is_some()
+    }
+
     /// The declared type of `name`, if this shape carries it.
     pub fn field(&self, name: &str) -> Option<&ValueType> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
@@ -432,6 +444,22 @@ impl ValueType {
                 }
             }
             ValueType::OpaqueAlias(_, inner) => inner.collect_shape_field_types(field, out),
+            _ => {}
+        }
+    }
+
+    /// The inline `TableShape` containers (`T[]` / `table<K, V>` carried
+    /// cross-file) of this type, recursing into `Union`/`Intersection` members
+    /// and unwrapping opaque aliases.
+    pub fn collect_shape_containers<'a>(&'a self, out: &mut Vec<&'a TableShape>) {
+        match self {
+            ValueType::TableShape(shape) if shape.value_type.is_some() => out.push(shape),
+            ValueType::Union(members) | ValueType::Intersection(members) => {
+                for m in members {
+                    m.collect_shape_containers(out);
+                }
+            }
+            ValueType::OpaqueAlias(_, inner) => inner.collect_shape_containers(out),
             _ => {}
         }
     }

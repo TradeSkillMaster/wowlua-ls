@@ -1142,3 +1142,25 @@ local function processItem(name, num)
     validateItem(name, num, "default")
 end
 processItem("x", 5)
+
+-- ── Callers passing `any` agree ──
+-- Arguments that are all `any` are compatible with each other, so the
+-- parameter still takes the body's hint instead of staying unresolved.
+---@type table<string, any>
+local anyValues = {}
+---@param v any
+local function storeAnyValue(v) end
+local function describeAnyValue(value)
+--                              ^ hover: (param) value: any
+    storeAnyValue(value)
+end
+describeAnyValue(anyValues.first)
+describeAnyValue(anyValues.second)
+
+-- ...but an `any` caller among typed ones still disagrees with them.
+local function describeMixedValue(value)
+--                                ^ hover: (param) value: ?
+    storeAnyValue(value)
+end
+describeMixedValue(anyValues.first)
+describeMixedValue("named")

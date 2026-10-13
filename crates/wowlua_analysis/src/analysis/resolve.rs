@@ -88,7 +88,9 @@ impl<'a> Analysis<'a> {
         // are ever stored, so None always means "no cached result" — never "resolved to nothing".
         self.resolved_expr_cache.resize(self.ir.exprs.len(), None);
         self.resolving_exprs.resize(self.ir.exprs.len(), false);
-        self.collect_table_call_args();
+        self.type_overlay_list_fields();
+        let field_maps = self.collect_deferred_element_writes();
+        self.collect_table_call_args(&field_maps);
 
         // Warm the per-file symbol overlay for any call-typed globals
         // (`@creates-global`, `X = f(...)`) this file references, so their
@@ -269,11 +271,7 @@ impl<'a> Analysis<'a> {
                 // Infer key/value types for tables with bracket assignments.
                 // Must run inside the fixpoint loop so that BracketIndex
                 // expressions can resolve once value_type is set.
-                if self.infer_bracket_field_types() {
-                    // New table types were set — continue the inner loop so
-                    // BracketIndex expressions get another chance to resolve.
-                    continue;
-                }
+                let table_types_set = self.infer_bracket_field_types();
 
                 // Process deferred sibling narrowings: resolve cross-file FieldAccess
                 // callees and apply StripNil versions if the function has return-only overloads.
@@ -281,12 +279,16 @@ impl<'a> Analysis<'a> {
 
                 // Process deferred class-equality narrowings: resolve the RHS of
                 // `x == EXPR` and, if EXPR is a class-typed value, narrow x to that class
-                // and propagate through multi-return siblings.
+                // and propagate through multi-return siblings. Not skipped when table
+                // types were just set: until a narrowing applies, versions reading the
+                // narrowed symbol resolve to its un-narrowed type and keep it.
                 self.resolve_deferred_class_eq_narrowings(&mut pending);
 
                 // Process deferred event-param narrowings: once event_params has been
                 // propagated from overload contextual typing, resolve event payloads.
-                if self.resolve_deferred_event_narrowings() {
+                // When table types were set, continue too, so BracketIndex
+                // expressions get another chance to resolve.
+                if self.resolve_deferred_event_narrowings() || table_types_set {
                     continue;
                 }
 
@@ -388,6 +390,12 @@ impl<'a> Analysis<'a> {
                     new_resolution = true;
                 }
                 if !new_resolution {
+                    // Last, reads waiting on element types that never resolved
+                    // settle; only those still pending need another pass.
+                    if !self.elements_settled && !pending.is_empty() {
+                        self.elements_settled = true;
+                        continue;
+                    }
                     break;
                 }
                 // Clear expression cache so dependent expressions (e.g. field access
@@ -869,12 +877,138 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Whether elements are written into table `table_idx`: bracket assignments
+    /// (and constructor elements `infer_bracket_field_types` defers) or values
+    /// calls store.
+    fn has_element_writes(&mut self, table_idx: TableIndex) -> bool {
+        self.ir.bracket_key_fields.contains_key(&table_idx) || !self.call_element_writes(table_idx).is_empty()
+    }
+
+    /// The element types the writes into table `table_idx` give it before
+    /// `infer_bracket_field_types` folds them into `value_type`: each bracket
+    /// write's (`bracket_written_element`) and stored value's
+    /// (`appended_element`). `None` while one is unresolved — as in
+    /// `infer_bracket_field_types`, a write of unknown type leaves the element
+    /// type unknown rather than the other writes' union. Bracket values keep
+    /// their exact type when `exact`; stored values are broadened like the
+    /// element type they become.
+    pub(super) fn written_element_types(&mut self, table_idx: TableIndex, exact: bool) -> Option<Vec<ValueType>> {
+        let bracket_fields = self.ir.bracket_key_fields.get(&table_idx).cloned().unwrap_or_default();
+        let mut val_types: Vec<ValueType> = Vec::new();
+        for (key_expr, val_expr) in bracket_fields {
+            let vt = if exact { self.resolve_expr(val_expr)? } else { self.resolve_expr_to_broad_type(val_expr)? };
+            if let Some(vt) = self.bracket_written_element(table_idx, key_expr, vt)
+                && !self.is_structurally_duplicate_type(&val_types, &vt)
+            {
+                val_types.push(vt);
+            }
+        }
+        for val_expr in self.call_element_writes(table_idx) {
+            let vt = self.resolve_expr_to_broad_type(val_expr)?;
+            if let Some(vt) = Self::appended_element(vt)
+                && !self.is_structurally_duplicate_type(&val_types, &vt)
+            {
+                val_types.push(vt);
+            }
+        }
+        Some(val_types)
+    }
+
     /// Whether `key` is `#t + 1` for table `table_idx`.
     fn is_append_key(&self, table_idx: TableIndex, key: ExprId) -> bool {
         let Expr::BinaryOp { op: Operator::Add, lhs, rhs } = self.expr(key) else { return false };
         matches!(self.expr(*lhs), Expr::UnaryOp { op: Operator::ArrayLength, operand }
-            if self.ir.find_table_index(*operand) == Some(table_idx))
+            if self.ir.element_write_tables(*operand).contains(&table_idx))
             && self.ir.number_literals.get(rhs).and_then(|n| n.parse::<f64>().ok()) == Some(1.0)
+    }
+
+    /// A field of a table defined elsewhere keeps the type the workspace scan
+    /// gave it — copied onto this file's overlay of the field — unless this
+    /// file builds a list in it: stores (`@stores-into`) or appends
+    /// (`t[#t + 1] = v`) into it and writes it no other key, over a scan type
+    /// that says no more than "a table" (`Ir::is_shapeless_scan_table`), having
+    /// written it a list or record (`Ir::writes_unkeyed_table`). The list the
+    /// file builds then types the field, so its elements are tracked
+    /// (`self.list` on an AceAddon object).
+    fn type_overlay_list_fields(&mut self) {
+        let mut listed: HashSet<(TableIndex, String)> = HashSet::default();
+        let mut keyed: HashSet<(TableIndex, String)> = HashSet::default();
+        for (_, expr) in self.ir.local_exprs() {
+            let Expr::FunctionCall { func, args, .. } = expr else { continue };
+            let Some(list_pos) = self.ir.named_function(*func, 0)
+                .and_then(|f| self.func(f).stores_into)
+                .and_then(|n| n.checked_sub(1))
+            else {
+                continue;
+            };
+            if let Some(target) = args.get(list_pos).and_then(|&arg| self.ir.field_read_target(arg)) {
+                listed.insert(target);
+            }
+        }
+        for &(table, key, value) in &self.ir.deferred_element_writes {
+            let Some(target) = self.ir.field_read_target(table) else { continue };
+            let appends = matches!(self.expr(key), Expr::BinaryOp { op: Operator::Add, lhs, rhs }
+                if matches!(self.expr(*lhs), Expr::UnaryOp { op: Operator::ArrayLength, operand }
+                    if self.ir.field_read_target(*operand).as_ref() == Some(&target))
+                && self.ir.number_literals.get(rhs).and_then(|n| n.parse::<f64>().ok()) == Some(1.0));
+            if appends {
+                listed.insert(target);
+            } else if !matches!(self.expr(value), Expr::Literal(ValueType::Nil)) {
+                keyed.insert(target);
+            }
+        }
+        for (base, field) in listed {
+            if !base.is_external() || keyed.contains(&(base, field.clone())) {
+                continue;
+            }
+            // Only the scan's type gives way: an external field's annotation text
+            // isn't kept, so `from_scan` tells it from an authored `@field items table`.
+            let scanned = self.ir.table(base).fields.get(&field).is_some_and(|fi| fi.from_scan);
+            let takes_over = scanned && self.ir.overlay_fields.get(&base).and_then(|fields| fields.get(&field))
+                .is_some_and(|fi| {
+                    fi.annotation_text.is_none()
+                        && fi.annotation.as_ref().is_some_and(|a| self.ir.is_shapeless_scan_table(a))
+                        && std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
+                            .any(|write| self.ir.writes_unkeyed_table(write, base, &field))
+                });
+            if takes_over && let Some(fi) = self.ir.get_overlay_field_mut(base, &field) {
+                fi.annotation = None;
+                fi.annotation_type_raw = None;
+                let writes: Vec<ExprId> = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()).collect();
+                self.ir.mark_unknown_element_tables(writes);
+            }
+        }
+    }
+
+    /// Add the bracket writes into tables a field holds (`deferred_element_writes`)
+    /// to `bracket_key_fields`, now that the file's field writes are all known.
+    /// Only a list's appends (`t[#t + 1] = v`) count: a table written other keys
+    /// through a field is a map, often scratch state reused for unrelated
+    /// contents, which its writes don't type — returned so that no call types it
+    /// either (`collect_table_call_args`).
+    fn collect_deferred_element_writes(&mut self) -> HashSet<TableIndex> {
+        let mut appends = Vec::new();
+        let mut field_maps: HashSet<TableIndex> = HashSet::default();
+        for (table, key, value) in std::mem::take(&mut self.ir.deferred_element_writes) {
+            // Clearing a slot writes no element.
+            if matches!(self.expr(value), Expr::Literal(ValueType::Nil)) {
+                continue;
+            }
+            for table_idx in self.ir.element_write_tables(table) {
+                if self.is_append_key(table_idx, key) {
+                    appends.push((table_idx, key, value));
+                } else {
+                    field_maps.insert(table_idx);
+                }
+            }
+        }
+        for (table_idx, key, value) in appends {
+            if !field_maps.contains(&table_idx) {
+                self.ir.bracket_key_fields.entry(table_idx).or_default().push((key, value));
+            }
+        }
+        self.ir.unknown_element_tables.extend(field_maps.iter().copied());
+        field_maps
     }
 
     /// Strip specific literal values from a type, keeping only the broad category.
@@ -4202,6 +4336,34 @@ impl<'a> Analysis<'a> {
                     if is_named_class {
                         return Some(ValueType::Any);
                     }
+                    // A table with named fields that elements are also written
+                    // into reads those elements, not its named fields: what
+                    // `infer_bracket_field_types` will fold into `value_type` once
+                    // every written key and value resolves (constructor elements
+                    // first, which that pass types before any later write). A
+                    // table of elements alone waits for the pass. Once settled,
+                    // elements nothing typed in a table that took a scanned
+                    // field's place read as through the scan's `table`.
+                    if !self.table(*idx).fields.is_empty() && self.has_element_writes(*idx) {
+                        if self.elements_settled {
+                            if self.ir.unknown_element_tables.contains(idx) {
+                                return Some(ValueType::Any);
+                            }
+                        } else {
+                            if !self.table(*idx).array_fields.is_empty() {
+                                return None;
+                            }
+                            let keys: Vec<ExprId> = self.ir.bracket_key_fields.get(idx)
+                                .map(|writes| writes.iter().map(|&(key, _)| key).collect())
+                                .unwrap_or_default();
+                            if !keys.into_iter().all(|key| self.resolve_expr(key).is_some()) {
+                                return None;
+                            }
+                            if let Some(vt) = Self::union_of(self.written_element_types(*idx, false)?) {
+                                return Some(vt);
+                            }
+                        }
+                    }
                     let field_data: Vec<(ExprId, Option<ValueType>)> = {
                         let t = self.table(*idx);
                         if t.key_type.is_none() && !t.fields.is_empty() {
@@ -4227,7 +4389,7 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-                vt
+                vt.or_else(|| (self.elements_settled && self.ir.unknown_element_tables.contains(idx)).then_some(ValueType::Any))
             }
             ValueType::Union(types) | ValueType::Intersection(types) => {
                 let is_intersection = matches!(table_type, ValueType::Intersection(_));
@@ -4238,6 +4400,13 @@ impl<'a> Analysis<'a> {
                 let mut value_types: Vec<ValueType> = Vec::new();
                 let key_type_resolved = self.resolve_expr(key);
                 for t in types {
+                    if let ValueType::TableShape(shape) = t {
+                        if let Some(vt) = self.shape_bracket_read(shape, literal_key.as_deref(), key_type_resolved.as_ref())
+                            && !value_types.iter().any(|existing| self.types_equivalent(existing, &vt)) {
+                                value_types.push(vt);
+                            }
+                        continue;
+                    }
                     if let ValueType::Table(Some(idx)) = t {
                         // Literal key → try named field lookup first
                         if let Some(ref lk) = literal_key
@@ -4273,8 +4442,26 @@ impl<'a> Analysis<'a> {
             // Plain `table` (no type params) is the most generic dictionary —
             // bracket access yields any.
             ValueType::Table(None) => Some(ValueType::Any),
+            ValueType::TableShape(shape) => self.shape_bracket_read(shape, literal_key.as_deref(), None),
             _ => None,
         }
+    }
+
+    /// What `t[key]` reads from a table carried across files inline
+    /// (`TableShape`): the field a literal key names, else a container's
+    /// element type — unless `key` doesn't fit the container's key type.
+    fn shape_bracket_read(&self, shape: &crate::types::TableShape, literal_key: Option<&str>, key: Option<&ValueType>) -> Option<ValueType> {
+        if let Some(vt) = literal_key.and_then(|lk| shape.field(lk)) {
+            return Some(vt.clone());
+        }
+        let (shape_key, vt) = shape.container_types()?;
+        if let Some(kt) = key
+            && !kt.is_assignable_to(&shape_key)
+            && !self.is_table_subtype(kt, &shape_key)
+        {
+            return None;
+        }
+        Some(vt.clone())
     }
 
     /// Resolve `Expr::ForInVar`: type of a for-in loop variable from the iterator function's returns / table key/value types.

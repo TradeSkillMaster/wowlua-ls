@@ -444,7 +444,8 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
     } else {
         let mut discovered = Vec::new();
         if text_has_defclass {
-            discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes, ipp));
+            let addon_name = ws.configs.addon_name_for(&file_path);
+            discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes, ipp, addon_name.as_deref()));
         }
         if text_has_built_name {
             discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals, ipp));

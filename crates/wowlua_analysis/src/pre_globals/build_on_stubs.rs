@@ -902,10 +902,14 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
-                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS),
+                // but not one the class declares (`---@field items table`).
                 // Even when skipping, record the source location for go-to-definition.
+                let declared = self.tables[local_idx].class_name.as_ref()
+                    .and_then(|class| self.declared_class_fields.get(class))
+                    .is_some_and(|fields| fields.contains(field_name));
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
+                    .is_some_and(|fi| declared || !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                     self.note_field_write(leaf_idx, field_name, g);
                     continue;

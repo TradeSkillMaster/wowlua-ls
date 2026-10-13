@@ -44,8 +44,8 @@ struct DefclassFuncInfo {
 
 /// Collect the call-argument positions (0-based, self excluded) at which the
 /// backtick class-name string may appear for a `@defclass`-annotated function.
-/// Covers both the primary signature (`func.param_annotations`) and all overloads
-/// (`func.overloads`).
+/// Covers the primary signature (`func.param_annotations`) and, `with_overloads`,
+/// all overloads (`func.overloads`).
 ///
 /// # Self-offset accounting
 ///
@@ -66,6 +66,7 @@ fn collect_defclass_backtick_positions(
     func: &Function,
     is_method_call: bool,
     generic_name: &str,
+    with_overloads: bool,
 ) -> Vec<usize> {
     // Determine whether param_annotations[0] is the synthetic self entry.
     let pa_self_offset = usize::from(
@@ -86,7 +87,7 @@ fn collect_defclass_backtick_positions(
     // Overloads: params are resolved ValueType; backtick resolves to TypeVariable.
     // We check for TypeVariable(generic_name) rather than AnnotationType::Backtick
     // because ResolvedOverloadParam.typ is already a resolved ValueType.
-    for ov in &func.overloads {
+    for ov in func.overloads.iter().filter(|_| with_overloads) {
         if ov.is_return_only { continue; }
         let ov_self_offset = usize::from(
             is_method_call
@@ -648,6 +649,42 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// A field the workspace scan typed no more than "a table" (`self.items =
+    /// {}`, `ns.list = {}`; `Ir::is_shapeless_scan_table`) or registered with no
+    /// type (`field_is_coarse_placeholder`: written in a function) is typed by
+    /// this file's own writes instead when it writes a list or record there
+    /// (`Ir::writes_unkeyed_table`), as with no scan, so what the file builds in
+    /// it (`tinsert(self.items, v)`) reads back. Runs after `build_ir` has
+    /// recorded the writes.
+    pub(super) fn type_scanned_fields_by_own_writes(&mut self) {
+        for t in 0..self.ir.tables.len() {
+            let taken: Vec<String> = self.ir.tables[t].fields.iter()
+                .filter(|(name, fi)| {
+                    fi.from_scan
+                        && fi.annotation_text.is_none()
+                        && fi.expr.is_external()
+                        && (crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext)
+                            || fi.annotation.as_ref().is_some_and(|a| self.ir.is_shapeless_scan_table(a)))
+                        && fi.extra_exprs.iter().any(|&w| self.ir.writes_unkeyed_table(w, TableIndex(t), name))
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            for name in taken {
+                // Navigation keeps the scanned field's definition.
+                let Some(fi) = self.ir.tables[t].fields.get_mut(&name) else { continue };
+                let mut writes = std::mem::take(&mut fi.extra_exprs).into_iter();
+                let Some(first) = writes.next() else { continue };
+                fi.expr = first;
+                fi.extra_exprs = writes.collect();
+                fi.annotation = None;
+                fi.annotation_type_raw = None;
+                fi.from_scan = false;
+                let writes: Vec<ExprId> = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()).collect();
+                self.ir.mark_unknown_element_tables(writes);
+            }
+        }
+    }
+
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
     /// When a call to a `@defclass` function is found with a string literal argument,
     /// auto-create the class table before Phase 1 so methods can be defined on it.
@@ -727,7 +764,7 @@ impl<'a> Analysis<'a> {
                     let exprs = expr_list.expressions();
                     if exprs.len() != 1 { continue; }
                     let Expression::FunctionCall(c) = &exprs[0] else { continue };
-                    (None, *c)
+                    (Self::single_global_target(a), *c)
                 }
                 // Bare function-call statement: `addon:NewAddon("Name")` — no LHS variable.
                 // @defclass still fires; the class is registered but not bound to a local.
@@ -796,7 +833,7 @@ impl<'a> Analysis<'a> {
                         })
                     });
                     let backtick_param_positions =
-                        collect_defclass_backtick_positions(func, is_method_call, dc_name);
+                        collect_defclass_backtick_positions(func, is_method_call, dc_name, true);
                     DefclassFuncInfo {
                         generic_name: dc_name.clone(),
                         constraint_table: ct,
@@ -991,6 +1028,12 @@ impl<'a> Analysis<'a> {
 
         // Also handle dotted paths: local X = tbl.func("ClassName"), ADDON.X = tbl.func("ClassName"):method(),
         // or bare tbl.func("ClassName") / tbl:func("ClassName") statements.
+        let addon_name_local = crate::annotations::scan_defclass::file_addon_name_local(&block);
+        let addon_name = self.ir.addon_folder_name.clone();
+        let addon_name_arg = crate::annotations::scan_defclass::AddonNameArg {
+            local: addon_name_local.as_deref(),
+            name: addon_name.as_deref(),
+        };
         for stmt in block.statements() {
             let (var_name, call) = match &stmt {
                 Statement::LocalAssign(la) => {
@@ -1007,27 +1050,38 @@ impl<'a> Analysis<'a> {
                     let exprs = expr_list.expressions();
                     if exprs.len() != 1 { continue; }
                     let Expression::FunctionCall(c) = &exprs[0] else { continue };
-                    (None, *c)
+                    (Self::single_global_target(a), *c)
                 }
                 // Bare function-call statement — @defclass still fires.
                 Statement::FunctionCall(fc) => (None, *fc),
                 _ => continue,
             };
 
-            // Walk through method chains to find the innermost defclass call.
-            let (call, chained) = Self::find_defclass_call_in_chain(&call);
+            // `Lib("Name"):Method(...)` calls the library class `Name`'s method
+            // (Ace's `LibStub("AceAddon-3.0"):NewAddon("X")`); otherwise walk
+            // through method chains to find the innermost defclass call.
+            let lib_method = crate::annotations::scan_globals::string_keyed_receiver_method(&call);
+            let (call, chained) = if lib_method.is_some() {
+                (call, false)
+            } else {
+                Self::find_defclass_call_in_chain(&call)
+            };
             let Some(ident) = call.identifier() else { continue };
             let func_names = ident.names();
-            if func_names.len() < 2 { continue; }
+            let (root_name, method_name) = match &lib_method {
+                Some((class, method)) => (class, method),
+                None if func_names.len() >= 2 => (&func_names[0], &func_names[func_names.len() - 1]),
+                None => continue,
+            };
 
             let Some(arg_list) = call.arguments() else { continue };
             let call_args = arg_list.expressions();
 
             // Resolve root to a table — check external globals, local_class_vars, and local classes
-            let root_name = &func_names[0];
-            let method_name = &func_names[func_names.len() - 1];
             let root_sym_id = SymbolIdentifier::Name(root_name.clone());
-            let table_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&root_sym_id) {
+            let table_idx = if lib_method.is_some() {
+                self.ir.classes.get(root_name.as_str()).copied()
+            } else if let Some(&sym_idx) = ext.scope0_symbols.get(&root_sym_id) {
                 match &ext.sym(sym_idx).versions.last() {
                     Some(ver) => match &ver.resolved_type {
                         Some(ValueType::Table(Some(idx))) => Some(*idx),
@@ -1056,27 +1110,13 @@ impl<'a> Analysis<'a> {
             };
 
             let is_method_call = call.syntax().kind() == crate::syntax::syntax_kind::SyntaxKind::MethodCall;
+            // A library method's overload can put the class name where the
+            // primary signature takes a mixin name (`NewAddon(object, name)` vs
+            // `NewAddon(name, "AceEvent-3.0")`), which only resolution tells apart.
             let backtick_positions =
-                collect_defclass_backtick_positions(func, is_method_call, defclass_name);
+                collect_defclass_backtick_positions(func, is_method_call, defclass_name, lib_method.is_none());
 
-            let class_name = backtick_positions.iter().find_map(|&pos| {
-                if let Some(Expression::Literal(lit)) = call_args.get(pos) {
-                    lit.get_string()
-                        .map(|s| s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
-                } else {
-                    None
-                }
-            });
-            let Some(class_name) = class_name else { continue };
-
-            // If the class already exists, just register defclass_vars for access checks
-            if let Some(&existing_idx) = self.ir.classes.get(&class_name) {
-                if !chained
-                    && let Some(ref vn) = var_name {
-                        self.defclass_vars.entry(vn.clone()).or_insert(existing_idx);
-                    }
-                continue;
-            }
+            let Some((class_name, _)) = addon_name_arg.class_name_at(&call_args, &backtick_positions) else { continue };
 
             let constraint_table = func.generics.iter()
                 .find(|(n, _)| n == defclass_name)
@@ -1084,6 +1124,24 @@ impl<'a> Analysis<'a> {
                     Some(ValueType::Table(Some(idx))) => Some(*idx),
                     _ => None,
                 });
+
+            // If the class already exists, just register defclass_vars for access checks
+            if let Some(&existing_idx) = self.ir.classes.get(&class_name) {
+                // A library method's name argument can share its backtick type
+                // with the mixins after it (`NewAddon(name, "AceEvent-3.0")`), so
+                // the class must satisfy the generic's constraint to be the one
+                // the call creates.
+                let creates_it = lib_method.is_none() || constraint_table.is_none_or(|ct| {
+                    existing_idx == ct || self.ir.is_subclass_of(existing_idx, ct)
+                });
+                if !chained
+                    && creates_it
+                    && let Some(ref vn) = var_name {
+                        self.defclass_vars.entry(vn.clone()).or_insert(existing_idx);
+                    }
+                continue;
+            }
+
             let constraint_raw = func.generic_constraints_raw.iter()
                 .find(|(n, _)| n == defclass_name)
                 .and_then(|(_, c)| c.clone());
@@ -1155,6 +1213,15 @@ impl<'a> Analysis<'a> {
                     self.defclass_vars.insert(vn.clone(), new_table_idx);
                 }
         }
+    }
+
+    /// The global a `Name = call(...)` statement assigns: its only target, a bare name.
+    fn single_global_target(assign: &crate::ast::Assign<'_>) -> Option<String> {
+        use crate::ast::AstNode;
+        let [ident] = assign.variable_list()?.identifiers()[..] else { return None };
+        let names = ident.names();
+        (names.len() == 1 && ident.syntax().kind() == crate::syntax::syntax_kind::SyntaxKind::NameRef)
+            .then(|| names[0].clone())
     }
 
     /// Extract named field keys from a table literal argument that matches the defclass generic param.
@@ -2465,7 +2532,8 @@ impl<'a> Analysis<'a> {
                                 // intersection arg (`V[] & {[K]: V}`) binds from its map facets
                                 // only — the array facet belongs to a sibling `V[]` part.
                                 let table_indices = self.map_facet_table_indices(&arg_type);
-                                if !table_indices.is_empty() {
+                                let shape_types = Self::map_facet_shape_types(&arg_type);
+                                if !table_indices.is_empty() || !shape_types.is_empty() {
                                     if k_is_generic {
                                         // For each table: use its explicit key_type if present;
                                         // for field-only tables (struct-like) approximate with
@@ -2484,6 +2552,7 @@ impl<'a> Analysis<'a> {
                                                     None
                                                 }
                                             })
+                                            .chain(shape_types.iter().map(|(k, _)| k.clone()))
                                             .collect();
                                         if !key_types.is_empty() {
                                             subs.insert(k_name.clone(), ValueType::make_union(key_types));
@@ -2495,6 +2564,7 @@ impl<'a> Analysis<'a> {
                                         // isn't set (unlike K where we approximate with String).
                                         let val_types: Vec<ValueType> = table_indices.iter()
                                             .filter_map(|&ti| self.ir.table(ti).value_type.clone())
+                                            .chain(shape_types.into_iter().map(|(_, v)| v))
                                             .collect();
                                         if !val_types.is_empty() {
                                             subs.insert(v_name.clone(), self.ir.dedupe_union_tables(ValueType::make_union(val_types)));
@@ -2783,45 +2853,28 @@ impl<'a> Analysis<'a> {
                 }
                 // Table written by bracket assignments or element-storing calls
                 // whose value_type hasn't been set yet (infer_bracket_field_types
-                // runs later in the fixpoint loop). Resolve value expressions
-                // inline so generic binding (e.g. table<T,R> overload params) can
-                // extract the value type now. Bracket values use resolve_expr (not
-                // resolve_expr_to_broad_type) to preserve precision — generic
+                // runs later in the fixpoint loop): read the written values now,
+                // so generic binding (e.g. table<T,R> overload params) can extract
+                // the value type. Bracket values keep their exact type — generic
                 // binding benefits from exact types rather than broadened categories.
-                // Stored values are broadened like the element type they become.
-                // As in infer_bracket_field_types, one write of unknown type leaves
-                // the element type unknown rather than the other writes' union.
-                let bracket_fields = self.ir.bracket_key_fields.get(&idx).cloned().unwrap_or_default();
-                let mut val_types: Vec<ValueType> = Vec::new();
-                for (key_expr, val_expr) in bracket_fields {
-                    let vt = self.resolve_expr(val_expr)?;
-                    if let Some(vt) = self.bracket_written_element(idx, key_expr, vt)
-                        && !self.is_structurally_duplicate_type(&val_types, &vt)
-                    {
-                        val_types.push(vt);
-                    }
-                }
-                for val_expr in self.call_element_writes(idx) {
-                    let vt = self.resolve_expr_to_broad_type(val_expr)?;
-                    if let Some(vt) = Self::appended_element(vt)
-                        && !self.is_structurally_duplicate_type(&val_types, &vt)
-                    {
-                        val_types.push(vt);
-                    }
-                }
-                Self::union_of(val_types)
+                Self::union_of(self.written_element_types(idx, true)?)
             }
+            // A list carried across files inline (`TableShape` container).
+            ValueType::TableShape(shape) => shape.value_type.map(|vt| *vt),
             // Union of array types: e.g. string[] | ItemKey[] → string | ItemKey.
             // An intersection contributes its array facet (`V[] & {[K]: V}`).
             ValueType::Union(members) | ValueType::Intersection(members) => {
                 let mut elem_types: Vec<ValueType> = Vec::new();
                 for member in &members {
-                    if let ValueType::Table(Some(idx)) = member
-                        && !self.table(*idx).is_explicit_map
-                        && let Some(vt) = self.table(*idx).value_type.clone()
-                            && !self.is_structurally_duplicate_type(&elem_types, &vt) {
-                                elem_types.push(vt);
-                            }
+                    let vt = match member {
+                        ValueType::Table(Some(idx)) if !self.table(*idx).is_explicit_map => self.table(*idx).value_type.clone(),
+                        ValueType::TableShape(shape) if !shape.is_map() => shape.value_type.as_deref().cloned(),
+                        _ => None,
+                    };
+                    if let Some(vt) = vt
+                        && !self.is_structurally_duplicate_type(&elem_types, &vt) {
+                            elem_types.push(vt);
+                        }
                 }
                 if !elem_types.is_empty() {
                     Self::union_of(elem_types)
@@ -2855,6 +2908,20 @@ impl<'a> Analysis<'a> {
             .filter(|&ti| self.table(ti).is_explicit_map)
             .collect();
         if maps.is_empty() { all } else { maps }
+    }
+
+    /// [`Self::map_facet_table_indices`] for the containers carried across
+    /// files inline (`TableShape`): their (key, value) types.
+    fn map_facet_shape_types(arg_type: &ValueType) -> Vec<(ValueType, ValueType)> {
+        let mut shapes = Vec::new();
+        arg_type.collect_shape_containers(&mut shapes);
+        if matches!(arg_type, ValueType::Intersection(_)) && shapes.iter().any(|s| s.is_map()) {
+            shapes.retain(|s| s.is_map());
+        }
+        shapes.iter()
+            .filter_map(|s| s.container_types())
+            .map(|(k, v)| (k, v.clone()))
+            .collect()
     }
 
     /// A named field's contribution to a struct-like table's value type: its

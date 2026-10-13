@@ -45,3 +45,14 @@ local function narrower(name) end
 ---@param cb fun(name: string | number)
 local function takesWiderCb(cb) end
 takesWiderCb(narrower)
+
+-- A method passed as a plain callback takes the callback's first argument as
+-- `self`: fine when it never reads `self`, a mismatch when it does.
+---@class CallbackOwner
+---@field label string
+local CallbackOwner = {}
+function CallbackOwner:Refresh() end
+function CallbackOwner:Describe() return self.label end
+takesStringCb(CallbackOwner.Refresh)
+takesStringCb(CallbackOwner.Describe)
+--            ^ diag: type-mismatch
