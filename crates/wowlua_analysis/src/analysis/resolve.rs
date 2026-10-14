@@ -2943,7 +2943,7 @@ impl<'a> Analysis<'a> {
                 // Inherit annotations: inline `---@type` > external `@field` > none
                 let source_fi = if assign.inline_annotation.is_some() {
                     Some((&assign.inline_annotation, &assign.inline_annotation_text,
-                          &assign.inline_type_raw, assign.inline_is_lateinit))
+                          &assign.inline_type_raw, assign.inline_is_lateinit, false))
                 } else {
                     self.ir.table(table_idx).fields.get(&assign.field_name)
                         // Skip inherited Any, and a scanned type this write's value
@@ -2951,11 +2951,11 @@ impl<'a> Analysis<'a> {
                         // concrete type from the assignment RHS.
                         .filter(|f| !matches!(f.annotation, Some(ValueType::Any))
                             && !self.ir.write_supersedes_scanned_type(f, assign.expr_id, assign.in_function))
-                        .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit))
+                        .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit, f.from_scan))
                 };
-                let (ann, ann_text, ann_raw, lateinit) = match source_fi {
-                    Some((a, t, r, l)) => (a.clone(), t.clone(), r.clone(), l),
-                    None => (None, None, None, false),
+                let (ann, ann_text, ann_raw, lateinit, from_scan) = match source_fi {
+                    Some((a, t, r, l, scanned)) => (a.clone(), t.clone(), r.clone(), l, scanned),
+                    None => (None, None, None, false, false),
                 };
                 self.ir.insert_overlay_field(table_idx, assign.field_name.clone(), FieldInfo {
                     expr: assign.expr_id,
@@ -2968,7 +2968,7 @@ impl<'a> Analysis<'a> {
                     def_range: None,
                     flavor_guard: 0,
                     description: None,
-                    from_scan: false,
+                    from_scan,
                 });
             }
 

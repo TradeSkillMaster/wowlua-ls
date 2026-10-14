@@ -138,6 +138,79 @@ end
 }
 
 #[test]
+fn inferred_fields_keep_direct_writes_of_untyped_data_names() {
+    // `role` is untyped data on `Commentator` (a call-assigned field), not a
+    // method: a direct `PollFrame.role = …` write still adds it to `PollFrame`,
+    // while the structural guess onto `RoleRecord` still skips the name.
+    let stub_dir = std::env::temp_dir().join("wowlua-ls-test-inferred-direct-stub");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    std::fs::write(
+        stub_dir.join("Poll.lua"),
+        r#"---@class PollFrame
+PollFrame = {}
+
+---@class RoleRecord
+---@field alpha string
+---@field bravo string
+---@field charlie string
+local RoleRecord = {}
+
+---@class Commentator
+local Commentator = {}
+
+---@return number
+function GetPlayerRole() end
+
+function Commentator:Init()
+    self.role = GetPlayerRole()
+end
+"#,
+    )
+    .unwrap();
+    let paths = vec![stub_dir.join("Poll.lua")];
+    let scan = crate::lsp::scan_paths_with_overrides(
+        &paths,
+        &HashSet::default(),
+        None,
+        &[],
+        &[],
+        &crate::annotations::CreatesGlobalMap::default(),
+    );
+    let pg = crate::pre_globals::PreResolvedGlobals::build(
+        &scan.globals,
+        &scan.classes,
+        &scan.aliases,
+        false,
+        &HashMap::default(),
+        &HashSet::default(),
+    );
+    let commentator = pg.try_table(pg.classes["Commentator"]).unwrap();
+    assert!(commentator.fields.get("role").is_some_and(|fi| fi.annotation.is_none()));
+
+    let ui = std::env::temp_dir().join("wowlua-ls-test-inferred-direct-ui");
+    let _ = std::fs::remove_dir_all(&ui);
+    let iface = ui.join("Interface/AddOns/Blizzard_Test");
+    std::fs::create_dir_all(&iface).unwrap();
+    std::fs::write(
+        iface.join("Poll.lua"),
+        r#"function Blizzard_SetPollRole(rec)
+    print(rec.alpha, rec.bravo, rec.charlie, rec.role)
+    PollFrame.role = rec.role
+end
+"#,
+    )
+    .unwrap();
+
+    let discovered = discover_runtime_fields(&ui, std::sync::Arc::new(pg));
+    assert!(discovered.get("PollFrame").is_some_and(|f| f.contains("role")), "got {discovered:?}");
+    assert!(discovered.get("RoleRecord").is_none_or(|f| !f.contains("role")), "got {discovered:?}");
+
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    let _ = std::fs::remove_dir_all(&ui);
+}
+
+#[test]
 fn test_safe_constant_value() {
     // Self-contained literals/references are kept verbatim.
     assert_eq!(safe_constant_value("number", "5"), "5");

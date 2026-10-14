@@ -3274,6 +3274,31 @@ mod tests {
     }
 
     #[test]
+    fn ctor_instance_field_edits_trigger_rebuild() {
+        // A field a constructor sets on its `setmetatable` instance is a field of the
+        // instance's class, though the file never writes through `self`.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: &str| {
+            let tree = crate::syntax::parser::parse(src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+        let ctor = |write: &str| format!(
+            "---@class Holder\nlocal Holder = {{}}\nHolder.__index = Holder\n\
+             function NewHolder()\n    local h = setmetatable({{}}, Holder)\n{write}    return h\nend\n"
+        );
+        let _ = rebuild(&ctor(""));
+        assert!(
+            !matches!(rebuild(&ctor("    h.count = 0\n")), RebuildScope::None),
+            "a constructor's new instance field must trigger a rebuild",
+        );
+        assert!(
+            matches!(rebuild(&ctor("    h.count = 0\n")), RebuildScope::None),
+            "an unchanged constructor must not",
+        );
+    }
+
+    #[test]
     fn ctor_element_edits_trigger_rebuild() {
         // A global constructor's positional and `[key]` entries decide what other
         // files read through a dynamic index, though the scan keeps only named ones.

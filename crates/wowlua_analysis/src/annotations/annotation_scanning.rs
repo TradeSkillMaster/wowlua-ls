@@ -1,6 +1,6 @@
 use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use crate::ast::{AstNode, Block, Expression, ExpressionList, FunctionCall, Statement};
+use crate::ast::{AstNode, Block, Expression, ExpressionList, FieldKind, FunctionCall, FunctionDefinition, Statement, TableConstructor};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken};
 use crate::types::{TableIndex, ValueType};
@@ -917,122 +917,536 @@ pub(super) fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String,
     map
 }
 
-/// Scan a file for typed self-field assignments in method bodies.
-/// Finds `self.field = expr ---@type Type` (or preceding-line form) in colon-syntax
-/// methods where the receiver name matches a known class name.
+// ── Instance field receivers ────────────────────────────────────────────────
+
+/// A table whose field writes are a class's instance fields: `self` in a method of
+/// the class, or an instance a function builds with `setmetatable` (`local h =
+/// setmetatable({ size = 1 }, Holder)` then `h.count = 0`), whose constructor
+/// entries and writes are the class's fields as a method's `self` writes are.
+struct FieldReceiver<'a> {
+    class_name: String,
+    /// Its name in `body` (empty for an instance only returned).
+    name: String,
+    body: Block<'a>,
+    /// Where an instance's writes start, innermost first: the block binding it and
+    /// the statement there, then each enclosing block and the statement holding the
+    /// inner one. Empty for `self`, whose writes are its whole body.
+    after: Vec<(Block<'a>, usize)>,
+    /// The function `body` belongs to, whose `@param`s type bare writes.
+    func: FunctionDefinition<'a>,
+    /// The class `self` is in `body`, when `func` is a method.
+    self_class: Option<String>,
+    /// An instance's constructor entries: the table `setmetatable` was given.
+    ctor: Option<TableConstructor<'a>>,
+    /// A `setmetatable` instance rather than a method's `self`.
+    instance: bool,
+}
+
+/// Every field receiver in the file: `self` in the methods of known classes
+/// (top-level and control-flow definitions), and the `setmetatable` instances
+/// built in any function body ([`InstanceScan`]).
+fn field_receivers<'a>(root: SyntaxNode<'a>, known_classes: &HashSet<String>) -> Vec<FieldReceiver<'a>> {
+    let Some(block) = Block::cast(root) else { return Vec::new() };
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+    let var_to_class = build_var_to_class(&all_stmts);
+    // A local's own `@class` wins over a class sharing its name.
+    let class_of = |name: &str| -> Option<String> {
+        var_to_class.get(name).filter(|cn| known_classes.contains(*cn)).cloned()
+            .or_else(|| known_classes.contains(name).then(|| name.to_string()))
+    };
+    let method_class = |func: &FunctionDefinition<'_>| -> Option<String> {
+        let ident = func.identifier()?;
+        if !ident.is_call_to_self() { return None; }
+        let names = ident.names();
+        if names.len() < 2 { return None; }
+        // `function A.B:M()` — `self` is `B`, not `A`.
+        class_of(receiver_name(&names))
+    };
+
+    let mut receivers = Vec::new();
+    for stmt in &all_stmts {
+        let Statement::FunctionDefinition(func) = stmt else { continue };
+        let (Some(class_name), Some(body)) = (method_class(func), func.block()) else { continue };
+        receivers.push(FieldReceiver {
+            self_class: Some(class_name.clone()), class_name, name: "self".into(), body,
+            after: Vec::new(), func: *func, ctor: None, instance: false,
+        });
+    }
+
+    let file_metatables = metatable_classes(&all_stmts, &class_of);
+    for node in root.descendants() {
+        let Some(func) = FunctionDefinition::cast(node) else { continue };
+        let Some(body) = func.block() else { continue };
+        let mut scan = InstanceScan {
+            known_classes, class_of: &class_of, file_metatables: &file_metatables,
+            self_class: method_class(&func), body, func,
+            local_tables: HashMap::default(), local_metatables: HashMap::default(),
+            path: Vec::new(), receivers: &mut receivers,
+        };
+        scan.block(body);
+    }
+    receivers
+}
+
+/// Finds the `setmetatable` instances one function body builds: `local h =
+/// setmetatable({...}, mt)`, `h = setmetatable(...)`, `setmetatable(h, mt)` on a
+/// local, and `return setmetatable(...)`. An instance's class is the `---@class` /
+/// `---@type` its statement declares, else the class its metatable names.
+struct InstanceScan<'a, 'r, F> {
+    known_classes: &'r HashSet<String>,
+    class_of: &'r F,
+    file_metatables: &'r HashMap<String, String>,
+    self_class: Option<String>,
+    body: Block<'a>,
+    func: FunctionDefinition<'a>,
+    /// The table constructor each local was last assigned, and where: a later
+    /// `setmetatable` on the local makes it an instance from there.
+    local_tables: HashMap<String, (TableConstructor<'a>, Vec<(Block<'a>, usize)>)>,
+    /// The body's locals holding a metatable whose `__index` is a class.
+    local_metatables: HashMap<String, String>,
+    /// The enclosing blocks and the statement holding the inner one, outermost first.
+    path: Vec<(Block<'a>, usize)>,
+    receivers: &'r mut Vec<FieldReceiver<'a>>,
+}
+
+impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
+    fn block(&mut self, block: Block<'a>) {
+        for (i, stmt) in block.statements().iter().enumerate() {
+            self.statement(stmt, block, i);
+            for inner in child_blocks(stmt) {
+                self.path.push((block, i));
+                self.block(inner);
+                self.path.pop();
+            }
+        }
+    }
+
+    /// Statement `i` of `block` with the enclosing levels, innermost first.
+    fn at(&self, block: Block<'a>, i: usize) -> Vec<(Block<'a>, usize)> {
+        std::iter::once((block, i)).chain(self.path.iter().rev().copied()).collect()
+    }
+
+    fn statement(&mut self, stmt: &Statement<'a>, block: Block<'a>, i: usize) {
+        match stmt {
+            Statement::LocalAssign(assign) => {
+                let names = assign.name_list().map(|n| n.names()).unwrap_or_default();
+                let exprs = assign.expression_list().map(|e| e.expressions()).unwrap_or_default();
+                if let ([name], [value]) = (names.as_slice(), exprs.as_slice()) {
+                    self.bind(name, value, assign.syntax(), block, i);
+                } else {
+                    for name in &names {
+                        self.local_tables.remove(name);
+                    }
+                }
+            }
+            Statement::Assign(assign) => {
+                let targets = assign.variable_list().map(|v| v.identifiers()).unwrap_or_default();
+                let exprs = assign.expression_list().map(|e| e.expressions()).unwrap_or_default();
+                let ([target], [value]) = (targets.as_slice(), exprs.as_slice()) else { return };
+                match target.names().as_slice() {
+                    [name] => self.bind(name, value, assign.syntax(), block, i),
+                    [mt, index] if index == "__index" => {
+                        if let Some(class) = self.named_class(value) {
+                            self.local_metatables.insert(mt.clone(), class);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // `local h = {}` ... `setmetatable(h, Holder)`
+            Statement::FunctionCall(call) => {
+                let Some(args) = setmetatable_call_args(call) else { return };
+                if let Some(name) = args.first().and_then(single_name) {
+                    let class = self.metatable_class(args.get(1));
+                    self.instance_of_local(name, class, block, i);
+                }
+            }
+            // `return setmetatable({ ... }, Holder)` / `return setmetatable(h, Holder)`
+            Statement::Return(ret) => {
+                for value in ret.expression_list().map(|e| e.expressions()).unwrap_or_default() {
+                    let Some(args) = setmetatable_args(&value) else { continue };
+                    let class = self.metatable_class(args.get(1));
+                    match args.first() {
+                        Some(Expression::TableConstructor(tc)) => self.push(String::new(), class, Some(*tc), Vec::new()),
+                        Some(arg) => {
+                            if let Some(name) = single_name(arg) {
+                                self.instance_of_local(name, class, block, i);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `name = value` / `local name = value`, statement `stmt`: an instance when
+    /// `value` is a `setmetatable` call; a table constructor is remembered for a
+    /// later one (and as a metatable when it has an `__index` class).
+    fn bind(&mut self, name: &str, value: &Expression<'a>, stmt: SyntaxNode<'a>, block: Block<'a>, i: usize) {
+        let local_table = self.local_tables.remove(name);
+        self.local_metatables.remove(name);
+        if let Expression::TableConstructor(tc) = value {
+            if let Some(class) = index_value(tc).and_then(|v| self.named_class(&v)) {
+                self.local_metatables.insert(name.to_string(), class);
+            }
+            self.local_tables.insert(name.to_string(), (*tc, self.at(block, i)));
+            return;
+        }
+        let Some(args) = setmetatable_args(value) else { return };
+        let class = declared_class(stmt, value, self.known_classes).or_else(|| self.metatable_class(args.get(1)));
+        let ctor = match args.first() {
+            Some(Expression::TableConstructor(tc)) => Some(*tc),
+            Some(arg) => single_name(arg)
+                .and_then(|table| if table == name { local_table } else { self.local_tables.get(&table).cloned() })
+                .map(|(tc, _)| tc),
+            None => None,
+        };
+        self.push(name.to_string(), class, ctor, self.at(block, i));
+    }
+
+    /// `setmetatable(name, mt)` on a local: an instance from where it was assigned its
+    /// table constructor, so the fields set before the call count too, else from here.
+    fn instance_of_local(&mut self, name: String, class: Option<String>, block: Block<'a>, i: usize) {
+        let (ctor, after) = match self.local_tables.get(&name) {
+            Some((tc, after)) => (Some(*tc), after.clone()),
+            None => (None, self.at(block, i)),
+        };
+        self.push(name, class, ctor, after);
+    }
+
+    fn push(&mut self, name: String, class: Option<String>, ctor: Option<TableConstructor<'a>>, after: Vec<(Block<'a>, usize)>) {
+        let Some(class_name) = class else { return };
+        self.receivers.push(FieldReceiver {
+            class_name, name, body: self.body, after, func: self.func,
+            self_class: self.self_class.clone(), ctor, instance: true,
+        });
+    }
+
+    /// The class named by `expr`: a class's local or global, or `self` in a method.
+    fn named_class(&self, expr: &Expression<'_>) -> Option<String> {
+        let name = single_name(expr)?;
+        if name == "self" { self.self_class.clone() } else { (self.class_of)(&name) }
+    }
+
+    /// The class a `setmetatable` instance gets from its metatable `mt`: a class
+    /// itself (`Holder`, `self` in one of its methods), a table whose `__index` is one
+    /// (`{ __index = Holder }`), or a local holding such a table (the body's own, else
+    /// a file-level one, [`metatable_classes`]).
+    fn metatable_class(&self, mt: Option<&Expression<'_>>) -> Option<String> {
+        let mt = mt?;
+        if let Expression::TableConstructor(tc) = mt {
+            return index_value(tc).and_then(|v| self.named_class(&v));
+        }
+        let name = single_name(mt)?;
+        self.local_metatables.get(&name).cloned()
+            .or_else(|| self.named_class(mt))
+            .or_else(|| self.file_metatables.get(&name).cloned())
+    }
+}
+
+/// The blocks a control-flow statement runs: each branch of an `if`, a loop's or
+/// `do`'s body.
+fn child_blocks<'a>(stmt: &Statement<'a>) -> Vec<Block<'a>> {
+    match stmt {
+        Statement::If(chain) => chain.if_branches().iter().filter_map(|b| b.block())
+            .chain(chain.else_branch().and_then(|b| b.block()))
+            .collect(),
+        Statement::While(_) | Statement::ForInLoop(_) | Statement::ForCountLoop(_)
+        | Statement::Repeat(_) | Statement::Do(_) => stmt.syntax().children().find_map(Block::cast).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The class a statement's `---@class` / `---@type` gives the value it assigns.
+fn declared_class(stmt: SyntaxNode<'_>, value: &Expression<'_>, known_classes: &HashSet<String>) -> Option<String> {
+    super::extract_annotations(stmt).class
+        .or_else(|| extract_inline_class(stmt))
+        .or_else(|| match AssignTargetTypes::new(stmt).get(0, Some(value)) {
+            Some(AnnotationType::Simple(type_name)) => Some(type_name),
+            _ => None,
+        })
+        .filter(|class_name| known_classes.contains(class_name))
+}
+
+/// The lone name `expr` is (`h`, not `a.b` or a call).
+fn single_name(expr: &Expression<'_>) -> Option<String> {
+    let Expression::Identifier(ident) = expr else { return None };
+    if ident.contains_call() { return None; }
+    let [name]: [String; 1] = ident.names().try_into().ok()?;
+    Some(name)
+}
+
+/// A table constructor's `__index` entry.
+fn index_value<'a>(tc: &TableConstructor<'a>) -> Option<Expression<'a>> {
+    tc.fields().iter().find_map(|field| match field.kind() {
+        Some(FieldKind::Named { name, value }) if name == "__index" => Some(value),
+        _ => None,
+    })
+}
+
+/// The arguments of a `setmetatable(...)` call `expr`.
+fn setmetatable_args<'a>(expr: &Expression<'a>) -> Option<Vec<Expression<'a>>> {
+    let Expression::FunctionCall(call) = expr else { return None };
+    setmetatable_call_args(call)
+}
+
+fn setmetatable_call_args<'a>(call: &FunctionCall<'a>) -> Option<Vec<Expression<'a>>> {
+    let names = call.identifier()?.names();
+    (call.syntax().kind() == SyntaxKind::FunctionCall && names.len() == 1 && names[0] == "setmetatable")
+        .then(|| call.arguments().map(|args| args.expressions()))
+        .flatten()
+}
+
+/// File-level locals holding a metatable whose `__index` is a class: `local mt =
+/// { __index = Proto }`, or `mt.__index = Proto` on a local that isn't a class.
+fn metatable_classes(all_stmts: &[Statement<'_>], class_of: &impl Fn(&str) -> Option<String>) -> HashMap<String, String> {
+    let index_class = |value: &Expression<'_>| single_name(value).and_then(|name| class_of(&name));
+    let mut map = HashMap::default();
+    for stmt in all_stmts {
+        match stmt {
+            Statement::LocalAssign(assign) => {
+                let names = assign.name_list().map(|n| n.names()).unwrap_or_default();
+                let exprs = assign.expression_list().map(|e| e.expressions()).unwrap_or_default();
+                let ([name], [Expression::TableConstructor(tc)]) = (names.as_slice(), exprs.as_slice()) else { continue };
+                if let Some(class) = index_value(tc).and_then(|v| index_class(&v)) {
+                    map.insert(name.clone(), class);
+                }
+            }
+            Statement::Assign(assign) => {
+                let targets = assign.variable_list().map(|v| v.identifiers()).unwrap_or_default();
+                let exprs = assign.expression_list().map(|e| e.expressions()).unwrap_or_default();
+                let ([target], [value]) = (targets.as_slice(), exprs.as_slice()) else { continue };
+                let names = target.names();
+                let [mt, index] = names.as_slice() else { continue };
+                if index != "__index" || class_of(mt).is_some() { continue; }
+                if let Some(class) = index_class(value) {
+                    map.insert(mt.clone(), class);
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
+/// A class field's representative write among the file's writes of it
+/// ([`class_field_writes`]): what the three self-field scans read.
+struct FieldWrite {
+    class_name: String,
+    name: String,
+    range: (u32, u32),
+    /// The write's own `---@type`.
+    declared: Option<AnnotationType>,
+    /// A call's callee chain and first string argument ([`funcall_callee`]), which the
+    /// funcall scan types the field from.
+    call: Option<(Vec<String>, Option<String>)>,
+    /// The type the bare scan infers from the value ([`bare_write_type`]).
+    bare: Option<AnnotationType>,
+    /// Another write gives the field a different kind of value: this one's type is
+    /// only one of the field's.
+    mixed: bool,
+}
+
+/// What a write tells about its field's type, to compare writes by.
+#[derive(PartialEq)]
+enum WriteKind<'w> {
+    Type(&'w AnnotationType),
+    Call(&'w [String]),
+}
+
+impl FieldWrite {
+    /// Its declared or inferred type, or the call typing it; `None` for a `nil`
+    /// reset or a value the scan can't type.
+    fn kind(&self) -> Option<WriteKind<'_>> {
+        if let Some(declared) = &self.declared {
+            return Some(WriteKind::Type(declared));
+        }
+        if let Some((callee, _)) = &self.call {
+            return Some(WriteKind::Call(callee));
+        }
+        self.bare.as_ref().filter(|t| !matches!(t, AnnotationType::Simple(s) if s == "any")).map(WriteKind::Type)
+    }
+
+    /// Which scan registers the field from the write, in their precedence: the typed
+    /// one, the funcall one, the bare one, or none (a method's `nil` reset).
+    fn priority(&self) -> u8 {
+        match (&self.declared, &self.call, &self.bare) {
+            (Some(_), _, _) => 3,
+            (None, Some(_), _) => 2,
+            (None, None, Some(_)) => 1,
+            (None, None, None) => 0,
+        }
+    }
+
+    /// Merge a later write of the field by the same receiver: the first stands
+    /// unless the later one declares a type, and two telling different things make
+    /// the field `mixed`.
+    fn merge(&mut self, later: FieldWrite) {
+        let differs = matches!((self.kind(), later.kind()), (Some(a), Some(b)) if a != b);
+        let mixed = self.mixed || later.mixed || differs;
+        if self.declared.is_none() && later.declared.is_some() {
+            *self = later;
+        }
+        self.mixed = mixed;
+    }
+}
+
+/// Every class field the file's receivers ([`field_receivers`]) write: each
+/// receiver's own writes merged ([`FieldWrite::merge`]), then the receiver whose
+/// write the higher-precedence scan registers ([`FieldWrite::priority`]; the
+/// first on a tie).
+fn class_field_writes(root: SyntaxNode<'_>, known_classes: &HashSet<String>) -> Vec<FieldWrite> {
+    let mut writes: Vec<FieldWrite> = Vec::new();
+    let mut index: HashMap<(String, String), usize> = HashMap::default();
+    for recv in field_receivers(root, known_classes) {
+        for write in receiver_writes(&recv) {
+            match index.entry((write.class_name.clone(), write.name.clone())) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    let first = &mut writes[*e.get()];
+                    if write.priority() > first.priority() {
+                        *first = write;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(writes.len());
+                    writes.push(write);
+                }
+            }
+        }
+    }
+    writes
+}
+
+/// `recv`'s writes, one per field: its constructor's named entries, then the
+/// statement-level writes on it (control-flow blocks included, nested functions
+/// not) in all of `self`'s body or after an instance's binding
+/// ([`FieldReceiver::after`]), up to a statement rebinding its name.
+fn receiver_writes(recv: &FieldReceiver<'_>) -> Vec<FieldWrite> {
+    let param_types = super::extract_annotations(recv.func.syntax()).params.into_iter()
+        .map(|p| (p.name, p.typ))
+        .collect();
+    let mut walk = WriteWalk { recv, param_types, seen: HashMap::default(), writes: Vec::new(), rebound: false };
+    for field in recv.ctor.iter().flat_map(|tc| tc.fields()) {
+        let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
+        let Some(range) = name_range(field.syntax(), false) else { continue };
+        let declared = super::scan_globals::constructor_entry_type(field.syntax(), &value);
+        walk.write(name, Some(&value), declared, range);
+    }
+    if !recv.name.is_empty() {
+        if recv.after.is_empty() {
+            walk.statements(recv.body.statements());
+        }
+        for (block, i) in &recv.after {
+            walk.statements(block.statements().into_iter().skip(i + 1));
+        }
+    }
+    walk.writes
+}
+
+/// Collects a receiver's writes ([`receiver_writes`]).
+struct WriteWalk<'a, 'r> {
+    recv: &'r FieldReceiver<'a>,
+    /// The `@param` types of the function, which type a write of a parameter.
+    param_types: HashMap<String, AnnotationType>,
+    /// Each written field's write, in `writes`.
+    seen: HashMap<String, usize>,
+    writes: Vec<FieldWrite>,
+    /// A statement rebound the receiver's name: later writes are to another table.
+    rebound: bool,
+}
+
+impl<'a> WriteWalk<'a, '_> {
+    fn write(&mut self, name: String, value: Option<&Expression<'_>>, declared: Option<AnnotationType>, range: (u32, u32)) {
+        let (call, bare) = match value {
+            _ if declared.is_some() => (None, None),
+            Some(Expression::FunctionCall(call)) => match funcall_callee(call, self.recv) {
+                Some(callee) => (Some(callee), None),
+                None => (None, bare_write_type(value, &self.param_types, self.recv.instance)),
+            },
+            _ => (None, bare_write_type(value, &self.param_types, self.recv.instance)),
+        };
+        let write = FieldWrite { class_name: self.recv.class_name.clone(), name, range, declared, call, bare, mixed: false };
+        match self.seen.get(&write.name) {
+            Some(&first) => self.writes[first].merge(write),
+            None => {
+                self.seen.insert(write.name.clone(), self.writes.len());
+                self.writes.push(write);
+            }
+        }
+    }
+
+    fn statements(&mut self, stmts: impl IntoIterator<Item = Statement<'a>>) {
+        for stmt in stmts {
+            if self.rebound { return; }
+            self.statement(&stmt);
+        }
+    }
+
+    fn statement(&mut self, stmt: &Statement<'a>) {
+        match stmt {
+            Statement::Assign(assign) => {
+                let Some(vl) = assign.variable_list() else { return };
+                let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                let target_types = AssignTargetTypes::new(assign.syntax());
+                for (i, ident) in vl.identifiers().iter().enumerate() {
+                    match ident.names().as_slice() {
+                        [name] if *name == self.recv.name => self.rebound = true,
+                        [root, field] if *root == self.recv.name => {
+                            let Some(range) = name_range(ident.syntax(), true) else { continue };
+                            self.write(field.clone(), exprs.get(i), target_types.get(i, exprs.get(i)), range);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Statement::LocalAssign(assign) => {
+                if assign.name_list().is_some_and(|names| names.names().contains(&self.recv.name)) {
+                    self.rebound = true;
+                }
+            }
+            _ => {
+                for block in child_blocks(stmt) {
+                    self.statements(block.statements());
+                }
+            }
+        }
+    }
+}
+
+/// The range of the first `Name` token directly in `node` (an entry's key), or
+/// the `last` one (the field of a `recv.field` target).
+fn name_range(node: SyntaxNode<'_>, last: bool) -> Option<(u32, u32)> {
+    let mut names = node.children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .filter(|t| t.kind() == SyntaxKind::Name);
+    if last { names.last() } else { names.next() }
+        .map(|t| {
+            let r = t.text_range();
+            (u32::from(r.start()), u32::from(r.end()))
+        })
+}
+
+/// Scan a file for typed instance-field writes: `self.field = expr ---@type Type`
+/// (or the preceding-line form) in the methods of known classes, and the same on
+/// the `setmetatable` instances functions build, constructor entries included
+/// ([`field_receivers`]).
 pub fn scan_method_typed_self_fields(
     root: SyntaxNode<'_>,
     known_classes: &HashSet<String>,
     implicit_protected_prefix: bool,
 ) -> Vec<TypedSelfField> {
     let mut results = Vec::new();
-    let Some(block) = Block::cast(root) else { return results };
-    let mut all_stmts = Vec::new();
-    collect_statements_recursive(&block, &mut all_stmts);
-    let var_to_class = build_var_to_class(&all_stmts);
-    for stmt in &all_stmts {
-        let Statement::FunctionDefinition(func) = stmt else { continue };
-        let Some(ident) = func.identifier() else { continue };
-        if !ident.is_call_to_self() { continue; }
-        let names = ident.names();
-        if names.len() < 2 { continue; }
-        // For deep chains like `function addonTable.SubModule:Method()`,
-        // `self` refers to the table before the colon — not names[0].
-        // Using names[0] would misattribute self-fields to the root table's
-        // class instead of the sub-table's class.
-        let receiver = receiver_name(&names);
-        let class_name = if known_classes.contains(receiver) {
-            receiver.to_string()
-        } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
-            cn.clone()
-        } else {
-            continue;
-        };
-        let Some(body) = func.block() else { continue };
-        // Walk the method body for typed self-field assignments
-        let mut seen = HashSet::default();
-        let mut field_list = Vec::new();
-        scan_typed_self_fields_inner(body, &mut field_list, &mut seen);
-        for (field_name, ann_type, range) in field_list {
-            let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
-            results.push(TypedSelfField {
-                class_name: class_name.clone(), field_name, annotation_type: ann_type,
-                visibility: vis, byte_range: range, inferred: false,
-            });
-        }
+    for write in class_field_writes(root, known_classes) {
+        let Some(annotation_type) = write.declared else { continue };
+        results.push(TypedSelfField {
+            visibility: default_visibility_for_name(&write.name, implicit_protected_prefix),
+            class_name: write.class_name, field_name: write.name, annotation_type, byte_range: write.range, inferred: false,
+        });
     }
     results
-}
-
-/// Walk a block for `self.field = expr` assignments that have explicit `---@type` annotations.
-/// Only captures fields with type annotations (not inferred).
-fn scan_typed_self_fields_inner(
-    block: Block<'_>,
-    fields: &mut Vec<(String, AnnotationType, (u32, u32))>,
-    seen: &mut HashSet<String>,
-) {
-    for stmt in block.statements() {
-        match &stmt {
-            Statement::Assign(assign) => {
-                if let Some(vl) = assign.variable_list() {
-                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
-                    let target_types = AssignTargetTypes::new(assign.syntax());
-                    for (i, ident) in vl.identifiers().iter().enumerate() {
-                        let names = ident.names();
-                        if names.len() == 2 && names[0] == "self" {
-                            let field_name = &names[1];
-                            if !seen.insert(field_name.clone()) { continue; }
-                            // Only capture fields with explicit ---@type annotations
-                            if let Some(ann_type) = target_types.get(i, exprs.get(i)) {
-                                let field_range = ident.syntax().children_with_tokens()
-                                    .filter_map(|c| c.into_token()).find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
-                                    .map(|t| {
-                                        let r = t.text_range();
-                                        (u32::from(r.start()), u32::from(r.end()))
-                                    });
-                                if let Some(range) = field_range {
-                                    fields.push((field_name.clone(), ann_type, range));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Statement::If(if_chain) => {
-                for child in if_chain.syntax().children() {
-                    if let Some(b) = Block::cast(child) {
-                        scan_typed_self_fields_inner(b, fields, seen);
-                    }
-                }
-            }
-            Statement::While(w) => {
-                if let Some(b) = w.syntax().children().find_map(Block::cast) {
-                    scan_typed_self_fields_inner(b, fields, seen);
-                }
-            }
-            Statement::ForInLoop(f) => {
-                if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    scan_typed_self_fields_inner(b, fields, seen);
-                }
-            }
-            Statement::ForCountLoop(f) => {
-                if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    scan_typed_self_fields_inner(b, fields, seen);
-                }
-            }
-            Statement::Repeat(r) => {
-                if let Some(b) = r.syntax().children().find_map(Block::cast) {
-                    scan_typed_self_fields_inner(b, fields, seen);
-                }
-            }
-            Statement::Do(d) => {
-                if let Some(b) = d.syntax().children().find_map(Block::cast) {
-                    scan_typed_self_fields_inner(b, fields, seen);
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Whether a call's callee/receiver chain contains a nested call —
@@ -1083,7 +1497,7 @@ pub fn string_literal_call(call: &FunctionCall<'_>) -> Option<super::EnumCallDec
     Some(super::EnumCallDecl { callee, args })
 }
 
-/// Scan method bodies for `self.field = funcall()` without explicit `---@type`.
+/// Scan the writes of [`field_receivers`] for `recv.field = funcall()` without explicit `---@type`.
 /// Returns ExternalGlobal entries with FieldValueKind::FunctionCall so that
 /// build_on_stubs can resolve the return type through the normal funcall chain.
 pub fn scan_method_funcall_self_fields(
@@ -1094,199 +1508,100 @@ pub fn scan_method_funcall_self_fields(
     source_path: Option<PathBuf>,
 ) -> Vec<ExternalGlobal> {
     let mut results = Vec::new();
-    let Some(block) = Block::cast(root) else { return results };
-    let mut all_stmts = Vec::new();
-    collect_statements_recursive(&block, &mut all_stmts);
-    let var_to_class = build_var_to_class(&all_stmts);
-    for stmt in &all_stmts {
-        let Statement::FunctionDefinition(func) = stmt else { continue };
-        let Some(ident) = func.identifier() else { continue };
-        if !ident.is_call_to_self() { continue; }
-        let names = ident.names();
-        if names.len() < 2 { continue; }
-        let receiver = receiver_name(&names);
-        let class_name = if known_classes.contains(receiver) {
-            receiver.to_string()
-        } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
-            cn.clone()
-        } else {
+    for write in class_field_writes(root, known_classes) {
+        if write.declared.is_some() || write.mixed { continue; }
+        let Some((callee, first_string_arg)) = write.call else { continue };
+        // Skip fields already captured with explicit @type
+        if typed_self_field_names.contains(&(write.class_name.clone(), write.name.clone())) {
             continue;
-        };
-        let Some(body) = func.block() else { continue };
-        let mut seen = HashSet::default();
-        let mut field_list = Vec::new();
-        scan_funcall_self_fields_inner(body, &class_name, &mut field_list, &mut seen);
-        for (field_name, callee_names, first_string_arg, range) in field_list {
-            // Skip fields already captured with explicit @type
-            if typed_self_field_names.contains(&(class_name.clone(), field_name.clone())) {
-                continue;
-            }
-            let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
-            results.push(ExternalGlobal {
-                name: class_name.clone(),
-                kind: ExternalGlobalKind::TableField(
-                    Vec::new(),
-                    field_name,
-                    FieldValueKind::FunctionCall {
-                        callee: callee_names, first_string_arg, literal_args: Vec::new(), arg_refs: Vec::new(),
-                    },
-                ),
-                params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
-                overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false,
-                constructor: false, visibility: vis,
-                generics: Vec::new(), defclass: None, defclass_parent: None,
-                source_path: source_path.clone(),
-                def_start: range.0, def_end: range.1,
-                builds_field: None, built_name: None, built_extends: false,
-                type_narrows: None, type_narrows_class: None,
-                string_value: None, number_value: None,
-                is_override: false, is_meta: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
-                implicit_nil_return: false,
-                narrows_arg: None,
-                stores_into: None,
-                creates_global: None,
-                generates_events: None,
-                callback_event_arg: None,
-                requires: Vec::new(),
-                body_derived_returns: false,
-                deferred_call_type: false,
-                assigned_call_offset: None,
-                ctor_fields: Vec::new(),
-                declares_class: false,
-                ctor_method: false,
-                name_start: range.0,
-                name_end: range.1,
-                mixin_parents: Vec::new(),
-                returns_class_name: false,
-                returns_enum: false,
-                secret: None,
-            });
         }
+        let vis = default_visibility_for_name(&write.name, implicit_protected_prefix);
+        results.push(ExternalGlobal {
+            name: write.class_name,
+            kind: ExternalGlobalKind::TableField(
+                Vec::new(),
+                write.name,
+                FieldValueKind::FunctionCall {
+                    callee, first_string_arg, literal_args: Vec::new(), arg_refs: Vec::new(),
+                },
+            ),
+            params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
+            overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false,
+            constructor: false, visibility: vis,
+            generics: Vec::new(), defclass: None, defclass_parent: None,
+            source_path: source_path.clone(),
+            def_start: write.range.0, def_end: write.range.1,
+            builds_field: None, built_name: None, built_extends: false,
+            type_narrows: None, type_narrows_class: None,
+            string_value: None, number_value: None,
+            is_override: false, is_meta: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
+            implicit_nil_return: false,
+            narrows_arg: None,
+            stores_into: None,
+            creates_global: None,
+            generates_events: None,
+            callback_event_arg: None,
+            requires: Vec::new(),
+            body_derived_returns: false,
+            deferred_call_type: false,
+            assigned_call_offset: None,
+            ctor_fields: Vec::new(),
+            declares_class: false,
+            ctor_method: false,
+            name_start: write.range.0,
+            name_end: write.range.1,
+            mixin_parents: Vec::new(),
+            returns_class_name: false,
+            returns_enum: false,
+            secret: None,
+        });
     }
     results
 }
 
-/// (field_name, callee_names, first_string_arg, byte_range)
-type FuncallSelfField = (String, Vec<String>, Option<String>, (u32, u32));
-
-/// Walk a block for `self.field = call()` assignments without explicit `---@type`.
-fn scan_funcall_self_fields_inner(
-    block: Block<'_>,
-    class_name: &str,
-    fields: &mut Vec<FuncallSelfField>,
-    seen: &mut HashSet<String>,
-) {
-    for stmt in block.statements() {
-        match &stmt {
-            Statement::Assign(assign) => {
-                if let Some(vl) = assign.variable_list() {
-                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
-                    let target_types = AssignTargetTypes::new(assign.syntax());
-                    for (i, ident) in vl.identifiers().iter().enumerate() {
-                        let names = ident.names();
-                        if names.len() == 2 && names[0] == "self" {
-                            let field_name = &names[1];
-                            if !seen.insert(field_name.clone()) { continue; }
-                            // Skip if there's an explicit @type annotation
-                            if target_types.get(i, exprs.get(i)).is_some() {
-                                continue;
-                            }
-                            // Only handle function call expressions
-                            let Some(Expression::FunctionCall(call)) = exprs.get(i) else { continue };
-                            // Determine the callee chain + defclass string-arg hint. A
-                            // chained-receiver call collapses `call.identifier().names()`
-                            // to just the trailing method, dropping the receiver —
-                            // unresolvable in general — EXCEPT the `Lib("Name"):Method(...)`
-                            // idiom (the ubiquitous LibStub pattern, e.g.
-                            // `self.db = LibStub("AceDB-3.0"):New(...)`), which resolves to
-                            // the `[Name, Method]` chain so build_on_stubs walks class
-                            // `Name` to `Method`. Mirrors scan_globals' `scan_funcall_callee`.
-                            // Any other chained receiver is left to the bare scanner, which
-                            // registers it existence-only as `any` (that bare entry is
-                            // dropped by `merge_self_field_results` whenever this funcall
-                            // entry covers the same field).
-                            let (callee_names, first_string_arg) = if funcall_has_chained_receiver(call) {
-                                match string_keyed_receiver_method(call) {
-                                    Some((recv_class, method)) => (vec![recv_class, method], None),
-                                    None => continue,
-                                }
-                            } else {
-                                let Some(call_ident) = call.identifier() else { continue };
-                                let mut callee_names = call_ident.names();
-                                if callee_names.is_empty() { continue; }
-                                // Canonicalize `self` → class name in callee chain
-                                if callee_names[0] == "self" {
-                                    callee_names[0] = class_name.to_string();
-                                }
-                                let first_string_arg = call.arguments().and_then(|al| {
-                                    let args = al.expressions();
-                                    if let Some(Expression::Literal(lit)) = args.first() {
-                                        lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
-                                    } else {
-                                        None
-                                    }
-                                });
-                                (callee_names, first_string_arg)
-                            };
-                            let field_range = ident.syntax().children_with_tokens()
-                                .filter_map(|c| c.into_token())
-                                .find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
-                                .map(|t| {
-                                    let r = t.text_range();
-                                    (u32::from(r.start()), u32::from(r.end()))
-                                });
-                            if let Some(range) = field_range {
-                                fields.push((field_name.clone(), callee_names, first_string_arg, range));
-                            }
-                        }
-                    }
-                }
-            }
-            Statement::If(if_chain) => {
-                for child in if_chain.syntax().children() {
-                    if let Some(b) = Block::cast(child) {
-                        scan_funcall_self_fields_inner(b, class_name, fields, seen);
-                    }
-                }
-            }
-            Statement::While(w) => {
-                if let Some(b) = w.syntax().children().find_map(Block::cast) {
-                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
-                }
-            }
-            Statement::ForInLoop(f) => {
-                if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
-                }
-            }
-            Statement::ForCountLoop(f) => {
-                if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
-                }
-            }
-            Statement::Repeat(r) => {
-                if let Some(b) = r.syntax().children().find_map(Block::cast) {
-                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
-                }
-            }
-            Statement::Do(d) => {
-                if let Some(b) = d.syntax().children().find_map(Block::cast) {
-                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
-                }
-            }
-            _ => {}
-        }
+/// The callee chain of a write's call value and its first string argument (the
+/// defclass hint), the receiver (and a method's `self`) renamed to its class. A
+/// chained-receiver call collapses `call.identifier().names()` to just the trailing
+/// method, dropping the receiver — unresolvable in general — EXCEPT the
+/// `Lib("Name"):Method(...)` idiom (the ubiquitous LibStub pattern, e.g.
+/// `self.db = LibStub("AceDB-3.0"):New(...)`), which resolves to the `[Name, Method]`
+/// chain so build_on_stubs walks class `Name` to `Method`. Mirrors scan_globals'
+/// `scan_funcall_callee`. Any other chained receiver is left to the bare scanner,
+/// which registers it existence-only as `any` (that bare entry is dropped by
+/// `merge_self_field_results` whenever this funcall entry covers the same field).
+fn funcall_callee(call: &FunctionCall<'_>, recv: &FieldReceiver<'_>) -> Option<(Vec<String>, Option<String>)> {
+    if funcall_has_chained_receiver(call) {
+        return string_keyed_receiver_method(call).map(|(recv_class, method)| (vec![recv_class, method], None));
     }
+    let mut callee_names = call.identifier()?.names();
+    let root = callee_names.first_mut()?;
+    if *root == recv.name {
+        *root = recv.class_name.clone();
+    } else if root == "self" && let Some(class_name) = &recv.self_class {
+        *root = class_name.clone();
+    }
+    let first_string_arg = call.arguments().and_then(|al| {
+        let args = al.expressions();
+        if let Some(Expression::Literal(lit)) = args.first() {
+            lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+        } else {
+            None
+        }
+    });
+    Some((callee_names, first_string_arg))
 }
 
 // ── Bare self-field scanning ─────────────────────────────────────────────────
 
-/// Scan method bodies for `self.field = expr` assignments that have neither
+/// Scan the writes of [`field_receivers`] (`self.field = expr` in methods, a
+/// `setmetatable` instance's constructor entries and writes) that have neither
 /// explicit `---@type` annotations nor function-call RHS. Infers types from:
 /// - `@param` annotations on the enclosing function (when RHS is a parameter name)
 /// - Literal expressions (number, string, boolean)
 /// - Table constructors → `table`
-/// - Falls back to `any` for other expressions
+/// - Falls back to `any` for other expressions, and for a field written different
+///   kinds of value ([`FieldWrite::mixed`]), which the class-field harvest types
+///   from all its writes
 ///
 /// Results have lowest priority: only adds fields not already captured by
 /// typed or funcall self-field scans.
@@ -1297,190 +1612,109 @@ pub fn scan_method_bare_self_fields(
     already_captured: &HashSet<(String, String)>,
 ) -> Vec<TypedSelfField> {
     let mut results = Vec::new();
-    let Some(block) = Block::cast(root) else { return results };
-    let mut all_stmts = Vec::new();
-    collect_statements_recursive(&block, &mut all_stmts);
-    let var_to_class = build_var_to_class(&all_stmts);
-    for stmt in &all_stmts {
-        let Statement::FunctionDefinition(func) = stmt else { continue };
-        let Some(ident) = func.identifier() else { continue };
-        if !ident.is_call_to_self() { continue; }
-        let names = ident.names();
-        if names.len() < 2 { continue; }
-        let receiver = receiver_name(&names);
-        let class_name = if known_classes.contains(receiver) {
-            receiver.to_string()
-        } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
-            cn.clone()
-        } else {
+    for write in class_field_writes(root, known_classes) {
+        if write.declared.is_some() { continue; }
+        let annotation_type = if write.mixed {
+            AnnotationType::Simple("any".into())
+        } else if write.call.is_some() {
             continue;
+        } else {
+            let Some(annotation_type) = write.bare else { continue };
+            annotation_type
         };
-        let Some(body) = func.block() else { continue };
-        // Build param name → type map from @param annotations
-        let annotations = super::extract_annotations(func.syntax());
-        let param_types: HashMap<&str, &AnnotationType> = annotations.params.iter()
-            .map(|p| (p.name.as_str(), &p.typ))
-            .collect();
-        let mut seen = HashSet::default();
-        let mut field_list = Vec::new();
-        scan_bare_self_fields_inner(body, &param_types, &mut field_list, &mut seen);
-        for (field_name, ann_type, range) in field_list {
-            if already_captured.contains(&(class_name.clone(), field_name.clone())) {
-                continue;
-            }
-            let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
-            results.push(TypedSelfField {
-                class_name: class_name.clone(), field_name, annotation_type: ann_type,
-                visibility: vis, byte_range: range, inferred: true,
-            });
+        if already_captured.contains(&(write.class_name.clone(), write.name.clone())) {
+            continue;
         }
+        results.push(TypedSelfField {
+            visibility: default_visibility_for_name(&write.name, implicit_protected_prefix),
+            class_name: write.class_name, field_name: write.name, annotation_type, byte_range: write.range, inferred: true,
+        });
     }
     results
 }
 
-/// Walk a block for bare `self.field = expr` assignments (no @type, not funcall).
-fn scan_bare_self_fields_inner(
-    block: Block<'_>,
-    param_types: &HashMap<&str, &AnnotationType>,
-    fields: &mut Vec<(String, AnnotationType, (u32, u32))>,
-    seen: &mut HashSet<String>,
-) {
-    for stmt in block.statements() {
-        match &stmt {
-            Statement::Assign(assign) => {
-                if let Some(vl) = assign.variable_list() {
-                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
-                    let target_types = AssignTargetTypes::new(assign.syntax());
-                    for (i, ident) in vl.identifiers().iter().enumerate() {
-                        let names = ident.names();
-                        if names.len() == 2 && names[0] == "self" {
-                            let field_name = &names[1];
-                            if !seen.insert(field_name.clone()) { continue; }
-                            // Skip if there's an explicit @type annotation (handled by typed scan)
-                            if target_types.get(i, exprs.get(i)).is_some() {
-                                continue;
-                            }
-                            // Infer type from RHS expression
-                            let ann_type = match exprs.get(i) {
-                                // A funcall RHS with a resolvable named callee
-                                // (`self.x = Foo()` / `self.x = a.b.c()`) is handled by
-                                // the funcall scan, which recovers the real return type
-                                // — skip it here. A *chained* funcall
-                                // (`self.x = Foo():Bar()`, `self.x = LibStub("X"):New()`)
-                                // has a call as its receiver, so the coarse scan can't
-                                // resolve the chain; the funcall scan skips it and we
-                                // register the field existence-only as `any` so cross-file
-                                // reads don't false-positive as `undefined-field`.
-                                //
-                                // Deliberately `any`, NOT a bare `table`: the chain can
-                                // return *any* type (a number from `f():GetHeight()`, a
-                                // string, a frame, a builder object). A concrete `table`
-                                // placeholder is a guess that's wrong whenever the result
-                                // is a non-table, and it leaks into reads — passing the
-                                // field's value to a typed parameter then false-positives
-                                // as `type-mismatch` (`got table`), and a method call on
-                                // it can false-positive as `cannot-call`. `any` is the
-                                // honest "we don't know" type: it suppresses the
-                                // existence checks without asserting a shape that breaks
-                                // assignability.
-                                Some(Expression::FunctionCall(call)) => {
-                                    if funcall_has_chained_receiver(call) {
-                                        AnnotationType::Simple("any".into())
-                                    } else {
-                                        continue;
-                                    }
-                                }
-                                // Skip function literals (not useful cross-file)
-                                Some(Expression::Function(_)) => continue,
-                                Some(Expression::Literal(lit)) => {
-                                    if lit.is_nil() {
-                                        // Skip nil-only assignments
-                                        continue;
-                                    } else if lit.get_number().is_some() {
-                                        AnnotationType::Simple("number".into())
-                                    } else if lit.get_string().is_some() {
-                                        AnnotationType::Simple("string".into())
-                                    } else if lit.get_bool().is_some() {
-                                        AnnotationType::Simple("boolean".into())
-                                    } else {
-                                        AnnotationType::Simple("any".into())
-                                    }
-                                }
-                                Some(expr @ Expression::UnaryExpression(u)) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
-                                    if extract_number_from_expr(expr).is_some() {
-                                        AnnotationType::Simple("number".into())
-                                    } else {
-                                        AnnotationType::Simple("any".into())
-                                    }
-                                }
-                                Some(Expression::TableConstructor(tc)) => {
-                                    super::scan_globals::extract_table_literal_annotation(tc)
-                                        .unwrap_or_else(|| AnnotationType::Simple("table".into()))
-                                }
-                                Some(Expression::Identifier(rhs_ident)) => {
-                                    let rhs_names = rhs_ident.names();
-                                    if rhs_names.len() == 1 {
-                                        if let Some(param_type) = param_types.get(rhs_names[0].as_str()) {
-                                            (*param_type).clone()
-                                        } else {
-                                            AnnotationType::Simple("any".into())
-                                        }
-                                    } else {
-                                        AnnotationType::Simple("any".into())
-                                    }
-                                }
-                                // No RHS or complex expression
-                                _ => AnnotationType::Simple("any".into()),
-                            };
-                            let field_range = ident.syntax().children_with_tokens()
-                                .filter_map(|c| c.into_token())
-                                .find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
-                                .map(|t| {
-                                    let r = t.text_range();
-                                    (u32::from(r.start()), u32::from(r.end()))
-                                });
-                            if let Some(range) = field_range {
-                                fields.push((field_name.clone(), ann_type, range));
-                            }
-                        }
-                    }
-                }
+/// The type a bare write of `value` registers its field with, `None` for a value
+/// another scan covers or that declares nothing (`nil`). `instance`: the write is
+/// on a `setmetatable` instance, not a method's `self`.
+fn bare_write_type(
+    value: Option<&Expression<'_>>,
+    param_types: &HashMap<String, AnnotationType>,
+    instance: bool,
+) -> Option<AnnotationType> {
+    Some(match value {
+        // A funcall RHS with a resolvable named callee
+        // (`self.x = Foo()` / `self.x = a.b.c()`) is handled by
+        // the funcall scan, which recovers the real return type
+        // — skip it here. A *chained* funcall
+        // (`self.x = Foo():Bar()`, `self.x = LibStub("X"):New()`)
+        // has a call as its receiver, so the coarse scan can't
+        // resolve the chain; the funcall scan skips it and we
+        // register the field existence-only as `any` so cross-file
+        // reads don't false-positive as `undefined-field`.
+        //
+        // Deliberately `any`, NOT a bare `table`: the chain can
+        // return *any* type (a number from `f():GetHeight()`, a
+        // string, a frame, a builder object). A concrete `table`
+        // placeholder is a guess that's wrong whenever the result
+        // is a non-table, and it leaks into reads — passing the
+        // field's value to a typed parameter then false-positives
+        // as `type-mismatch` (`got table`), and a method call on
+        // it can false-positive as `cannot-call`. `any` is the
+        // honest "we don't know" type: it suppresses the
+        // existence checks without asserting a shape that breaks
+        // assignability.
+        Some(Expression::FunctionCall(call)) => {
+            if funcall_has_chained_receiver(call) {
+                AnnotationType::Simple("any".into())
+            } else {
+                return None;
             }
-            Statement::If(if_chain) => {
-                for child in if_chain.syntax().children() {
-                    if let Some(b) = Block::cast(child) {
-                        scan_bare_self_fields_inner(b, param_types, fields, seen);
-                    }
-                }
-            }
-            Statement::While(w) => {
-                if let Some(b) = w.syntax().children().find_map(Block::cast) {
-                    scan_bare_self_fields_inner(b, param_types, fields, seen);
-                }
-            }
-            Statement::ForInLoop(f) => {
-                if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    scan_bare_self_fields_inner(b, param_types, fields, seen);
-                }
-            }
-            Statement::ForCountLoop(f) => {
-                if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    scan_bare_self_fields_inner(b, param_types, fields, seen);
-                }
-            }
-            Statement::Repeat(r) => {
-                if let Some(b) = r.syntax().children().find_map(Block::cast) {
-                    scan_bare_self_fields_inner(b, param_types, fields, seen);
-                }
-            }
-            Statement::Do(d) => {
-                if let Some(b) = d.syntax().children().find_map(Block::cast) {
-                    scan_bare_self_fields_inner(b, param_types, fields, seen);
-                }
-            }
-            _ => {}
         }
-    }
+        // A method's function value is registered by the global scan (`FieldValueKind::Function`);
+        // an instance's isn't, so it exists as `any` for the class-field harvest to type.
+        Some(Expression::Function(_)) => {
+            if instance { AnnotationType::Simple("any".into()) } else { return None }
+        }
+        Some(Expression::Literal(lit)) => {
+            if lit.is_nil() {
+                // A method's nil write is a reset; a constructor's declares the field.
+                if instance { AnnotationType::Simple("any".into()) } else { return None }
+            } else if lit.get_number().is_some() {
+                AnnotationType::Simple("number".into())
+            } else if lit.get_string().is_some() {
+                AnnotationType::Simple("string".into())
+            } else if lit.get_bool().is_some() {
+                AnnotationType::Simple("boolean".into())
+            } else {
+                AnnotationType::Simple("any".into())
+            }
+        }
+        Some(expr @ Expression::UnaryExpression(u)) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+            if extract_number_from_expr(expr).is_some() {
+                AnnotationType::Simple("number".into())
+            } else {
+                AnnotationType::Simple("any".into())
+            }
+        }
+        Some(Expression::TableConstructor(tc)) => {
+            super::scan_globals::extract_table_literal_annotation(tc)
+                .unwrap_or_else(|| AnnotationType::Simple("table".into()))
+        }
+        Some(Expression::Identifier(rhs_ident)) => {
+            let rhs_names = rhs_ident.names();
+            if rhs_names.len() == 1 {
+                if let Some(param_type) = param_types.get(rhs_names[0].as_str()) {
+                    param_type.clone()
+                } else {
+                    AnnotationType::Simple("any".into())
+                }
+            } else {
+                AnnotationType::Simple("any".into())
+            }
+        }
+        // No RHS or complex expression
+        _ => AnnotationType::Simple("any".into()),
+    })
 }
 
 // ── Type conversion ─────────────────────────────────────────────────────────
@@ -1994,4 +2228,27 @@ fn parse_as_comment(text: &str) -> Option<AnnotationType> {
         return Some(parse_type(rest));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A local's own `@class` is the class its methods' and its instances' writes
+    /// belong to, though a known class shares the local's name (a stub class in the
+    /// LSP's scans).
+    #[test]
+    fn local_class_wins_over_a_same_named_class() {
+        let src = "---@class MyProto\nlocal Frame = {}\nFrame.__index = Frame\n\
+                   function Frame:Init() self.viaMethod = 1 end\n\
+                   function NewProto()\n    local o = setmetatable({}, Frame)\n    o.viaCtor = 1\n    return o\nend\n";
+        let tree = crate::syntax::parser::parse(src);
+        let known: HashSet<String> = ["Frame", "MyProto"].into_iter().map(String::from).collect();
+        let fields: Vec<(String, String)> = scan_method_bare_self_fields(SyntaxNode::new_root(&tree), &known, false, &HashSet::default())
+            .into_iter()
+            .map(|f| (f.class_name, f.field_name))
+            .collect();
+        let expected = [("MyProto", "viaMethod"), ("MyProto", "viaCtor")].map(|(c, f)| (c.to_string(), f.to_string()));
+        assert_eq!(fields, expected);
+    }
 }

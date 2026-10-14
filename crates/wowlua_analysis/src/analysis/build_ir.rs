@@ -463,6 +463,7 @@ impl<'a> Analysis<'a> {
                                 .versions.last()
                                 .and_then(|v| v.type_source)
                                 && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                                    .or_else(|| self.ir.setmetatable_instance_table(rhs_expr_id))
                             {
                                 self.merge_runtime_fields_into_class(class_table_idx, rhs_table_idx);
                             }
@@ -2193,7 +2194,7 @@ impl<'a> Analysis<'a> {
                         {
                             None
                         } else {
-                            Some((f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit))
+                            Some((f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit, f.from_scan))
                         }
                     })
                 } else { None };
@@ -2206,17 +2207,19 @@ impl<'a> Analysis<'a> {
                     if overlay_fi.annotation.is_none() {
                         if let Some(ref ann) = inline_annotation {
                             overlay_fi.annotation = Some(ann.clone());
-                        } else if let Some((ref ann, ref ann_text, _, li)) = ext_ann {
+                            overlay_fi.from_scan = false;
+                        } else if let Some((ref ann, ref ann_text, _, li, scanned)) = ext_ann {
                             overlay_fi.annotation.clone_from(ann);
                             overlay_fi.annotation_text.clone_from(ann_text);
                             overlay_fi.lateinit = overlay_fi.lateinit || li;
+                            overlay_fi.from_scan = scanned;
                         }
                         if inline_annotation_text.is_some() {
                             overlay_fi.annotation_text = inline_annotation_text.clone();
                         }
                         if overlay_fi.annotation_type_raw.is_none() {
                             overlay_fi.annotation_type_raw = inline_type.clone()
-                                .or_else(|| ext_ann.as_ref().and_then(|(_, _, raw, _)| raw.clone()));
+                                .or_else(|| ext_ann.as_ref().and_then(|(_, _, raw, _, _)| raw.clone()));
                         }
                     }
                     if inline_is_lateinit { overlay_fi.lateinit = true; }
@@ -2231,12 +2234,10 @@ impl<'a> Analysis<'a> {
                     } else {
                         Visibility::Public
                     };
-                    let (ann, ann_text, ann_raw, li) = if inline_annotation.is_some() {
-                        (inline_annotation.clone(), inline_annotation_text.clone(), inline_type.clone(), inline_is_lateinit)
-                    } else if let Some(ext) = ext_ann {
-                        (ext.0, ext.1, ext.2, ext.3)
+                    let (ann, ann_text, ann_raw, li, scanned) = if inline_annotation.is_some() {
+                        (inline_annotation.clone(), inline_annotation_text.clone(), inline_type.clone(), inline_is_lateinit, false)
                     } else {
-                        (None, None, None, false)
+                        ext_ann.unwrap_or_default()
                     };
                     self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
                         expr: expr_id,
@@ -2250,7 +2251,7 @@ impl<'a> Analysis<'a> {
                         flavor_guard: self.inferred_flavor_guards
                             .field_write(table_idx, field_name, 0, annotated_flavor_guard, expr),
                         description: None,
-                        from_scan: false,
+                        from_scan: scanned,
                     });
                 }
             }
@@ -2642,6 +2643,7 @@ impl<'a> Analysis<'a> {
                         .versions.last()
                         .and_then(|v| v.type_source)
                         && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                            .or_else(|| self.ir.setmetatable_instance_table(rhs_expr_id))
                     {
                         self.merge_runtime_fields_into_class(class_table_idx, rhs_table_idx);
                     }

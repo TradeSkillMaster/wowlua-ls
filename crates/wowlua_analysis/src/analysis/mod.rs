@@ -2127,6 +2127,22 @@ impl Ir {
         (t.key_type.is_some() || t.value_type.is_some()) && !self.has_field(idx, key)
     }
 
+    /// The local table a `setmetatable(t, mt)` call `expr_id` makes an instance of
+    /// (`t`), for a value that declares a class: its entries are the class's, as a
+    /// table constructor's are.
+    pub(super) fn setmetatable_instance_table(&self, expr_id: ExprId) -> Option<TableIndex> {
+        let Expr::FunctionCall { func, args, ret_index: 0, .. } = self.expr(expr_id) else { return None };
+        let Expr::SymbolRef(sym, ver) = self.expr(*func) else { return None };
+        let smt = self.ext.setmetatable_func_idx?;
+        let is_setmetatable = sym.is_external()
+            && self.sym(*sym).versions.get(*ver)
+                .is_some_and(|v| v.resolved_type == Some(ValueType::Function(Some(smt))));
+        if !is_setmetatable {
+            return None;
+        }
+        self.find_table_index(*args.first()?).filter(|t| !t.is_external())
+    }
+
     pub(super) fn find_table_index(&self, expr_id: ExprId) -> Option<TableIndex> {
         match self.expr(expr_id) {
             Expr::TableConstructor(idx) => Some(*idx),

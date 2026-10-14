@@ -1421,8 +1421,8 @@ pub struct FieldInfo {
     /// (runtime field assignments, table placeholders, class-name-matched fields)
     /// rather than authored (annotations, function definitions). Used by
     /// prescan.rs cross-file field import to skip scan discoveries when the
-    /// local class has explicit `@field` annotations.
-    #[serde(skip)]
+    /// local class has explicit `@field` annotations. Kept in the precomputed
+    /// stubs blob: the stub scan infers fields of Blizzard classes too.
     pub from_scan: bool,
 }
 

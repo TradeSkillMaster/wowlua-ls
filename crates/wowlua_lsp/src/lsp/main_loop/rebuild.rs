@@ -461,9 +461,9 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
         changed
     };
 
-    // Re-scan for self-field assignments (self.field = expr in methods).
-    // Quick text check: only scan if the file contains "self." as a substring.
-    let self_fields_changed = if !has_syntax_errors && source.contains("self.") {
+    // Re-scan for instance-field assignments (self.field = expr in methods, writes
+    // on `setmetatable` instances). Quick text check: only scan a file that has either.
+    let self_fields_changed = if !has_syntax_errors && (source.contains("self.") || source.contains("setmetatable")) {
         use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
         let known_classes: HashSet<String> = ws.cached_all_classes.iter().map(|c| c.name.clone()).collect();
         if known_classes.is_empty() {
@@ -495,7 +495,7 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
             sf_changed || sfg_changed
         }
     } else {
-        // If file no longer contains "self.", clear any previous results
+        // If the file no longer has either, clear any previous results
         let had_sf = ws.ws_file_self_fields.remove(&file_path).is_some();
         let had_sfg = ws.ws_file_self_field_globals.remove(&file_path).is_some();
         had_sf || had_sfg

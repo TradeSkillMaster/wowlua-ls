@@ -182,6 +182,31 @@ The LS tries three sources for the class name (in priority order):
 
 Metatable inference works across files when the `__index` target is a `@class` table (since those are globally registered). For unannotated metatables in other files, add a `@class` annotation to get cross-file resolution.
 
+The fields a constructor sets on the instance it builds with `setmetatable` (the entries of the table it passes, and the fields it writes on the instance afterwards) are fields of the instance's class, in every file:
+
+```lua
+-- Holder.lua
+local _, ns = ...
+
+---@class Holder
+local Holder = {}
+Holder.__index = Holder
+
+function ns.NewHolder()
+    local h = setmetatable({ size = 1 }, Holder)
+    h.count = 0
+    return h
+end
+
+-- Other.lua
+---@param holder Holder
+local function Describe(holder)
+    print(holder.count, holder.size) -- number, number
+end
+```
+
+The instance's class is the one its metatable names (`setmetatable({}, Holder)`, `setmetatable({}, { __index = Holder })`, `setmetatable({}, self)` in a method of `Holder`, or a local metatable whose `__index` is `Holder`), or the class a `---@type` or `---@class` annotation on the local gives it.
+
 ## When to annotate vs. rely on inference
 
 The LS resolves a lot from metatables alone, but there are cases where annotations help:

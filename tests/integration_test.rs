@@ -4132,6 +4132,49 @@ fn crossfile_frame_factory_overlay_gotodef() {
 }
 
 #[test]
+fn ctor_instance_fields_crossfile() {
+    // The fields a constructor sets on a `setmetatable` instance are its class's
+    // fields in every file.
+    for lua_file in [
+        "tests/ctor-instance-fields/user.lua",
+        "tests/ctor-instance-fields/defs.lua",
+        "tests/ctor-instance-fields/annotated.lua",
+        "tests/ctor-instance-fields/factories.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/ctor-instance-fields"),
+        });
+    }
+}
+
+#[test]
+fn ctor_instance_fields_crossfile_gotodef() {
+    // A constructor's instance field is defined where the constructor sets it: an
+    // entry at its key, a later write at the field it writes.
+    let user_text = std::fs::read_to_string("tests/ctor-instance-fields/user.lua").unwrap();
+    let defs_text = std::fs::read_to_string("tests/ctor-instance-fields/defs.lua").unwrap();
+    let pre_globals = crossfile_pre_globals_with_stubs("tests/ctor-instance-fields");
+
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let assert_jumps = |user_needle: &str, defs_needle: &str| {
+        let query_at = user_text.find(user_needle).unwrap() + "h.".len();
+        let Some(DefinitionResult::External(loc)) = result.definition_at(&tree, query_at as u32) else {
+            panic!("expected an external definition for {user_needle:?}");
+        };
+        assert!(loc.path.ends_with("defs.lua"), "wrong file: {:?}", loc.path);
+        assert_eq!(loc.start as usize, defs_text.find(defs_needle).unwrap(), "{user_needle:?} jumped elsewhere");
+    };
+    assert_jumps("h.count", "count = 0");
+    assert_jumps("h.size", "size = 1");
+}
+
+#[test]
 fn crossfile_inferred_field_return() {
     // Cross-file lazy resolution of a body-inferred, class-typed field-access
     // return (no @return). The coarse scan yields `any`; the deferred resolver

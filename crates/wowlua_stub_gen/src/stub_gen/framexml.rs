@@ -368,11 +368,15 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
     //    widget-method collisions and drag its whole field set — including real
     //    typed methods like `RegisterEvent` — onto that class as `any?`.
     // `builtin_method_names` collects every field name that is a method on some
-    // builtin class (a `function C:M()` field — no `@field` annotation). Emitting
-    // any of these as a discovered `@field M any?` would shadow the real typed
-    // method (e.g. degrading an inherited `RegisterEvent` to `any?`), so they are
-    // never emitted — a runtime field populated by C++ is data, never a method.
+    // builtin class (a function-valued field with no `@field` annotation, e.g.
+    // `function C:M()`). Emitting any of these as a discovered `@field M any?`
+    // would shadow the real typed method (e.g. degrading an inherited
+    // `RegisterEvent` to `any?`), so they are never emitted — a runtime field
+    // populated by C++ is data, never a method. The structural guess also skips
+    // `untyped_field_names`: every field without an annotation, the data the
+    // scan found on a builtin class as well as its methods.
     let mut builtin_method_names: HashSet<String> = HashSet::default();
+    let mut untyped_field_names: HashSet<String> = HashSet::default();
     let (class_field_map, class_data_field_map): (
         HashMap<String, HashSet<String>>,
         HashMap<String, HashSet<String>>,
@@ -380,9 +384,9 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
         let mut all: HashMap<String, HashSet<String>> = HashMap::default();
         let mut data: HashMap<String, HashSet<String>> = HashMap::default();
         // Collect one table's fields into both maps, gating the data map on an
-        // explicit type annotation and recording annotation-less fields (methods)
-        // in `builtin_method_names`.
-        let mut collect = |name: &str, table: &crate::types::TableInfo, methods: &mut HashSet<String>| {
+        // explicit type annotation and recording annotation-less fields in
+        // `untyped_field_names`, the functions among them in `builtin_method_names`.
+        let mut collect = |name: &str, table: &crate::types::TableInfo, methods: &mut HashSet<String>, untyped: &mut HashSet<String>| {
             let all_set = all.entry(name.to_string()).or_default();
             for field_name in table.fields.keys() {
                 all_set.insert(field_name.clone());
@@ -391,19 +395,22 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
             for (field_name, fi) in &table.fields {
                 if fi.annotation.is_some() {
                     data_set.insert(field_name.clone());
-                } else {
+                    continue;
+                }
+                untyped.insert(field_name.clone());
+                if matches!(pre_globals.expr(fi.expr), Expr::FunctionDef(_) | Expr::Literal(ValueType::Function(_))) {
                     methods.insert(field_name.clone());
                 }
             }
         };
         for (class_name, &table_idx) in &pre_globals.classes {
             let Some(table) = pre_globals.try_table(table_idx) else { continue };
-            collect(class_name, table, &mut builtin_method_names);
+            collect(class_name, table, &mut builtin_method_names, &mut untyped_field_names);
             // Include parent class fields (for structural matching accuracy)
             for &parent_idx in &table.parent_classes {
                 if !parent_idx.is_external() { continue; }
                 let Some(parent) = pre_globals.try_table(parent_idx) else { continue };
-                collect(class_name, parent, &mut builtin_method_names);
+                collect(class_name, parent, &mut builtin_method_names, &mut untyped_field_names);
             }
         }
         (all, data)
@@ -508,9 +515,9 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
             if let Some((class_name, _overlap)) = best {
                 let declared = &class_field_map[class_name];
                 for field in accessed_fields {
-                    // Never emit a real method name (would shadow the typed method)
-                    // or a field the class already declares.
-                    if !declared.contains(field) && !builtin_method_names.contains(field) {
+                    // Never emit an untyped field name (a method would shadow the
+                    // typed method) or a field the class already declares.
+                    if !declared.contains(field) && !untyped_field_names.contains(field) {
                         discovered.entry(class_name.to_string())
                             .or_default()
                             .insert(field.clone());

@@ -170,7 +170,7 @@ fn substitute_annotation_type_inner(
 /// or any serialized type changes shape — or when serialized data changes
 /// meaning, like a new flavor bit in the `flavors` masks.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 43;
+pub const BLOB_VERSION: u32 = 44;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -860,7 +860,9 @@ fn ctor_function_fields(class_decls: &[ClassDecl]) -> HashSet<(&str, &str)> {
 
 /// Whether the method `method_name` defined on `target` replaces the field
 /// there: a scan placeholder for the same function entry (see
-/// [`is_function_placeholder`] and [`ctor_function_fields`]).
+/// [`is_function_placeholder`] and [`ctor_function_fields`]), or the `any` an
+/// instance write the scan couldn't type gives a class (`self.OnClick = cb`, a
+/// constructor's `OnClick = cb` entry).
 fn method_replaces_placeholder(
     tables: &LayeredVec<TableInfo>,
     exprs: &LayeredVec<Expr>,
@@ -870,12 +872,12 @@ fn method_replaces_placeholder(
 ) -> bool {
     let table = &tables[target.ext_offset()];
     let Some(fi) = table.fields.get(method_name) else { return false };
+    let literal = |vt: ValueType| fi.expr.is_external() && matches!(&exprs[fi.expr.ext_offset()], Expr::Literal(lit) if *lit == vt);
     match &table.class_name {
         None => is_function_placeholder(fi, exprs, true),
         Some(class) => is_function_placeholder(fi, exprs, false)
-            || (ctor_functions.contains(&(class.as_str(), method_name))
-                && fi.expr.is_external()
-                && matches!(exprs[fi.expr.ext_offset()], Expr::Literal(ValueType::Function(None)))),
+            || (ctor_functions.contains(&(class.as_str(), method_name)) && literal(ValueType::Function(None)))
+            || (fi.from_scan && fi.annotation == Some(ValueType::Any) && literal(ValueType::Any)),
     }
 }
 

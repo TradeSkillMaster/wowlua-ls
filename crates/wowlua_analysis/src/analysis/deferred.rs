@@ -746,7 +746,8 @@ impl Ir {
     /// calls ([`DeferredCallField`]) resolve to in their files, when they agree on it
     /// and it is a richer view of the field's coarse class
     /// ([`refined_class_view`](crate::analysis::refined_class_view)) — the rule the
-    /// defining file reads the field by. The field of an external table is overlaid;
+    /// defining file reads the field by — or the field is the placeholder a call the
+    /// scan couldn't type leaves ([`field_is_coarse_placeholder`]). The field of an external table is overlaid;
     /// this file's copy of it (its namespace table, or a `@class` it declares too) is
     /// updated in place. A field this file writes keeps its writes' type. Each field
     /// is consulted once per analysis; returns whether the field changed.
@@ -763,19 +764,24 @@ impl Ir {
             return false;
         }
         let expr = fi.expr;
+        let placeholder = field_is_coarse_placeholder(fi, &self.ext);
+        let coarse = fi.annotation.clone();
         if !self.ext.deferred_call_fields.contains_key(&expr) || !self.call_fields_checked.insert((slot, expr)) {
             return false;
         }
-        let Some(coarse) = self.table(slot).fields.get(field_name).and_then(|fi| fi.annotation.clone()) else {
+        if coarse.is_none() && !placeholder {
             return false;
-        };
+        }
         for call in self.ext.deferred_call_fields.get(&expr).into_iter().flatten() {
             self.deferred_dep_files.insert(call.path.clone());
         }
-        let instance_of = self.instance_class(&coarse);
-        let Some(ty) = resolve_deferred_call_field_type(&self.ext, expr)
-            .and_then(|ty| crate::analysis::refined_class_view(&ty, &coarse, instance_of.as_ref()))
-        else {
+        let instance_of = coarse.as_ref().and_then(|coarse| self.instance_class(coarse));
+        // A placeholder the scan left for a call it couldn't type takes the call's type.
+        let Some(ty) = resolve_deferred_call_field_type(&self.ext, expr).and_then(|ty| match &coarse {
+            _ if placeholder => (!contains_coarse_placeholder(&ty)).then_some(ty),
+            Some(coarse) => crate::analysis::refined_class_view(&ty, coarse, instance_of.as_ref()),
+            None => None,
+        }) else {
             return false;
         };
         if slot.is_external() {
@@ -1414,7 +1420,7 @@ fn harvest_sigs(
                         .inferred_return_types(local)
                         .into_iter()
                         .map(|t| {
-                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, result, globals);
+                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, result, path, globals);
                             if contains_any(&lifted) { ValueType::Any }
                             else { wrap_overlay_shape(&t, lifted, result, ext, &local.rets, path, globals) }
                         })
@@ -1460,7 +1466,7 @@ fn harvest_call_globals(
         let resolved = call_type_at(result, root, dcg.call_offset, |call| {
             call_defines_global(call, dcg, ext.creates_global_specs())
         })
-        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
+        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, path, globals))
         .filter(|t| !contains_any(t));
         harvested.insert(sym_idx, resolved);
     }
@@ -1486,7 +1492,7 @@ fn harvest_call_fields(
             CallTarget::Field(field) => call_assigns_field(call, field),
             CallTarget::Local(local) => call_initializes_local(call, local),
         })
-        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
+        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, path, globals))
         .filter(|t| !contains_any(t));
         harvested.insert(*offset, resolved);
     }
@@ -1558,7 +1564,7 @@ fn harvest_field_args(
             let args = result.get_type_args_for_expr(eid);
             if !args.is_empty() {
                 let lifted: Vec<ValueType> =
-                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, result, globals)).collect();
+                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, result, path, globals)).collect();
                 // An `any` arg carries no more than the coarse fallback — skip it
                 // so a partial/unresolved harvest doesn't replace the coarse path.
                 if !lifted.iter().any(contains_any) {
@@ -1631,7 +1637,7 @@ fn accumulate_class_fields_in_file(
         let entry = acc.entry((name, fa.field_name.clone())).or_default();
         entry.lateinit |= fa.lateinit;
         if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
-            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, &globals);
+            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
             if !entry.tys.contains(&lifted) {
                 entry.tys.push(lifted);
             }
@@ -1644,7 +1650,7 @@ fn accumulate_class_fields_in_file(
     // declaring file does. Typed per site.
     let mut carry = |class: String, owner_field: &str, field: &str, expr: ExprId, (start, end): (u32, u32)| {
         let Some(ty) = result.resolve_expr_type(expr) else { return };
-        let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, &globals);
+        let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
         let Some(site_ty) = CarriedFields::site_type(&ty, lifted) else { return };
         let entry = acc.entry((class, owner_field.to_string())).or_default();
         entry.sub_fields.add(field, site_ty, || crate::types::ExternalLocation {
@@ -1730,16 +1736,25 @@ impl CarriedFields {
     /// `ty & { field: T, ... }` for the carried fields the external class
     /// instance `ty` doesn't already declare — the class member of the
     /// intersection handles those, and overriding one could mask an inherited
-    /// type. `ty` unchanged when none remain or it isn't an external instance.
+    /// type. An instance already carrying its own fields (`Class & { ... }`, see
+    /// `lift_instance`) gets the ones it lacks added to them. `ty` unchanged when
+    /// none remain or it isn't an external instance.
     fn onto(self, ty: ValueType, ext: &PreResolvedGlobals) -> ValueType {
-        let ValueType::Table(Some(idx)) = ty else { return ty };
+        let (idx, own) = match &ty {
+            ValueType::Table(Some(idx)) => (*idx, None),
+            ValueType::Intersection(members) => match members.as_slice() {
+                [ValueType::Table(Some(idx)), ValueType::TableShape(own)] if own.value_type.is_none() => (*idx, Some(own)),
+                _ => return ty,
+            },
+            _ => return ty,
+        };
         if !idx.is_external() {
             return ty;
         }
         let mut fields: Vec<(String, ValueType)> = Vec::new();
         let mut field_defs: Vec<(String, crate::types::ExternalLocation)> = Vec::new();
         for (name, (mut tys, loc)) in self.0 {
-            if ext_class_declares(ext, idx, &name) {
+            if ext_class_declares(ext, idx, &name) || own.is_some_and(|own| own.field(&name).is_some()) {
                 continue;
             }
             let field_ty = if tys.len() == 1 { tys.pop().unwrap() } else { ValueType::make_union(tys) };
@@ -1749,8 +1764,12 @@ impl CarriedFields {
         if fields.is_empty() {
             return ty;
         }
+        if let Some(own) = own {
+            fields.extend(own.fields.iter().cloned());
+            field_defs.extend(own.field_defs.iter().cloned());
+        }
         let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
-        ValueType::Intersection(vec![ty, ValueType::TableShape(Box::new(shape))])
+        ValueType::Intersection(vec![ValueType::Table(Some(idx)), ValueType::TableShape(Box::new(shape))])
     }
 }
 
@@ -1988,7 +2007,7 @@ fn wrap_overlay_shape(
             continue;
         }
         let Some(ty) = result.resolve_expr_type(fa.actual_expr) else { continue };
-        let lifted_ty = lift_local_type_to_ext_with(&ty, ir, ext, result, globals);
+        let lifted_ty = lift_local_type_to_ext_with(&ty, ir, ext, result, def_path, globals);
         let Some(site_ty) = CarriedFields::site_type(&ty, lifted_ty) else { continue };
         carried.add(&fa.field_name, site_ty, || crate::types::ExternalLocation {
             path: def_path.to_path_buf(),
@@ -2097,10 +2116,13 @@ const LIFT_MAX_DEPTH: usize = 6;
 /// workspace. Past the budget, nested tables and functions decay as at the depth cap.
 const LIFT_MEMBER_BUDGET: usize = 4096;
 
-/// State for one top-level lift: the harvested file's global tables, plus cycle and
-/// breadth bounds.
+/// State for one top-level lift: the harvested file's global tables and path, plus
+/// cycle and breadth bounds.
 struct LiftGuard<'a> {
     globals: &'a GlobalTables,
+    /// The harvested file, where a carried instance field is defined (`None` in the
+    /// plain lift, which carries no definitions).
+    path: Option<&'a Path>,
     /// Local tables and functions being expanded on the current path. Re-entering
     /// one is a recursive type (a mixin method whose `self` is the table being
     /// lifted) with no finite inline form, so it decays instead of expanding again.
@@ -2111,8 +2133,8 @@ struct LiftGuard<'a> {
 }
 
 impl<'a> LiftGuard<'a> {
-    fn new(globals: &'a GlobalTables) -> Self {
-        Self { globals, tables_on_path: Vec::new(), funcs_on_path: Vec::new(), budget: LIFT_MEMBER_BUDGET }
+    fn new(globals: &'a GlobalTables, path: Option<&'a Path>) -> Self {
+        Self { globals, path, tables_on_path: Vec::new(), funcs_on_path: Vec::new(), budget: LIFT_MEMBER_BUDGET }
     }
 
     /// Take `n` members from the budget; takes nothing and returns `false` when
@@ -2127,7 +2149,7 @@ impl<'a> LiftGuard<'a> {
 /// Convert a `ValueType` produced by per-file analysis into external-index space
 /// so it can be stored on `PreResolvedGlobals` and read by other files.
 fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals, globals: &GlobalTables) -> ValueType {
-    lift_local_type_to_ext_depth(ty, ir, ext, 0, None, &mut LiftGuard::new(globals))
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, None, &mut LiftGuard::new(globals, None))
 }
 
 /// Like [`lift_local_type_to_ext`] but with the source file's analysis result in
@@ -2140,19 +2162,22 @@ fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals, glo
 /// fields (`wrap_overlay_shape`), created-global call types, and generic type-args.
 /// The plain [`lift_local_type_to_ext`] is for callers without one (e.g. lifting an
 /// overload's already-resolved param/return types), where records stay coarse.
+/// `path` is the analyzed file, where a carried instance field is defined.
 fn lift_local_type_to_ext_with(
     ty: &ValueType,
     ir: &Ir,
     ext: &PreResolvedGlobals,
     res: &crate::analysis::AnalysisResult,
+    path: &Path,
     globals: &GlobalTables,
 ) -> ValueType {
-    lift_local_type_to_ext_depth(ty, ir, ext, 0, Some(res), &mut LiftGuard::new(globals))
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, Some(res), &mut LiftGuard::new(globals, Some(path)))
 }
 
 /// Depth-, cycle- and budget-guarded core of [`lift_local_type_to_ext`].
 ///
-/// Named (class) tables map by `class_name` through `ext.classes`; tables that
+/// Named (class) tables map by `class_name` through `ext.classes`, a `setmetatable`
+/// instance keeping its own fields ([`lift_instance`]); tables that
 /// already live in ext space pass through; a returned *local* function value is
 /// lifted losslessly into an inline `FunctionSig` carrying its signature. Anonymous
 /// tables are lifted to an inline `TableShape` rather than decaying: an array/map
@@ -2179,7 +2204,11 @@ fn lift_local_type_to_ext_depth(
             if let Some(name) = &info.class_name
                 && let Some(&ext_idx) = ext.classes.get(name)
             {
-                ValueType::Table(Some(ext_idx))
+                if info.metatable.is_some() && ir.classes.get(name) != Some(idx) {
+                    lift_instance(*idx, ext_idx, ir, ext, depth, res, guard)
+                } else {
+                    ValueType::Table(Some(ext_idx))
+                }
             } else if let Some(&ext_idx) = guard.globals.get(idx) {
                 ValueType::Table(Some(ext_idx))
             } else if let Some(vt) = &info.value_type {
@@ -2242,15 +2271,7 @@ fn lift_local_type_to_ext_depth(
                 names.sort_unstable();
                 let fields: Vec<(String, ValueType)> = names
                     .into_iter()
-                    .map(|name| {
-                        let fi = &info.fields[name];
-                        let raw = res
-                            .and_then(|r| r.resolve_field_type(fi))
-                            .or_else(|| fi.annotation.clone())
-                            .unwrap_or(ValueType::Any);
-                        let lifted = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res, guard);
-                        (name.clone(), lifted)
-                    })
+                    .map(|name| (name.clone(), lift_field_type(&info.fields[name], ir, ext, depth, res, guard)))
                     .collect();
                 guard.tables_on_path.pop();
                 ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))
@@ -2261,8 +2282,15 @@ fn lift_local_type_to_ext_depth(
         ValueType::Union(members) => ValueType::make_union(
             members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect(),
         ),
+        // An instance member lifts to an intersection of its own; keep it flat.
         ValueType::Intersection(members) => ValueType::Intersection(
-            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect(),
+            members
+                .iter()
+                .flat_map(|m| match lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard) {
+                    ValueType::Intersection(inner) => inner,
+                    lifted => vec![lifted],
+                })
+                .collect(),
         ),
         ValueType::OpaqueAlias(name, inner) => {
             ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth, res, guard)))
@@ -2287,6 +2315,69 @@ fn lift_local_type_to_ext_depth(
         // Primitives, Any, Nil, Table(None), Function(None), FunctionSig, etc.
         other => other.clone(),
     }
+}
+
+/// A record or instance field's type in ext space: its resolved type when the
+/// analysis is threaded, else its annotation, else `any`.
+fn lift_field_type(
+    fi: &crate::types::FieldInfo,
+    ir: &Ir,
+    ext: &PreResolvedGlobals,
+    depth: usize,
+    res: Option<&crate::analysis::AnalysisResult>,
+    guard: &mut LiftGuard<'_>,
+) -> ValueType {
+    let raw = res
+        .and_then(|r| r.resolve_field_type(fi))
+        .or_else(|| fi.annotation.clone())
+        .unwrap_or(ValueType::Any);
+    lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res, guard)
+}
+
+/// A `setmetatable` instance of ext class `class_idx` (`local h = setmetatable({},
+/// Holder)` then `h.count = 0`), lifted as `Holder & { count: number }`: the fields
+/// set on it that the class doesn't declare are typed like a record's and defined
+/// where they are set, so other files read the instance as its own file does.
+/// Past the depth cap, on a cycle, or over budget it is the bare class.
+fn lift_instance(
+    idx: TableIndex,
+    class_idx: TableIndex,
+    ir: &Ir,
+    ext: &PreResolvedGlobals,
+    depth: usize,
+    res: Option<&crate::analysis::AnalysisResult>,
+    guard: &mut LiftGuard<'_>,
+) -> ValueType {
+    let class = ValueType::Table(Some(class_idx));
+    let info = ir.table(idx);
+    let mut names: Vec<&String> = info.fields.keys().filter(|name| !ext_class_declares(ext, class_idx, name)).collect();
+    if names.is_empty() || depth >= LIFT_MAX_DEPTH || guard.tables_on_path.contains(&idx) || !guard.reserve(names.len()) {
+        return class;
+    }
+    names.sort_unstable();
+    guard.tables_on_path.push(idx);
+    let fields: Vec<(String, ValueType)> = names
+        .iter()
+        .map(|&name| (name.clone(), lift_field_type(&info.fields[name], ir, ext, depth, res, guard)))
+        .collect();
+    guard.tables_on_path.pop();
+    // A constructor entry is defined at its key, a field written later at its first write.
+    let field_defs = guard.path.map_or_else(Vec::new, |path| {
+        let mut writes: HashMap<&str, (u32, u32)> = HashMap::default();
+        for fa in ir.field_assignments.iter().filter(|fa| fa.table_idx == idx) {
+            writes.entry(fa.field_name.as_str()).or_insert((fa.ident_start, fa.ident_end));
+        }
+        names
+            .iter()
+            .filter_map(|&name| {
+                let (start, end) = info.fields[name].def_range.or_else(|| writes.get(name.as_str()).copied())?;
+                let loc = crate::types::ExternalLocation { path: path.to_path_buf(), start, end, name_start: start, name_end: end };
+                Some((name.clone(), loc))
+            })
+            .collect()
+    });
+    let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
+    ValueType::Intersection(vec![class, ValueType::TableShape(Box::new(shape))])
 }
 
 /// Build an inline [`crate::types::FunctionShape`] from a local function index,
@@ -2386,7 +2477,7 @@ mod tests {
             .find(|(_, t)| t.fields.contains_key("a000"))
             .expect("outer table");
 
-        let lifted = lift_local_type_to_ext_with(&ValueType::Table(Some(outer_idx)), &result.ir, &ext, &result, &GlobalTables::default());
+        let lifted = lift_local_type_to_ext_with(&ValueType::Table(Some(outer_idx)), &result.ir, &ext, &result, Path::new("test.lua"), &GlobalTables::default());
         let ValueType::TableShape(shape) = lifted else { panic!("expected a record shape, got {lifted:?}") };
         assert_eq!(shape.fields.len(), 100);
         let expanded = shape

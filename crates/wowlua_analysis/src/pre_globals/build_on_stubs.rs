@@ -9,7 +9,7 @@ use super::SharedMap;
 use super::{
     PreResolvedGlobals,
     record_field_location, walk_deep_path, ClassFieldPaths,
-    resolve_funcall_chain, bound_call_return, resolve_field_ref_chain_from, GlobalLookupCtx,
+    resolve_funcall_chain, resolve_funcall_function, bound_call_return, resolve_field_ref_chain_from, GlobalLookupCtx,
     populate_table_fields, merge_table_fields, merge_ctor_fields, CtorFieldsCtx,
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance,
@@ -1174,6 +1174,11 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name);
+                // A workspace function whose return its body decides: the call's type
+                // in its file replaces the placeholder its field gets here.
+                let body_derived = resolved.is_none()
+                    && resolve_funcall_function(callee_chain, &self.global_lookup_ctx())
+                        .is_some_and(|func| self.deferred_returns.contains(&func));
                 // A call the scan can't type leaves a constructor entry in place.
                 if resolved.is_none() && is_ctor_entry {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1216,7 +1221,13 @@ impl<'a> BuildOnStubsContext<'a> {
                         super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
                     self.ctor_entries.remove(&ctor_entry);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
-                    self.defer_call_field(expr_idx, &vt, g, field_name);
+                    if body_derived {
+                        if let Some(call) = Self::call_of(g, field_name) {
+                            self.deferred_call_fields.insert(expr_idx, vec![call]);
+                        }
+                    } else {
+                        self.defer_call_field(expr_idx, &vt, g, field_name);
+                    }
                 }
             }
         }
