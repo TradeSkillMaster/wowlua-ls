@@ -60,6 +60,58 @@ local moduleLabel = ns.Module:Label()
 local moduleKeyed = ns.Module.Keyed
 --    ^ hover: (local) moduleKeyed: boolean
 
+-- Exported below the namespace's top level, onto a class, or as an entry of a
+-- constructor, a module keeps the methods defined on it, before or after the
+-- export, as `function M:f()` or `M.f = function`.
+ns.Sub = {}
+local Nested = { size = 1 }
+function Nested:Get() return "x" end
+ns.Sub.Nested = Nested
+function Nested:Count() return 1 end
+Nested.Ready = function(self) return self.size > 0 end
+local nestedGet = ns.Sub.Nested:Get()
+--    ^ hover: (local) nestedGet: string
+local nestedCount = ns.Sub.Nested:Count()
+--    ^ hover: (local) nestedCount: number
+local nestedReady = ns.Sub.Nested:Ready()
+--    ^ hover: (local) nestedReady: boolean
+---@class Catalog
+Catalog = {}
+local Entries = { size = 1 }
+Catalog.Entries = Entries
+function Entries:First() return "x" end
+local catalogFirst = Catalog.Entries:First()
+--    ^ hover: (local) catalogFirst: string
+local Inner = { depth = 2 }
+ns.Holder = { inner = Inner }
+function Inner:Depth() return self.depth end
+local innerDepth = ns.Holder.inner:Depth()
+--    ^ hover: (local) innerDepth: number
+local Leaf = { level = 3 }
+local Branch = { leaf = Leaf }
+ns.Branch = Branch
+function Leaf:Level() return self.level end
+local leafLevel = ns.Branch.leaf:Level()
+--    ^ hover: (local) leafLevel: number
+-- A global assigned a module is that module.
+local GlobalModule = { version = 1 }
+GlobalModule.Greet = function(name) return "hi " .. name end
+function GlobalModule.Count() return 3 end
+GlobalModule.enabled = true
+_G.GlobalModule = GlobalModule
+
+-- A plain local table's fields are its own, not a same-named global's.
+local Frame = {}
+Frame.Leaked = function() return 1 end
+Frame.LeakedData = 1
+
+-- A method defined on a `@type` local is its type's, as one written to it is.
+---@class Gadget
+local Gadget = {}
+---@type Gadget
+local gadget = {}
+function gadget:Spin() return 1 end
+
 -- A string key names an entry too, of a map indexed by any string.
 ns.Keys = { ["first"] = 1, ["second"] = 2, size = 2 }
 local firstKey = ns.Keys.first

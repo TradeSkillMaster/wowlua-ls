@@ -5752,7 +5752,8 @@ fn ctor_entries_cold_build() {
 #[test]
 fn ctor_entries_defining_file_reads_own_methods() {
     // The defining file reads its constructor's methods from its own definitions,
-    // so it never harvests itself to type them (`overlay_ctor_functions`).
+    // so it never harvests itself to type them (`overlay_ctor_functions`), nor the
+    // methods it defines on a local table after exporting it.
     let dir = std::path::Path::new("tests/ctor-entries");
     let pg = fresh_workspace_globals(dir);
     assert_eq!(last_local_hover(&pg, dir, "defs.lua"), "(local) label: string");
@@ -8274,6 +8275,21 @@ fn test_unused_function_cross_file() {
             "{name} should be flagged as unused, got: {:?}", unused_names,
         );
     }
+
+    // A local table exported to two fields (`exported_twice.lua`) is one function
+    // per definition: called through one export, it isn't reported through the
+    // other, and its never-called method is reported once, not exempted as an
+    // interface two tables define.
+    for name in ["Exported.Init", "registry.exported.Init"] {
+        assert!(
+            !unused_names.contains(name),
+            "{name} should not be flagged — called through ns.Exported, got: {:?}", unused_names,
+        );
+    }
+    assert!(
+        unused_names.contains("Exported.NeverCalled"),
+        "Exported.NeverCalled should be flagged as unused, got: {:?}", unused_names,
+    );
 
     // Interface detection only covers methods taking `self`: a static function
     // sharing its name with another module's is still flagged.

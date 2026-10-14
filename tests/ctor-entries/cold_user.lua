@@ -18,3 +18,21 @@ local moduleLabel = ns.Module:Label()
 --    ^ hover: (local) moduleLabel: string
 local moduleTag = ns.Module:Tag()
 --    ^ hover: (local) moduleTag: number
+local nestedGet = ns.Sub.Nested:Get()
+--    ^ hover: (local) nestedGet: string
+local nestedReady = ns.Sub.Nested:Ready()
+--    ^ hover: (local) nestedReady: boolean
+local catalogFirst = Catalog.Entries:First()
+--    ^ hover: (local) catalogFirst: string
+local leafLevel = ns.Branch.leaf:Level()
+--    ^ hover: (local) leafLevel: number
+local nestedSize = ns.Sub.Nested.size
+--    ^ hover: (local) nestedSize: number
+local catalogSize = Catalog.Entries.size
+--    ^ hover: (local) catalogSize: number
+local leaf = ns.Branch.leaf.level
+--    ^ hover: (local) leaf: number
+local greeting = GlobalModule.Greet("x")
+--    ^ hover: (local) greeting: string
+local globalVersion = GlobalModule.version
+--    ^ hover: (local) globalVersion: number

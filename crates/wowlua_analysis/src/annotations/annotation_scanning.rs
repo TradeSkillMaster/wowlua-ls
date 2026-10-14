@@ -471,6 +471,13 @@ pub struct ExternalGlobal {
     /// `#[serde(skip)]`.
     #[serde(skip)]
     pub ctor_method: bool,
+    /// A method of a local table — defined on it (`function M:f()`) or a function
+    /// entry of its constructor — carried to a field the table is exported to
+    /// (`X.y = M`): like a `ctor_method`, the builds never land it on the path's
+    /// root, and the workspace build adds it once the field writes are in, onto
+    /// the table they export. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub export_method: bool,
     /// Byte range of the function/variable *name* token (for precise diagnostic
     /// positioning). Falls back to `def_start`/`def_end` when unavailable.
     #[serde(default)]
@@ -546,6 +553,7 @@ impl ExternalGlobal {
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
+            export_method: false,
             name_start: 0,
             name_end: 0,
             mixin_parents: Vec::new(),
@@ -1548,6 +1556,7 @@ pub fn scan_method_funcall_self_fields(
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
+            export_method: false,
             name_start: write.range.0,
             name_end: write.range.1,
             mixin_parents: Vec::new(),

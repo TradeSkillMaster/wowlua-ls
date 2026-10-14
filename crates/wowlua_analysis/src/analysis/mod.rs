@@ -3398,6 +3398,12 @@ pub struct Analysis<'a> {
     /// (`ns.T = { … }`) → the local constructor table. An entry the scan typed
     /// as a placeholder reads from the twin (see `note_constructor_twin`).
     pub ctor_twins: HashMap<TableIndex, TableIndex>,
+    /// The scan's anonymous copy of each table a file-level write of this file
+    /// assigns (a constructor, `ns.T = { … }`, or an exported local table,
+    /// `ns.M = M`), with the value written: once the file is built, the
+    /// functions defined on it since are laid over the copy too
+    /// (`overlay_written_functions`).
+    pub ctor_overlays: Vec<(TableIndex, ExprId)>,
     pub deferred_field_assignments: Vec<DeferredFieldAssignment>,
     /// `@narrows-arg` mixins applied to field targets (`Mixin(self.Child, M)`);
     /// resolved after the fixpoint by `resolve_deferred_field_mixins`.
@@ -3776,6 +3782,7 @@ impl<'a> Analysis<'a> {
             },
             deep_field_injections: Vec::new(),
             ctor_twins: HashMap::default(),
+            ctor_overlays: Vec::new(),
             deferred_field_assignments: Vec::new(),
             deferred_field_mixins: Vec::new(),
             referenced_symbols: HashSet::default(),

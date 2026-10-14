@@ -19,5 +19,6 @@ local TypeHost = {}
 ---@type Frame
 local typedFrame = nil
 typedFrame.typedField = "hello"
+function typedFrame:TypedMethod() return 1 end
 
 TypeHost.frame = typedFrame

@@ -44,6 +44,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.secret == y.secret
         && x.declares_class == y.declares_class
         && x.ctor_method == y.ctor_method
+        && x.export_method == y.export_method
         // Constructor entries, ignoring their positional key ranges.
         && x.ctor_fields.len() == y.ctor_fields.len()
         && x.ctor_fields.iter().zip(&y.ctor_fields).all(|(a, b)| a.name == b.name && a.kind == b.kind)

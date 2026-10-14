@@ -17,6 +17,28 @@ use super::{
     ctor_function_fields, method_replaces_placeholder, merge_walked_fields,
 };
 
+/// What [`BuildOnStubsContext::build_methods`] carries between its two runs in
+/// `build_methods_and_table_fields`: before the field writes, and after them for
+/// the methods of exported local tables (`ExternalGlobal::export_method`).
+struct MethodPass<'g> {
+    /// The workspace globals' indices, in the order their methods are built.
+    order: Vec<usize>,
+    /// Method names that are constructors wherever defined (`@constructor __init`).
+    constructor_method_names: HashSet<&'g str>,
+    call_fields: HashSet<(&'g str, &'g str)>,
+    ctor_functions: HashSet<(&'g str, &'g str)>,
+    /// The `(table, method)` keys built so far: a later definition is a duplicate.
+    seen_methods: HashSet<(String, String)>,
+    /// The function built for each exported local table's method, by definition.
+    exported_functions: HashMap<(PathBuf, u32, u32), FunctionIndex>,
+    /// (table, method) pairs claimed by a `@meta` override (processed first via
+    /// `order`). A `@meta` override is authoritative, so a later duplicate of the
+    /// same method is *dropped* rather than added as an overload — an overload
+    /// would let call resolution pick the displaced signature and defeat the
+    /// override at call sites.
+    meta_overridden_methods: HashSet<(TableIndex, String)>,
+}
+
 struct BuildOnStubsContext<'a> {
     stubs_base: &'a PreResolvedGlobals,
 
@@ -410,7 +432,6 @@ impl<'a> BuildOnStubsContext<'a> {
 
     fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl], class_field_paths: &mut ClassFieldPaths) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
-        let dummy_node = DefNode::DUMMY;
 
         for g in ws_globals {
             if let ExternalGlobalKind::Table = &g.kind {
@@ -542,14 +563,15 @@ impl<'a> BuildOnStubsContext<'a> {
         );
 
         // Process `@meta`-annotated method overrides before any other declaration
-        // of the same (class, method) key. The `seen_methods` dedup below routes
-        // every occurrence after the first into overload synthesis, and only the
-        // first reaches the stub-override path — so without this, whether a `@meta`
-        // override displaces the built-in stub would depend on scan/file order: a
-        // non-`@meta` declaration iterated first (e.g. a vendored `Libs/AceDB-3.0/…`
-        // ahead of an alphabetically-later `types.lua`) would claim the field and
-        // demote the override to a plain overload. Stable sort, gated on presence,
-        // so the common no-override case keeps its original order exactly.
+        // of the same (class, method) key. The `seen_methods` dedup of
+        // `build_methods` routes every occurrence after the first into overload
+        // synthesis, and only the first reaches the stub-override path — so without
+        // this, whether a `@meta` override displaces the built-in stub would depend
+        // on scan/file order: a non-`@meta` declaration iterated first (e.g. a
+        // vendored `Libs/AceDB-3.0/…` ahead of an alphabetically-later `types.lua`)
+        // would claim the field and demote the override to a plain overload. Stable
+        // sort, gated on presence, so the common no-override case keeps its
+        // original order exactly.
         fn is_meta_method_override(g: &crate::annotations::ExternalGlobal) -> bool {
             matches!(&g.kind, crate::annotations::ExternalGlobalKind::Method(..))
                 && g.is_meta
@@ -560,224 +582,16 @@ impl<'a> BuildOnStubsContext<'a> {
             method_order.sort_by_key(|&i| !is_meta_method_override(&ws_globals[i]));
         }
 
-        let call_fields = call_field_writes(ws_globals);
-        let ctor_functions = ctor_function_fields(ws_classes);
-        let mut seen_methods: HashSet<(String, String)> = HashSet::default();
-        // (table, method) pairs claimed by a `@meta` override (processed first via
-        // `method_order`). A `@meta` override is authoritative, so a later duplicate
-        // of the same method is *dropped* rather than added as an overload — an
-        // overload would let call resolution pick the displaced signature and defeat
-        // the override at call sites.
-        let mut meta_overridden_methods: HashSet<(TableIndex, String)> = HashSet::default();
-        for &gi in &method_order {
-            let g = &ws_globals[gi];
-            if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
-                let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
-                let is_non_class_table = self.non_class_tables.contains_key(&g.name);
-                let through_call = path.first().is_some_and(|first| call_fields.contains(&(g.name.as_str(), first.as_str())));
-                let class_field_root = self.classes.get(&g.name).copied().and_then(|class_idx| {
-                    class_field_paths.enter_field_path(class_idx, &g.name, path, &mut self.deep_path_ctx())
-                        .or(through_call.then_some(class_idx))
-                });
-                let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
-                // A constructor's entry is never an `@accessor` method of the root.
-                if g.ctor_method && !path.is_empty() && !use_deep_path { continue; }
-                let target_idx = if use_deep_path {
-                    let Some(&root_idx) = self.non_class_tables.get(&g.name).or(class_field_root.as_ref()) else { continue };
-                    let Some((leaf_idx, _)) = walk_deep_path(
-                        root_idx, &g.name, path,
-                        &mut self.deep_path_ctx(), g,
-                    ) else { continue };
-                    if through_call {
-                        self.call_field_methods.insert((root_idx, path[0].clone()));
-                    }
-                    leaf_idx
-                } else {
-                    let target_table = self.classes.get(&g.name).or_else(|| self.non_class_tables.get(&g.name));
-                    let Some(&idx) = target_table else { continue };
-                    idx
-                };
-                let dedupe_key = if use_deep_path {
-                    (format!("{}.{}", g.name, path.join(".")), method_name.clone())
-                } else {
-                    (g.name.clone(), method_name.clone())
-                };
-                if !seen_methods.insert(dedupe_key) && !g.is_override {
-                    // Duplicate method definition — synthesize an overload from
-                    // the duplicate so both signatures participate in resolution.
-                    // Skip unannotated duplicates: they carry no additional type
-                    // info and would just produce a spurious `-> any`/`-> nil` overload.
-                    let local_idx = target_idx.ext_offset();
-                    let existing_func_idx = self.tables[local_idx].fields.get(method_name)
-                        .and_then(|field| {
-                            if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
-                        });
-                    if !super::global_has_type_annotations(g) {
-                        // Unannotated duplicate — dropped (no extra type info). Before
-                        // dropping it, record an arity disagreement so `call_arity`
-                        // doesn't flag the other flavor's call sites against the one
-                        // surviving definition (see `conflicting_arity_funcs`).
-                        if let Some(existing_func_idx) = existing_func_idx {
-                            let existing_local = existing_func_idx.ext_offset();
-                            if super::duplicate_def_arity_conflicts(
-                                &self.functions[existing_local], &self.symbols, &g.params,
-                            ) {
-                                self.conflicting_arity_funcs.insert(existing_func_idx);
-                            }
-                        }
-                        continue;
-                    }
-                    // A `@meta` override owns this method (it was processed first):
-                    // drop the duplicate instead of overloading, so the override's
-                    // signature is the sole one at call sites.
-                    if meta_overridden_methods.contains(&(target_idx, method_name.clone())) {
-                        continue;
-                    }
-                    if let Some(existing_func_idx) = existing_func_idx {
-                        let ovl = super::overload_from_duplicate_def(
-                            &g.params, &g.returns, *is_colon,
-                            |at| self.resolve_annotation(at),
-                        );
-                        self.functions[existing_func_idx.ext_offset()].overloads.push(ovl);
-                    }
-                    continue;
-                }
-
-                let target_local = target_idx.ext_offset();
-                let target_class_name = self.tables[target_local].class_name.clone();
-                let target_class_type_params = self.tables[target_local].class_type_params.clone();
-                let func_idx = PreResolvedGlobals::build_function(
-                    FnMeta::from_global(
-                        g, *is_colon, target_class_name.as_deref(), &target_class_type_params, dummy_node,
-                    ),
-                    &mut self.fn_build_ctx(),
-                );
-                if let Some(source_path) = &g.source_path {
-                    self.function_locations.insert(func_idx, ExternalLocation {
-                        path: source_path.clone(), start: g.def_start, end: g.def_end,
-                        name_start: g.name_start, name_end: g.name_end,
-                    });
-                    if g.body_derived_returns {
-                        self.deferred_returns.insert(func_idx);
-                    }
-                    // Record display name for unused-function diagnostics. A constructor's
-                    // function entries are values frameworks often call (option and
-                    // callback tables), so that leaves them out.
-                    if !g.ctor_method {
-                        let display_name = if is_addon_ns {
-                            let mut parts = path.clone();
-                            parts.push(method_name.clone());
-                            parts.join(".")
-                        } else {
-                            let sep = if *is_colon { ":" } else { "." };
-                            if path.is_empty() {
-                                format!("{}{sep}{method_name}", g.name)
-                            } else {
-                                format!("{}.{}{sep}{method_name}", g.name, path.join("."))
-                            }
-                        };
-                        self.function_names.insert(func_idx, display_name);
-                    }
-                    self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
-                }
-                let expr_id = ExprId(EXT_BASE + self.exprs.len());
-                self.exprs.push(Expr::FunctionDef(func_idx));
-
-                let local_idx = target_local;
-                let accessor_vis = if !path.is_empty() && !is_addon_ns {
-                    let mut vis = None;
-                    for iname in path {
-                        if let Some(&v) = self.tables[local_idx].accessors.get(iname.as_str()) {
-                            vis = Some(v);
-                            break;
-                        }
-                    }
-                    if vis.is_none()
-                        && let Some(ref class_name) = self.tables[local_idx].class_name {
-                            let parent_names = ws_classes.iter()
-                                .find(|c| c.name == *class_name)
-                                .map(|c| &c.parents);
-                            if let Some(parent_names) = parent_names {
-                                for pname in parent_names {
-                                    if let Some(&pidx) = self.classes.get(pname.as_str()) {
-                                        let plocal = pidx.ext_offset();
-                                        for iname in path {
-                                            if let Some(&v) = self.tables[plocal].accessors.get(iname.as_str()) {
-                                                vis = Some(v);
-                                                break;
-                                            }
-                                        }
-                                        if vis.is_some() { break; }
-                                    }
-                                }
-                            }
-                        }
-                    vis
-                } else { None };
-                let visibility = accessor_vis.unwrap_or(g.visibility);
-                // An annotated method declared in a workspace `---@meta` file OVERRIDES a
-                // colliding built-in *stub* method of the same name (the reported "let my
-                // types.lua win over the vendored stub" case, e.g. redefining
-                // `AceDB-3.0:New`). We replace the stub field so hover/signature/completion
-                // use the workspace signature, and record the displaced stub site as an
-                // alternate go-to-definition location (`finish` → `func_alt_locations`), so
-                // navigation still offers both. The `@meta` gate scopes this to deliberate
-                // type-declaration files: a vendored *real* library source (e.g. an addon's
-                // own copy of Ace3) is not `@meta`, so it stays additive and never churns
-                // the stub types. A bare (unannotated) method leaves the richer stub in
-                // place (`or_insert`), and only a *stub*-owned `FunctionDef` field is
-                // displaced — a prior workspace field (a same-file `@field`, an earlier
-                // `@class` method) is never clobbered.
-                let displaced_stub = if g.is_meta && super::global_has_type_annotations(g) {
-                    self.tables[local_idx].fields.get(method_name)
-                        .and_then(|fi| match self.exprs[fi.expr.ext_offset()] {
-                            Expr::FunctionDef(existing)
-                                if existing.ext_offset() < self.stubs_base.stub_functions_end => Some(existing),
-                            _ => None,
-                        })
-                } else {
-                    None
-                };
-                let new_field = FieldInfo {
-                    expr: expr_id,
-                    visibility,
-                    annotation: None,
-                    annotation_text: None,
-                    annotation_type_raw: None,
-                    lateinit: false,
-                    def_range: None,
-                    extra_exprs: Vec::new(),
-                    flavor_guard: 0,
-                    description: None,
-                    from_scan: false,
-                };
-                let claimed_field = if let Some(stub_func) = displaced_stub {
-                    if let Some(stub_loc) = self.function_locations.get(&stub_func).cloned() {
-                        self.method_stub_overrides.push((func_idx, stub_loc));
-                    }
-                    self.tables[local_idx].fields.insert(method_name.clone(), new_field);
-                    true
-                } else if method_replaces_placeholder(&self.tables, &self.exprs, &ctor_functions, target_idx, method_name) {
-                    self.tables[local_idx].fields.insert(method_name.clone(), new_field);
-                    true
-                } else {
-                    // `or_insert` only writes when the field is absent; we own it iff
-                    // there was nothing there before.
-                    let was_absent = !self.tables[local_idx].fields.contains_key(method_name);
-                    self.tables[local_idx].fields.entry(method_name.clone()).or_insert(new_field);
-                    was_absent
-                };
-                // When a `@meta` override owns the method, later duplicates are dropped
-                // (see the duplicate branch) so its signature stays authoritative.
-                if claimed_field && g.is_meta && super::global_has_type_annotations(g) {
-                    meta_overridden_methods.insert((target_idx, method_name.clone()));
-                }
-                if g.constructor || constructor_method_names.contains(method_name.as_str()) {
-                    self.functions[func_idx.ext_offset()].constructor = true;
-                    self.tables[local_idx].constructors.insert(method_name.clone());
-                }
-            }
-        }
+        let mut pass = MethodPass {
+            order: method_order,
+            constructor_method_names,
+            call_fields: call_field_writes(ws_globals),
+            ctor_functions: ctor_function_fields(ws_classes),
+            seen_methods: HashSet::default(),
+            exported_functions: HashMap::default(),
+            meta_overridden_methods: HashSet::default(),
+        };
+        self.build_methods(ws_globals, ws_classes, class_field_paths, &mut pass, false);
 
         // Materialize each global table's constructor entries (`X = { a = 1 }`), but
         // not onto a built-in namespace table: `X = X or { ... }` keeps the stub's.
@@ -891,6 +705,9 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
             }
         }
+        // The methods of exported local tables, onto the tables the writes above
+        // export them as (see `ExternalGlobal::export_method`).
+        self.build_methods(ws_globals, ws_classes, class_field_paths, &mut pass, true);
         // Second pass: resolve Unknown / MaybeCallable fields
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
@@ -940,6 +757,240 @@ impl<'a> BuildOnStubsContext<'a> {
                 self.tables[local_idx].fields.insert(field_name.clone(),
                     super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
+            }
+        }
+    }
+
+    /// Build the methods of `ws_globals`, in `pass.order`: those of exported local
+    /// tables (`export_method`) when `exported`, which land on the tables the field
+    /// writes exporting them create, the others before those writes.
+    fn build_methods(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl], class_field_paths: &mut ClassFieldPaths, pass: &mut MethodPass<'_>, exported: bool) {
+        use crate::annotations::ExternalGlobalKind;
+        let dummy_node = DefNode::DUMMY;
+        for &gi in &pass.order {
+            let g = &ws_globals[gi];
+            if g.export_method != exported { continue; }
+            if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
+                let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
+                let is_non_class_table = self.non_class_tables.contains_key(&g.name);
+                let through_call = path.first().is_some_and(|first| pass.call_fields.contains(&(g.name.as_str(), first.as_str())));
+                let class_field_root = self.classes.get(&g.name).copied().and_then(|class_idx| {
+                    class_field_paths.enter_field_path(class_idx, &g.name, path, &mut self.deep_path_ctx())
+                        .or(through_call.then_some(class_idx))
+                });
+                let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
+                // A constructor's entry, or a method of an exported local table, is never an
+                // `@accessor` method of the root.
+                if (g.ctor_method || g.export_method) && !path.is_empty() && !use_deep_path { continue; }
+                let target_idx = if use_deep_path {
+                    let Some(&root_idx) = self.non_class_tables.get(&g.name).or(class_field_root.as_ref()) else { continue };
+                    let Some((leaf_idx, _)) = walk_deep_path(
+                        root_idx, &g.name, path,
+                        &mut self.deep_path_ctx(), g,
+                    ) else { continue };
+                    if through_call {
+                        self.call_field_methods.insert((root_idx, path[0].clone()));
+                    }
+                    leaf_idx
+                } else {
+                    let target_table = self.classes.get(&g.name).or_else(|| self.non_class_tables.get(&g.name));
+                    let Some(&idx) = target_table else { continue };
+                    idx
+                };
+                let dedupe_key = if use_deep_path {
+                    (format!("{}.{}", g.name, path.join(".")), method_name.clone())
+                } else {
+                    (g.name.clone(), method_name.clone())
+                };
+                if !pass.seen_methods.insert(dedupe_key) && !g.is_override {
+                    // Duplicate method definition — synthesize an overload from
+                    // the duplicate so both signatures participate in resolution.
+                    // Skip unannotated duplicates: they carry no additional type
+                    // info and would just produce a spurious `-> any`/`-> nil` overload.
+                    let local_idx = target_idx.ext_offset();
+                    let existing_func_idx = self.tables[local_idx].fields.get(method_name)
+                        .and_then(|field| {
+                            if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
+                        });
+                    if !super::global_has_type_annotations(g) {
+                        // Unannotated duplicate — dropped (no extra type info). Before
+                        // dropping it, record an arity disagreement so `call_arity`
+                        // doesn't flag the other flavor's call sites against the one
+                        // surviving definition (see `conflicting_arity_funcs`).
+                        if let Some(existing_func_idx) = existing_func_idx {
+                            let existing_local = existing_func_idx.ext_offset();
+                            if super::duplicate_def_arity_conflicts(
+                                &self.functions[existing_local], &self.symbols, &g.params,
+                            ) {
+                                self.conflicting_arity_funcs.insert(existing_func_idx);
+                            }
+                        }
+                        continue;
+                    }
+                    // A `@meta` override owns this method (it was processed first):
+                    // drop the duplicate instead of overloading, so the override's
+                    // signature is the sole one at call sites.
+                    if pass.meta_overridden_methods.contains(&(target_idx, method_name.clone())) {
+                        continue;
+                    }
+                    if let Some(existing_func_idx) = existing_func_idx {
+                        let ovl = super::overload_from_duplicate_def(
+                            &g.params, &g.returns, *is_colon,
+                            |at| self.resolve_annotation(at),
+                        );
+                        self.functions[existing_func_idx.ext_offset()].overloads.push(ovl);
+                    }
+                    continue;
+                }
+
+                let target_local = target_idx.ext_offset();
+                let target_class_name = self.tables[target_local].class_name.clone();
+                let target_class_type_params = self.tables[target_local].class_type_params.clone();
+                // A method of a local table exported to several fields is one function
+                // on each of their tables: built once, so a reference to any of them
+                // is a reference to it (`unused-function`).
+                let shared_key = g.source_path.as_ref()
+                    .filter(|_| g.export_method)
+                    .map(|path| (path.clone(), g.def_start, g.def_end));
+                let func_idx = match shared_key.as_ref().and_then(|key| pass.exported_functions.get(key)) {
+                    Some(&func_idx) => func_idx,
+                    None => {
+                        let func_idx = PreResolvedGlobals::build_function(
+                            FnMeta::from_global(
+                                g, *is_colon, target_class_name.as_deref(), &target_class_type_params, dummy_node,
+                            ),
+                            &mut self.fn_build_ctx(),
+                        );
+                        if let Some(source_path) = &g.source_path {
+                            self.function_locations.insert(func_idx, ExternalLocation {
+                                path: source_path.clone(), start: g.def_start, end: g.def_end,
+                                name_start: g.name_start, name_end: g.name_end,
+                            });
+                            if g.body_derived_returns {
+                                self.deferred_returns.insert(func_idx);
+                            }
+                            // Record display name for unused-function diagnostics. A constructor's
+                            // function entries are values frameworks often call (option and
+                            // callback tables), so that leaves them out.
+                            if !g.ctor_method {
+                                let display_name = if is_addon_ns {
+                                    let mut parts = path.clone();
+                                    parts.push(method_name.clone());
+                                    parts.join(".")
+                                } else {
+                                    let sep = if *is_colon { ":" } else { "." };
+                                    if path.is_empty() {
+                                        format!("{}{sep}{method_name}", g.name)
+                                    } else {
+                                        format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                                    }
+                                };
+                                self.function_names.insert(func_idx, display_name);
+                            }
+                            self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
+                        }
+                        if let Some(key) = shared_key {
+                            pass.exported_functions.insert(key, func_idx);
+                        }
+                        func_idx
+                    }
+                };
+                let expr_id = ExprId(EXT_BASE + self.exprs.len());
+                self.exprs.push(Expr::FunctionDef(func_idx));
+
+                let local_idx = target_local;
+                let accessor_vis = if !path.is_empty() && !is_addon_ns {
+                    let mut vis = None;
+                    for iname in path {
+                        if let Some(&v) = self.tables[local_idx].accessors.get(iname.as_str()) {
+                            vis = Some(v);
+                            break;
+                        }
+                    }
+                    if vis.is_none()
+                        && let Some(ref class_name) = self.tables[local_idx].class_name {
+                            let parent_names = ws_classes.iter()
+                                .find(|c| c.name == *class_name)
+                                .map(|c| &c.parents);
+                            if let Some(parent_names) = parent_names {
+                                for pname in parent_names {
+                                    if let Some(&pidx) = self.classes.get(pname.as_str()) {
+                                        let plocal = pidx.ext_offset();
+                                        for iname in path {
+                                            if let Some(&v) = self.tables[plocal].accessors.get(iname.as_str()) {
+                                                vis = Some(v);
+                                                break;
+                                            }
+                                        }
+                                        if vis.is_some() { break; }
+                                    }
+                                }
+                            }
+                        }
+                    vis
+                } else { None };
+                let visibility = accessor_vis.unwrap_or(g.visibility);
+                // An annotated method declared in a workspace `---@meta` file OVERRIDES a
+                // colliding built-in *stub* method of the same name (the reported "let my
+                // types.lua win over the vendored stub" case, e.g. redefining
+                // `AceDB-3.0:New`). We replace the stub field so hover/signature/completion
+                // use the workspace signature, and record the displaced stub site as an
+                // alternate go-to-definition location (`finish` → `func_alt_locations`), so
+                // navigation still offers both. The `@meta` gate scopes this to deliberate
+                // type-declaration files: a vendored *real* library source (e.g. an addon's
+                // own copy of Ace3) is not `@meta`, so it stays additive and never churns
+                // the stub types. A bare (unannotated) method leaves the richer stub in
+                // place (`or_insert`), and only a *stub*-owned `FunctionDef` field is
+                // displaced — a prior workspace field (a same-file `@field`, an earlier
+                // `@class` method) is never clobbered.
+                let displaced_stub = if g.is_meta && super::global_has_type_annotations(g) {
+                    self.tables[local_idx].fields.get(method_name)
+                        .and_then(|fi| match self.exprs[fi.expr.ext_offset()] {
+                            Expr::FunctionDef(existing)
+                                if existing.ext_offset() < self.stubs_base.stub_functions_end => Some(existing),
+                            _ => None,
+                        })
+                } else {
+                    None
+                };
+                let new_field = FieldInfo {
+                    expr: expr_id,
+                    visibility,
+                    annotation: None,
+                    annotation_text: None,
+                    annotation_type_raw: None,
+                    lateinit: false,
+                    def_range: None,
+                    extra_exprs: Vec::new(),
+                    flavor_guard: 0,
+                    description: None,
+                    from_scan: false,
+                };
+                let claimed_field = if let Some(stub_func) = displaced_stub {
+                    if let Some(stub_loc) = self.function_locations.get(&stub_func).cloned() {
+                        self.method_stub_overrides.push((func_idx, stub_loc));
+                    }
+                    self.tables[local_idx].fields.insert(method_name.clone(), new_field);
+                    true
+                } else if method_replaces_placeholder(&self.tables, &self.exprs, &pass.ctor_functions, target_idx, method_name) {
+                    self.tables[local_idx].fields.insert(method_name.clone(), new_field);
+                    true
+                } else {
+                    // `or_insert` only writes when the field is absent; we own it iff
+                    // there was nothing there before.
+                    let was_absent = !self.tables[local_idx].fields.contains_key(method_name);
+                    self.tables[local_idx].fields.entry(method_name.clone()).or_insert(new_field);
+                    was_absent
+                };
+                // When a `@meta` override owns the method, later duplicates are dropped
+                // (see the duplicate branch) so its signature stays authoritative.
+                if claimed_field && g.is_meta && super::global_has_type_annotations(g) {
+                    pass.meta_overridden_methods.insert((target_idx, method_name.clone()));
+                }
+                if g.constructor || pass.constructor_method_names.contains(method_name.as_str()) {
+                    self.functions[func_idx.ext_offset()].constructor = true;
+                    self.tables[local_idx].constructors.insert(method_name.clone());
+                }
             }
         }
     }

@@ -166,19 +166,26 @@ impl FileNames<'_> {
         names.first().is_some_and(|root| !self.class_var_guesses.contains(root) && !self.is_unrenamed_local(root))
     }
 
-    /// `names` with its root spelled as other files see it: the addon namespace's
-    /// sentinel, a `@class` local's class, a `@type` local's type.
+    /// `names` with its root spelled as other files see it ([`Self::renamed_root`]).
     fn renamed(&self, mut names: Vec<String>) -> Vec<String> {
         if let Some(root) = names.first_mut() {
-            if self.addon_ns_var == Some(root.as_str()) {
-                *root = ADDON_NS_NAME.to_string();
-            } else if let Some(cn) = self.class_vars.get(root.as_str()) {
-                *root = cn.clone();
-            } else if let Some(type_name) = self.local_type_vars.get(root.as_str()) {
-                *root = type_name.clone();
-            }
+            *root = self.renamed_root(root);
         }
         names
+    }
+
+    /// `root` spelled as other files see it: the addon namespace's sentinel, a
+    /// `@class` local's class, a `@type` local's type.
+    fn renamed_root(&self, root: &str) -> String {
+        if self.addon_ns_var == Some(root) {
+            ADDON_NS_NAME.to_string()
+        } else if let Some(cn) = self.class_vars.get(root) {
+            cn.clone()
+        } else if let Some(type_name) = self.local_type_vars.get(root) {
+            type_name.clone()
+        } else {
+            root.to_string()
+        }
     }
 
     /// The [`CallArgRefs`] of `call`: each argument that is a name or a field path
@@ -754,7 +761,7 @@ struct LocalValues<'a> {
     local_functions: &'a HashSet<String>,
     local_function_sigs: &'a HashMap<String, ExternalGlobal>,
     local_tables: &'a HashSet<String>,
-    local_table_field_kinds: &'a HashMap<String, Vec<(String, FieldValueKind)>>,
+    local_table_field_kinds: &'a HashMap<String, Vec<CtorField>>,
     local_table_ctors: &'a HashMap<String, crate::ast::TableConstructor<'a>>,
 }
 
@@ -782,16 +789,21 @@ impl LocalValues<'_> {
     /// global constructor's ([`extract_ctor_fields`]), then those written on it
     /// (`name.k = v`, captured above), the last write winning.
     fn table_shape(&self, name: &str) -> Vec<(String, FieldValueKind)> {
-        let mut shape: Vec<(String, FieldValueKind)> = self.local_table_ctors.get(name)
-            .map(|tc| extract_ctor_fields(tc, self.scope).into_iter().map(|f| (f.name, f.kind)).collect())
+        self.table_fields(name).into_iter().map(|f| (f.name, f.kind)).collect()
+    }
+
+    /// [`Self::table_shape`], each field with the range of its key.
+    fn table_fields(&self, name: &str) -> Vec<CtorField> {
+        let mut fields = self.local_table_ctors.get(name)
+            .map(|tc| extract_ctor_fields(tc, self.scope))
             .unwrap_or_default();
-        for (field, kind) in self.local_table_field_kinds.get(name).into_iter().flatten() {
-            match shape.iter_mut().find(|(n, _)| n == field) {
-                Some(slot) => slot.1 = kind.clone(),
-                None => shape.push((field.clone(), kind.clone())),
+        for write in self.local_table_field_kinds.get(name).into_iter().flatten() {
+            match fields.iter_mut().find(|f| f.name == write.name) {
+                Some(slot) => slot.kind = write.kind.clone(),
+                None => fields.push(write.clone()),
             }
         }
-        shape
+        fields
     }
 
     /// The type a field assigned the local `name` takes from it.
@@ -817,10 +829,9 @@ impl LocalValues<'_> {
 
     /// Whether a constructor entry referencing `names` is typed as a field write:
     /// not one rooted at a file local no rename covers
-    /// ([`FileNames::is_unrenamed_local`]: an untyped local, a local table, whose
-    /// methods only its export carries, or one assigned a call, which the entry's
-    /// own kind carries), nor at a class only guessed from a call's string
-    /// argument.
+    /// ([`FileNames::is_unrenamed_local`]: an untyped local, a local table, which
+    /// the entry exports instead, or one assigned a call, which the entry's own
+    /// kind carries), nor at a class only guessed from a call's string argument.
     fn reference_types(&self, names: &[String]) -> bool {
         self.scope.names.names_global(names)
     }
@@ -835,17 +846,29 @@ enum CtorEntries {
     /// Functions and references: a field's constructor, whose shape annotation
     /// carries the entries declaring their own type.
     References,
-    /// Those and the entries declaring their own type: a global's constructor, or
-    /// an exported local table's.
+    /// Those and the entries declaring their own type: a global's constructor.
     All,
+    /// All of an exported local table's, its functions methods of the table the
+    /// export writes (`ExternalGlobal::export_method`).
+    Exported,
 }
 
+/// How many fields one local table is carried to at most ([`CtorEntryScan::export`]):
+/// a table several constructors share is carried at each, and a chain of such
+/// tables would multiply them.
+const MAX_LOCAL_TABLE_EXPORTS: usize = 64;
+
 /// Emits a file's table-constructor entries as the field writes they amount to
-/// (see [`Self::push`]).
+/// (see [`Self::push`]), and records where the file exports its local tables.
 struct CtorEntryScan<'a> {
     locals: &'a LocalValues<'a>,
     owned_path: Option<&'a Path>,
     implicit_protected_prefix: bool,
+    /// The fields each local table is exported to, as the owner and path of the
+    /// field: its methods are those tables' ([`Self::export`]).
+    exports: HashMap<String, Vec<(String, Vec<String>)>>,
+    /// The locals of `exports`, in the order they were first exported.
+    exported_locals: Vec<String>,
 }
 
 impl CtorEntryScan<'_> {
@@ -854,18 +877,19 @@ impl CtorEntryScan<'_> {
     /// constructors' entries under their own key — where the constructor's own
     /// scan could only type them coarsely: a function as a method (its signature
     /// crosses files, and an unannotated body's returns are harvested lazily,
-    /// instead of a bare `function`); a reference typed as `X.k = name` is; and an
-    /// entry declaring its own type. Which of them, `entries` decides; a class's
-    /// constructor covers only `k = v` entries, as the class declaration does,
-    /// the others `["k"] = v` entries too, as their shapes do.
-    fn push(&self, globals: &mut Vec<ExternalGlobal>, entries: CtorEntries, owner: &str, path: &[String], tc: &crate::ast::TableConstructor<'_>) {
+    /// instead of a bare `function`); a reference typed as `X.k = name` is, a
+    /// local table exported there; and an entry declaring its own type. Which of
+    /// them, `entries` decides; a class's constructor covers only `k = v`
+    /// entries, as the class declaration does, the others `["k"] = v` entries
+    /// too, as their shapes do.
+    fn push(&mut self, globals: &mut Vec<ExternalGlobal>, entries: CtorEntries, owner: &str, path: &[String], tc: &crate::ast::TableConstructor<'_>) {
         for field in tc.fields() {
             if entries == CtorEntries::Methods && !matches!(field.kind(), Some(crate::ast::FieldKind::Named { .. })) {
                 continue;
             }
             let Some((name, value, key)) = named_ctor_entry(&field) else { continue };
             if let Some(declared) = constructor_entry_type(field.syntax(), &value) {
-                if entries == CtorEntries::All {
+                if matches!(entries, CtorEntries::All | CtorEntries::Exported) {
                     globals.push(self.write(owner, path, name, FieldValueKind::Unknown, vec![declared], key));
                 }
                 continue;
@@ -873,7 +897,7 @@ impl CtorEntryScan<'_> {
             match &value {
                 Expression::Function(func) => {
                     let base = build_func_external(func, field.syntax(), false, self.owned_path);
-                    self.push_method(globals, owner, path, &name, ExternalGlobal { name_start: key.0, name_end: key.1, ..base });
+                    self.push_method(globals, entries, owner, path, &name, ExternalGlobal { name_start: key.0, name_end: key.1, ..base });
                 }
                 Expression::Identifier(ident) if entries != CtorEntries::Methods
                     && !ident.has_non_string_bracket_in_chain()
@@ -883,12 +907,19 @@ impl CtorEntryScan<'_> {
                     if let [local] = names.as_slice()
                         && let Some(sig) = self.locals.local_function_sigs.get(local)
                     {
-                        self.push_method(globals, owner, path, &name, sig.clone());
+                        self.push_method(globals, entries, owner, path, &name, sig.clone());
                     } else if let [local] = names.as_slice()
                         && !self.locals.scope.names.class_var_guesses.contains(local)
                         && let Some(declared) = self.locals.declared_type(local)
                     {
                         globals.push(self.write(owner, path, name, self.locals.kind(names), vec![declared], key));
+                    } else if let [local] = names.as_slice()
+                        && self.locals.local_tables.contains(local)
+                    {
+                        let mut entry_path = path.to_vec();
+                        entry_path.push(name.clone());
+                        globals.push(self.write(owner, path, name, self.locals.kind(names.clone()), Vec::new(), key));
+                        self.export(globals, &names[0], owner, &entry_path, Some(CtorEntries::Exported));
                     } else if self.locals.reference_types(&names) {
                         globals.push(self.write(owner, path, name, self.locals.kind(names), Vec::new(), key));
                     }
@@ -903,8 +934,52 @@ impl CtorEntryScan<'_> {
         }
     }
 
-    fn push_method(&self, globals: &mut Vec<ExternalGlobal>, owner: &str, path: &[String], name: &str, method: ExternalGlobal) {
-        let method = ExternalGlobal { ctor_method: true, ..method };
+    /// Record the local table `local` as exported to `owner`'s field at `path`,
+    /// whose table its methods are (emitted by [`Self::push_exported_methods`]
+    /// once the file is scanned), and emit its constructor's `entries` there — at
+    /// [`MAX_LOCAL_TABLE_EXPORTS`] fields at most.
+    fn export(&mut self, globals: &mut Vec<ExternalGlobal>, local: &str, owner: &str, path: &[String], entries: Option<CtorEntries>) {
+        let fields = self.exports.entry(local.to_string()).or_default();
+        // Already exported there, or inside a table it is exported to: an entry
+        // naming it in its own constructor would export it again one level down,
+        // without end.
+        if fields.len() >= MAX_LOCAL_TABLE_EXPORTS || fields.iter().any(|(o, p)| o == owner && path.starts_with(p)) {
+            return;
+        }
+        if fields.is_empty() {
+            self.exported_locals.push(local.to_string());
+        }
+        fields.push((owner.to_string(), path.to_vec()));
+        if let Some(entries) = entries
+            && let Some(tc) = self.locals.local_table_ctors.get(local)
+        {
+            self.push(globals, entries, owner, path, tc);
+        }
+    }
+
+    /// The methods defined on each exported local table (`methods`, by local),
+    /// as methods of the table it is exported to.
+    fn push_exported_methods(&self, globals: &mut Vec<ExternalGlobal>, methods: &HashMap<String, Vec<ExternalGlobal>>) {
+        for local in &self.exported_locals {
+            let Some(local_methods) = methods.get(local) else { continue };
+            for (owner, path) in &self.exports[local] {
+                for method in local_methods {
+                    let ExternalGlobalKind::Method(intermediates, method_name, is_colon) = &method.kind else { continue };
+                    let mut method_path = path.clone();
+                    method_path.extend(intermediates.iter().cloned());
+                    globals.push(ExternalGlobal {
+                        name: owner.clone(),
+                        kind: ExternalGlobalKind::Method(method_path, method_name.clone(), *is_colon),
+                        export_method: true,
+                        ..method.clone()
+                    });
+                }
+            }
+        }
+    }
+
+    fn push_method(&self, globals: &mut Vec<ExternalGlobal>, entries: CtorEntries, owner: &str, path: &[String], name: &str, method: ExternalGlobal) {
+        let method = ExternalGlobal { ctor_method: true, export_method: entries == CtorEntries::Exported, ..method };
         push_method_global(globals, owner.to_string(), method, name, path.to_vec(), self.implicit_protected_prefix, None);
     }
 
@@ -939,6 +1014,7 @@ impl CtorEntryScan<'_> {
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
+            export_method: false,
             name_start: key.0, name_end: key.1,
             mixin_parents: Vec::new(),
             returns_class_name: false,
@@ -1128,6 +1204,7 @@ fn build_func_external(
         ctor_fields: Vec::new(),
         declares_class: false,
         ctor_method: false,
+        export_method: false,
         name_start,
         name_end,
         mixin_parents: Vec::new(),
@@ -1714,7 +1791,7 @@ pub fn scan_file_globals_with_synth(
     // files as its named type via the `returns` path at the field-assignment site, so its
     // `Table` value-kind is never consulted. Nested inline constructors recurse; a
     // single-name scalar-constant leaf resolves through `local_scalar_kinds`.
-    let mut local_table_field_kinds: HashMap<String, Vec<(String, FieldValueKind)>> = HashMap::default();
+    let mut local_table_field_kinds: HashMap<String, Vec<CtorField>> = HashMap::default();
     for stmt in &all_stmts {
         if let Statement::Assign(assign) = stmt
             && let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list())
@@ -1739,12 +1816,17 @@ pub fn scan_file_globals_with_synth(
             { continue; }
             let field = names[1].clone();
             let kind = classify_value_kind_resolving_scalars(&exprs[0], &local_scalar_kinds, &callee_scope);
+            let key = idents[0].syntax().descendants_with_tokens()
+                .filter_map(|c| c.into_token().filter(|t| t.kind() == SyntaxKind::Name))
+                .last()
+                .map_or((0, 0), |t| (u32::from(t.text_range().start()), u32::from(t.text_range().end())));
             let entry = local_table_field_kinds.entry(root.clone()).or_default();
             // Last write wins, preserving first-seen field order.
-            if let Some(slot) = entry.iter_mut().find(|(n, _)| *n == field) {
-                slot.1 = kind;
+            if let Some(slot) = entry.iter_mut().find(|f| f.name == field) {
+                slot.kind = kind;
+                slot.range = key;
             } else {
-                entry.push((field, kind));
+                entry.push(CtorField { name: field, kind, range: key });
             }
         }
     }
@@ -1792,10 +1874,12 @@ pub fn scan_file_globals_with_synth(
         local_table_field_kinds: &local_table_field_kinds,
         local_table_ctors: &local_table_ctors,
     };
-    let ctor_entries = CtorEntryScan {
+    let mut ctor_entries = CtorEntryScan {
         locals: &local_values,
         owned_path: owned_path.as_deref(),
         implicit_protected_prefix,
+        exports: HashMap::default(),
+        exported_locals: Vec::new(),
     };
 
     // Named globals created as a side effect of calling functions annotated with
@@ -1810,10 +1894,24 @@ pub fn scan_file_globals_with_synth(
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
     let mut addon_assigned_fields: HashSet<String> = HashSet::default();
     // Buffer methods defined on local tables (e.g. function Locale.GetTable())
-    // so they can be emitted when the local table is assigned to the addon ns
+    // so they can be emitted where the local table is exported (ns.Locale = Locale)
     let mut local_table_methods: HashMap<String, Vec<ExternalGlobal>> = HashMap::default();
-    // Map local table var name → addon field name (e.g. "Locale" → "Locale" from ns.Locale = Locale)
-    let mut local_table_to_addon_field: HashMap<String, String> = HashMap::default();
+    // Where a method defined or a field written through a root at `offset` goes,
+    // the same for `function M.f()` and `M.f = v`: through a plain local table,
+    // only where the table is exported (`local_table_methods`, its shape); through
+    // the addon namespace or a `@class`/`@type` local, to its renamed root
+    // (`FileNames::renamed_root`); through any other local, nowhere. A name
+    // written before its first `local` is a global.
+    let local_at = |root: &str, offset: u32| first_local_offset.get(root).is_some_and(|&lo| offset >= lo);
+    let renamed_local = |root: &str| {
+        addon_ns_var.as_deref() == Some(root) || class_vars.contains_key(root) || local_type_vars.contains_key(root)
+    };
+    let plain_local_table = |root: &str, offset: u32| {
+        local_at(root, offset) && local_tables.contains(root) && !renamed_local(root)
+    };
+    let unrouted_local = |root: &str, offset: u32| {
+        local_at(root, offset) && !local_tables.contains(root) && !renamed_local(root)
+    };
 
     for stmt in &all_stmts {
         match stmt {
@@ -1845,34 +1943,27 @@ pub fn scan_file_globals_with_synth(
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
                         let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
-                        // Skip methods on locals that aren't class-typed or table constructors.
-                        // Use offset-aware check: only skip if the function definition
-                        // comes after the local declaration (same logic as single-name assignments).
                         let func_offset: u32 = func.syntax().text_range().start().into();
-                        if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str())
-                            && first_local_offset.get(root_name).is_some_and(|&lo| func_offset >= lo)
-                        {
+                        if unrouted_local(root_name, func_offset) {
                             continue;
                         }
-                        // Buffer methods defined on local tables (any depth) for later
-                        // flushing onto the addon namespace. At flush time the local name
-                        // is rewritten to the addon field alias and prepended to the
-                        // buffered intermediates, so `function Db.A:Foo()` + `ns.Db = Db`
-                        // resolves as `ns.Db.A:Foo()`.
-                        if local_tables.contains(root_name) && !class_vars.contains_key(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
+                        // Buffer methods defined on a local table (any depth) until the
+                        // scan knows where the table is exported: `push_exported_methods`
+                        // emits them there, `function Db.A:Foo()` + `ns.Sub.Db = Db` as
+                        // `ns.Sub.Db.A:Foo()`.
+                        if plain_local_table(root_name, func_offset) {
                             local_table_methods.entry(root_name.clone()).or_default().push(ExternalGlobal {
-                                // name left empty; set when flushed onto the addon ns
                                 kind: ExternalGlobalKind::Method(intermediates.clone(), method_name.clone(), is_colon),
                                 ..base.clone()
                             });
-                        } else {
-                            let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
-                                ADDON_NS_NAME.to_string()
-                            } else if let Some(class_name) = class_vars.get(root_name) {
-                                class_name.clone()
-                            } else { root_name.clone() };
+                        } else if intermediates.is_empty()
+                            || !local_at(root_name, func_offset)
+                            || addon_ns_var.as_deref() == Some(root_name.as_str())
+                            || class_vars.contains_key(root_name)
+                        {
+                            // A `@type` local's deeper path is dropped, as a field write's is.
                             globals.push(ExternalGlobal {
-                                name: canonical_name,
+                                name: file_names.renamed_root(root_name),
                                 kind: ExternalGlobalKind::Method(intermediates, method_name.clone(), is_colon),
                                 ..base
                             });
@@ -1937,6 +2028,13 @@ pub fn scan_file_globals_with_synth(
                                 globals.push(ExternalGlobal { name: names[0].clone(), ..base });
                                 continue;
                             }
+                            // A global assigned a plain local table is that table, as
+                            // one assigned its constructor is: its shape and, once the
+                            // file is scanned, its methods (`CtorEntryScan::export`).
+                            let exported = named_value(&effective).and_then(|ident| match ident.names().as_slice() {
+                                [local] if plain_local_table(local, u32::from(range.start())) => Some(local.clone()),
+                                _ => None,
+                            });
                             let (kind, string_value, number_value, mixin_parents) = if let Some(vk) = classify_literal_value_kind(&effective) {
                                 let sv = if let Expression::Literal(lit) = &effective {
                                     lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
@@ -1945,6 +2043,7 @@ pub fn scan_file_globals_with_synth(
                                 (ExternalGlobalKind::Variable(vk), sv, nv, Vec::new())
                             } else { match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None, Vec::new()),
+                                Expression::Identifier(_) if exported.is_some() => (ExternalGlobalKind::Table, None, None, Vec::new()),
                                 // (`Expression::Function` is handled by the early branch above.)
                                 Expression::Identifier(_) if named_value(&effective).is_none() => {
                                     (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new())
@@ -2023,8 +2122,9 @@ pub fn scan_file_globals_with_synth(
                                 }
                                 _ => None,
                             };
-                            let ctor_fields = match &effective {
-                                Expression::TableConstructor(tc) => extract_ctor_fields(tc, &callee_scope),
+                            let ctor_fields = match (&effective, &exported) {
+                                (Expression::TableConstructor(tc), _) => extract_ctor_fields(tc, &callee_scope),
+                                (_, Some(local)) => local_values.table_fields(local),
                                 _ => Vec::new(),
                             };
                             // Name-token range for precise navigation. Uses the LAST
@@ -2075,6 +2175,7 @@ pub fn scan_file_globals_with_synth(
                                 ctor_fields,
                                 declares_class,
                                 ctor_method: false,
+                                export_method: false,
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
                                 returns_class_name: false,
@@ -2088,6 +2189,11 @@ pub fn scan_file_globals_with_synth(
                                     Some(class_name) => ctor_entries.push(&mut globals, CtorEntries::Methods, class_name, &[], tc),
                                     None => ctor_entries.push(&mut globals, CtorEntries::All, &names[0], &[], tc),
                                 }
+                            } else if let Some(local) = &exported {
+                                match class_vars.get(&names[0]) {
+                                    Some(class_name) => ctor_entries.export(&mut globals, local, class_name, &[], Some(CtorEntries::Methods)),
+                                    None => ctor_entries.export(&mut globals, local, &names[0], &[], Some(CtorEntries::Exported)),
+                                }
                             }
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -2096,12 +2202,8 @@ pub fn scan_file_globals_with_synth(
                             expand_field_alias(&mut names, &field_aliases, assign.syntax().text_range().start().into());
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
-                            // Skip field assignments on locals that aren't class-typed, table constructors, or @type-annotated.
-                            // Use offset-aware check: only skip if the assignment comes after the local declaration.
                             let assign_offset: u32 = assign.syntax().text_range().start().into();
-                            if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !local_type_vars.contains_key(root_name) && !is_addon_root
-                                && first_local_offset.get(root_name).is_some_and(|&lo| assign_offset >= lo)
-                            {
+                            if unrouted_local(root_name, assign_offset) {
                                 continue;
                             }
                             // Drop 3+ part chains for local non-class variables to avoid
@@ -2118,13 +2220,7 @@ pub fn scan_file_globals_with_synth(
                             { continue; }
                             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
                             let field_name = names[names.len()-1].clone();
-                            let canonical_name = if is_addon_root {
-                                ADDON_NS_NAME.to_string()
-                            } else if let Some(class_name) = class_vars.get(root_name) {
-                                class_name.clone()
-                            } else if let Some(type_name) = local_type_vars.get(root_name) {
-                                type_name.clone()
-                            } else { root_name.clone() };
+                            let canonical_name = file_names.renamed_root(root_name);
                             let annotations = extract_annotations(assign.syntax());
                             // Unwrap `and`/`or` chains so `ns.B = X and X.Y`
                             // infers from the effective operand (Y), not the whole chain.
@@ -2203,6 +2299,10 @@ pub fn scan_file_globals_with_synth(
                                 }
                                 _ => None,
                             };
+                            // A field of a plain local table, which only the table's
+                            // exports carry (`ns.M = M`): a function written to it is a
+                            // method of the table, as one defined `function M.f()` is.
+                            let local_table_root = plain_local_table(root_name, assign_offset);
                             // When the RHS is a single local function with a captured
                             // signature, emit a method on the namespace/class so the full
                             // signature (params/returns/etc.) is preserved cross-file,
@@ -2222,8 +2322,11 @@ pub fn scan_file_globals_with_synth(
                                         let track = if is_addon_root && names.len() == 2 {
                                             Some(&mut addon_assigned_fields)
                                         } else { None };
+                                        let methods = if local_table_root {
+                                            local_table_methods.entry(root_name.clone()).or_default()
+                                        } else { &mut globals };
                                         push_method_global(
-                                            &mut globals, canonical_name, merged,
+                                            methods, canonical_name, merged,
                                             &field_name, intermediates, implicit_protected_prefix, track,
                                         );
                                         continue;
@@ -2239,30 +2342,39 @@ pub fn scan_file_globals_with_synth(
                                 let track = if is_addon_root && names.len() == 2 {
                                     Some(&mut addon_assigned_fields)
                                 } else { None };
+                                let methods = if local_table_root {
+                                    local_table_methods.entry(root_name.clone()).or_default()
+                                } else { &mut globals };
                                 push_method_global(
-                                    &mut globals, canonical_name, base,
+                                    methods, canonical_name, base,
                                     &field_name, intermediates, implicit_protected_prefix, track,
                                 );
+                                continue;
+                            }
+                            // Any other value written to a plain local table's field is
+                            // part of the table's shape (`LocalValues::table_shape`).
+                            if local_table_root {
                                 continue;
                             }
                             // A constructor's entries belong to the table it builds: the
                             // field's own (an anonymous one, whose type the constructor
                             // is), or the class a `---@class` makes it. Emitted after the
-                            // field's write, whose coarse entries they replace. An exported
-                            // local table's (`ns.M = M`) are the field's too, all of them:
-                            // its shape carries no declared entry. Not under a plain local
-                            // table, whose methods only an export carries.
-                            let local_table_root = local_tables.contains(root_name) && !is_addon_root
-                                && !class_vars.contains_key(root_name) && !local_type_vars.contains_key(root_name);
+                            // field's write, whose coarse entries they replace.
                             let ctor = match effective {
-                                _ if annotations.var_type.is_some() || local_table_root => None,
-                                Expression::TableConstructor(tc) => Some((tc, CtorEntries::References)),
-                                _ => match assigned_ident.map(|ident| ident.names()).as_deref() {
-                                    Some([local]) => local_table_ctors.get(local).map(|&tc| (tc, CtorEntries::All)),
-                                    _ => None,
-                                },
+                                _ if annotations.var_type.is_some() => None,
+                                Expression::TableConstructor(tc) => Some(tc),
+                                _ => None,
                             };
-                            let ctor_owner = ctor.map(|(tc, entries)| (tc, entries, annotations.class.clone(), canonical_name.clone()));
+                            // A local table exported to the field (`ns.M = M`) is the
+                            // field's table: its methods are, and its constructor's entries
+                            // (all of them: its shape carries no declared entry) — a
+                            // class's, only its functions, under `---@class`; none of the
+                            // entries under a declared `---@type`.
+                            let exported = match assigned_ident.map(|ident| ident.names()).as_deref() {
+                                Some([local]) if plain_local_table(local, assign_offset) => Some(local.clone()),
+                                _ => None,
+                            };
+                            let owner = canonical_name.clone();
                             let range = assign.syntax().text_range();
                             // An explicit inline `@private`/`@protected` on the field
                             // assignment wins; otherwise fall back to the name convention.
@@ -2298,6 +2410,7 @@ pub fn scan_file_globals_with_synth(
                                 ctor_fields: Vec::new(),
                                 declares_class: false,
                                 ctor_method: false,
+                                export_method: false,
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
                                 mixin_parents: Vec::new(),
@@ -2305,21 +2418,25 @@ pub fn scan_file_globals_with_synth(
                                 returns_enum: false,
                                 secret: None,
                             });
-                            match ctor_owner {
-                                Some((tc, _, Some(class_name), _)) => ctor_entries.push(&mut globals, CtorEntries::Methods, &class_name, &[], &tc),
-                                Some((tc, entries, None, owner)) => ctor_entries.push(&mut globals, entries, &owner, &names[1..], &tc),
-                                None => {}
+                            match (ctor, &annotations.class) {
+                                (Some(tc), Some(class_name)) => ctor_entries.push(&mut globals, CtorEntries::Methods, class_name, &[], &tc),
+                                (Some(tc), None) => ctor_entries.push(&mut globals, CtorEntries::References, &owner, &names[1..], &tc),
+                                (None, _) => {}
                             }
-                            // For depth-2 assignments on the addon ns, track the assigned field
-                            // name so methods on buffered local tables can be flushed post-loop.
+                            match (exported, &annotations.class) {
+                                (Some(local), Some(class_name)) => {
+                                    ctor_entries.export(&mut globals, &local, class_name, &[], Some(CtorEntries::Methods));
+                                }
+                                (Some(local), None) => {
+                                    let entries = annotations.var_type.is_none().then_some(CtorEntries::Exported);
+                                    ctor_entries.export(&mut globals, &local, &owner, &names[1..], entries);
+                                }
+                                (None, _) => {}
+                            }
+                            // Track the addon ns's depth-2 fields this file assigns (see
+                            // `addon_assigned_fields`).
                             if is_addon_root && names.len() == 2 {
                                 addon_assigned_fields.insert(field_name.clone());
-                                if let Some(rhs_ident) = assigned_ident {
-                                    let rhs_names = rhs_ident.names();
-                                    if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
-                                        local_table_to_addon_field.insert(rhs_names[0].clone(), field_name.clone());
-                                    }
-                                }
                             }
                         }
                     }
@@ -2339,26 +2456,13 @@ pub fn scan_file_globals_with_synth(
         }
     }
 
-    // Flush buffered local table methods onto their addon namespace sub-tables.
-    // The local root name is rewritten to the addon field alias and prepended to
+    // Flush buffered local table methods onto the tables they are exported as.
+    // The local root is rewritten to the export's owner and its path prepended to
     // the buffered intermediates — e.g. `function Db.A.B:Foo()` buffered with
-    // path=["A","B"], once flushed via `ns.Db = Db`, becomes a Method under the
-    // addon ns with path=["Db","A","B"], which walk_deep_path then resolves as
-    // `ns.Db.A.B:Foo()` (auto-creating any missing intermediate sub-tables).
-    for (local_name, addon_field) in &local_table_to_addon_field {
-        if let Some(methods) = local_table_methods.remove(local_name) {
-            for mut m in methods {
-                m.name = ADDON_NS_NAME.to_string();
-                if let ExternalGlobalKind::Method(ref path, ref mname, is_colon) = m.kind {
-                    let mut new_path = Vec::with_capacity(path.len() + 1);
-                    new_path.push(addon_field.clone());
-                    new_path.extend_from_slice(path);
-                    m.kind = ExternalGlobalKind::Method(new_path, mname.clone(), is_colon);
-                }
-                globals.push(m);
-            }
-        }
-    }
+    // path=["A","B"], once flushed via `ns.Sub.Db = Db`, becomes a Method under the
+    // addon ns with path=["Sub","Db","A","B"], which walk_deep_path then resolves
+    // as `ns.Sub.Db.A.B:Foo()` (auto-creating any missing intermediate sub-tables).
+    ctor_entries.push_exported_methods(&mut globals, &local_table_methods);
 
     // Register the *existence* of namespace/class fields assigned only from
     // inside function bodies. The scan above walks only top-level + control-flow
@@ -2490,6 +2594,7 @@ pub fn scan_file_globals_with_synth(
                     ctor_fields: Vec::new(),
                     declares_class: false,
                     ctor_method: false,
+                    export_method: false,
                     name_start: ns,
                     name_end: ne,
                     mixin_parents: Vec::new(),
@@ -2656,6 +2761,7 @@ pub fn scan_file_globals_with_synth(
                 ctor_fields: Vec::new(),
                 declares_class: false,
                 ctor_method: false,
+                export_method: false,
                 name_start: ns,
                 name_end: ne,
                 mixin_parents: Vec::new(),
@@ -2935,6 +3041,7 @@ pub fn scan_created_globals(
                 ctor_fields: Vec::new(),
                 declares_class: false,
                 ctor_method: false,
+                export_method: false,
                 name_start: u32::from(range.start()),
                 name_end: u32::from(range.end()),
                 mixin_parents: Vec::new(),
@@ -3172,5 +3279,21 @@ end
         let g = g.iter().find(|g| g.name == "Thingy").expect("global Thingy");
         assert_eq!((g.def_start, g.def_end), (0, 11), "def range = whole statement");
         assert_eq!((g.name_start, g.name_end), (0, 6), "name range = `Thingy` token");
+    }
+
+    // A local table held by others' constructors is carried to each field holding
+    // it, but at most `MAX_LOCAL_TABLE_EXPORTS` of them: a chain of tables each
+    // holding the next twice reaches the last through 2^n paths.
+    #[test]
+    fn shared_local_table_exports_are_bounded() {
+        let mut src = String::from("local _, ns = ...\nlocal T8 = { leaf = 1 }\nfunction T8:Leaf() end\n");
+        for i in (0..8).rev() {
+            src.push_str(&format!("local T{i} = {{ a = T{0}, b = T{0} }}\n", i + 1));
+        }
+        src.push_str("ns.Root = T0\n");
+        let leaf_methods = scan(&src).iter()
+            .filter(|g| matches!(&g.kind, ExternalGlobalKind::Method(_, name, _) if name == "Leaf"))
+            .count();
+        assert_eq!(leaf_methods, MAX_LOCAL_TABLE_EXPORTS);
     }
 }

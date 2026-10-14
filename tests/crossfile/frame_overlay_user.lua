@@ -21,3 +21,5 @@ local thost = nil
 local tframe = thost.frame
 local _tf = tframe.typedField
 --                 ^ hover: (field) typedField: string  def: external
+local _tm = tframe:TypedMethod()
+--    ^ hover: (local) _tm: number

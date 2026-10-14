@@ -6,3 +6,7 @@ Guarded = {}
 Guarded.Unknown.Helpers = {
     Probe = function() return 1 end,
 }
+-- Nor the methods of a local table exported there.
+local Helpers = {}
+function Helpers.Lookup() return 1 end
+Guarded.Missing.Helpers = Helpers

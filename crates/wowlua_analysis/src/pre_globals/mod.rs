@@ -2328,6 +2328,7 @@ impl BuildContext {
         let call_fields = call_field_writes(globals);
         let ctor_functions = ctor_function_fields(external_classes);
         let mut seen_methods: HashSet<(String, String)> = HashSet::default();
+        let mut exported_functions: HashMap<(PathBuf, u32, u32), FunctionIndex> = HashMap::default();
         for g in globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
@@ -2338,8 +2339,9 @@ impl BuildContext {
                         .or(through_call.then_some(class_idx))
                 });
                 let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
-                // A constructor's entry is never an `@accessor` method of the root.
-                if g.ctor_method && !path.is_empty() && !use_deep_path { continue; }
+                // A constructor's entry, or a method of an exported local table, is never an
+                // `@accessor` method of the root.
+                if (g.ctor_method || g.export_method) && !path.is_empty() && !use_deep_path { continue; }
                 let target_idx = if use_deep_path {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name).or(class_field_root.as_ref()) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
@@ -2412,40 +2414,55 @@ impl BuildContext {
                 let target_local = target_idx.ext_offset();
                 let target_class_name = self.tables[target_local].class_name.clone();
                 let target_class_type_params = self.tables[target_local].class_type_params.clone();
-                let func_idx = PreResolvedGlobals::build_function(
-                    FnMeta::from_global(
-                        g, *is_colon, target_class_name.as_deref(), &target_class_type_params, DefNode::DUMMY,
-                    ),
-                    &mut self.fn_build_ctx(),
-                );
-                if let Some(source_path) = &g.source_path {
-                    self.function_locations.insert(func_idx, ExternalLocation {
-                        path: source_path.clone(), start: g.def_start, end: g.def_end,
-                        name_start: g.name_start, name_end: g.name_end,
-                    });
-                    if g.body_derived_returns {
-                        self.deferred_returns.insert(func_idx);
-                    }
-                    // Record display name for unused-function diagnostics. A constructor's
-                    // function entries are values frameworks often call (option and
-                    // callback tables), so that leaves them out.
-                    if !g.ctor_method {
-                        let display_name = if is_addon_ns {
-                            let mut parts = path.clone();
-                            parts.push(method_name.clone());
-                            parts.join(".")
-                        } else {
-                            let sep = if *is_colon { ":" } else { "." };
-                            if path.is_empty() {
-                                format!("{}{sep}{method_name}", g.name)
-                            } else {
-                                format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                // A method of a local table exported to several fields is one function
+                // on each of their tables: built once, so a reference to any of them
+                // is a reference to it (`unused-function`).
+                let shared_key = g.source_path.as_ref()
+                    .filter(|_| g.export_method)
+                    .map(|path| (path.clone(), g.def_start, g.def_end));
+                let func_idx = match shared_key.as_ref().and_then(|key| exported_functions.get(key)) {
+                    Some(&func_idx) => func_idx,
+                    None => {
+                        let func_idx = PreResolvedGlobals::build_function(
+                            FnMeta::from_global(
+                                g, *is_colon, target_class_name.as_deref(), &target_class_type_params, DefNode::DUMMY,
+                            ),
+                            &mut self.fn_build_ctx(),
+                        );
+                        if let Some(source_path) = &g.source_path {
+                            self.function_locations.insert(func_idx, ExternalLocation {
+                                path: source_path.clone(), start: g.def_start, end: g.def_end,
+                                name_start: g.name_start, name_end: g.name_end,
+                            });
+                            if g.body_derived_returns {
+                                self.deferred_returns.insert(func_idx);
                             }
-                        };
-                        self.function_names.insert(func_idx, display_name);
+                            // Record display name for unused-function diagnostics. A constructor's
+                            // function entries are values frameworks often call (option and
+                            // callback tables), so that leaves them out.
+                            if !g.ctor_method {
+                                let display_name = if is_addon_ns {
+                                    let mut parts = path.clone();
+                                    parts.push(method_name.clone());
+                                    parts.join(".")
+                                } else {
+                                    let sep = if *is_colon { ":" } else { "." };
+                                    if path.is_empty() {
+                                        format!("{}{sep}{method_name}", g.name)
+                                    } else {
+                                        format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                                    }
+                                };
+                                self.function_names.insert(func_idx, display_name);
+                            }
+                            self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
+                        }
+                        if let Some(key) = shared_key {
+                            exported_functions.insert(key, func_idx);
+                        }
+                        func_idx
                     }
-                    self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
-                }
+                };
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::FunctionDef(func_idx));
 
@@ -2521,6 +2538,8 @@ impl BuildContext {
         // Build table field entries (non-function fields like ns.version = 1, ns.A.B.x = "deep", etc).
         // Handles all depths uniformly via walk_deep_path (empty path is a no-op).
         // Two passes: typed first (sub-table creation), then Unknown (reuse of sub-tables).
+        // The tables written below: a later write of the same field leaves the first.
+        let mut written_tables: HashSet<TableIndex> = HashSet::default();
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) && g.returns.is_empty() { continue; }
@@ -2533,6 +2552,25 @@ impl BuildContext {
                 let local_idx = leaf_idx.ext_offset();
                 let ctor_entry = (leaf_idx, field_name.clone());
                 let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
+                // A table's shape written over the untyped table the field already holds
+                // (walked into by its methods or a deeper write) fills that table, which
+                // keeps what was defined on it, as `merge_walked_fields` does in the
+                // workspace build.
+                if let FieldValueKind::Table(sub_fields) = value_kind
+                    && g.returns.is_empty()
+                    && !is_ctor_entry
+                    && let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
+                    && existing_fi.annotation.is_none()
+                    && existing_fi.expr.is_external()
+                    && let Expr::Literal(ValueType::Table(Some(sub_idx))) = self.exprs[existing_fi.expr.ext_offset()]
+                    && self.tables[sub_idx.ext_offset()].class_name.is_none()
+                    && !written_tables.contains(&sub_idx)
+                {
+                    merge_table_fields(sub_idx, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut HashSet::default(), &mut self.nested_ctor_calls);
+                    written_tables.insert(sub_idx);
+                    record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
+                    continue;
+                }
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 // so that globals with better type info can upgrade them.
                 if let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
@@ -2565,6 +2603,7 @@ impl BuildContext {
                             let sub_local = sub_idx.ext_offset();
                             populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.nested_ctor_calls);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
+                            written_tables.insert(sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),

@@ -2,6 +2,8 @@
 -- AceDB's `RegisterCallback` dispatch to `target[name]`, so the string is a
 -- reference to that method. The omitted-method `RegisterCallback` form names the
 -- handler by the event itself.
+local _, ns = ...
+
 ---@class TimerAddon : AceTimer-3.0
 local TimerAddon = {}
 
@@ -22,8 +24,10 @@ end
 TimerAddon:Setup()
 
 -- A handler owner that is a plain table, not a `@class`: the string names a
--- function defined in this file.
+-- function defined in this file. Its functions are workspace functions where it is
+-- exported (`ns.listener`).
 local listener = {}
 listener.OnNewProfile = function() end
 listener.UnusedListenerFunc = function() end
+ns.listener = listener
 db.RegisterCallback(listener, "OnNewProfile", "OnNewProfile")

@@ -54,6 +54,43 @@ local moduleDepth = ns.Module.Sub.depth
 local moduleExtra = ns.Module.extra
 --    ^ hover: (local) moduleExtra: string
 
+local nestedGet = ns.Sub.Nested:Get()
+--    ^ hover: (local) nestedGet: string
+local nestedCount = ns.Sub.Nested:Count()
+--    ^ hover: (local) nestedCount: number
+local nestedReady = ns.Sub.Nested:Ready()
+--    ^ hover: (local) nestedReady: boolean
+local nestedSize = ns.Sub.Nested.size
+--    ^ hover: (local) nestedSize: number
+local catalogFirst = Catalog.Entries:First()
+--    ^ hover: (local) catalogFirst: string
+local inner = ns.Holder.inner
+--    ^ hover: (local) inner: {\n  Depth: fun(self): number,\n  depth: number\n}
+local innerDepth = ns.Holder.inner:Depth()
+--    ^ hover: (local) innerDepth: number
+local leafLevel = ns.Branch.leaf:Level()
+--    ^ hover: (local) leafLevel: number
+local leaf = ns.Branch.leaf.level
+--    ^ hover: (local) leaf: number
+local greeting = GlobalModule.Greet("x")
+--    ^ hover: (local) greeting: string
+local globalVersion = GlobalModule.version
+--    ^ hover: (local) globalVersion: number
+local globalCount = GlobalModule.Count()
+--    ^ hover: (local) globalCount: number
+local globalEnabled = GlobalModule.enabled
+--    ^ hover: (local) globalEnabled: boolean
+local leaked = CreateFrame("Frame").Leaked
+--                                  ^ diag: undefined-field
+local leakedData = CreateFrame("Frame").LeakedData
+--                                      ^ diag: undefined-field
+---@type Gadget
+local gadget = nil
+local spin = gadget:Spin()
+--    ^ hover: (local) spin: number
+local helper = Guarded.Lookup
+--                     ^ diag: undefined-field
+
 local firstKey = ns.Keys.first
 --    ^ hover: (local) firstKey: number
 ---@param name string

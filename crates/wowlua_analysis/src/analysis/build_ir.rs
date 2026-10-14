@@ -278,6 +278,7 @@ impl<'a> Analysis<'a> {
             self.push_pending_blocks(&mut stack);
         }
         self.finish_upvalue_entry_versions();
+        self.overlay_written_functions();
     }
 
     /// Push a frame for each inline function body queued by `lower_expression`.
@@ -2107,7 +2108,7 @@ impl<'a> Analysis<'a> {
                     && let Some(ValueType::Table(Some(scan_table))) = self.ir.get_field(cur_table, field_name)
                         .and_then(|f| f.annotation.clone())
                 {
-                    self.overlay_ctor_functions(scan_table, expr_id, 0);
+                    self.overlay_ctor_functions(scan_table, expr_id);
                 }
             } else {
                 self.deep_field_injections.push(DeepFieldInjection {
@@ -2184,7 +2185,7 @@ impl<'a> Analysis<'a> {
                         .filter(|f| f.from_scan)
                         .and_then(|f| f.annotation.clone())
                 {
-                    self.overlay_ctor_functions(scan_table, expr_id, 0);
+                    self.overlay_ctor_functions(scan_table, expr_id);
                 }
             } else {
                 // External table: store in per-file overlay.
@@ -2690,12 +2691,32 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Lay the function entries of the constructor `rhs` this file writes over
-    /// `scan_table`, the scan's anonymous copy of it (`ns.T = { f = function() end }`),
-    /// nested constructors' entries likewise: other files read the methods the scan
-    /// registered for them, but this file reads its own definitions, as it does a
-    /// `function ns.T.f()` it defines.
-    fn overlay_ctor_functions(&mut self, scan_table: TableIndex, rhs: ExprId, depth: usize) {
+    /// Lay the function entries of the table `rhs` this file writes over
+    /// `scan_table`, the scan's anonymous copy of it (`ns.T = { f = function() end }`,
+    /// or `ns.M = M` for a local table `M`), nested tables' entries likewise: other
+    /// files read the methods the scan registered for them, but this file reads its
+    /// own definitions, as it does a `function ns.T.f()` it defines. Recorded in
+    /// `ctor_overlays` for [`Self::overlay_written_functions`].
+    fn overlay_ctor_functions(&mut self, scan_table: TableIndex, rhs: ExprId) {
+        self.ctor_overlays.push((scan_table, rhs));
+        self.overlay_table_functions(scan_table, rhs, 0, true);
+    }
+
+    /// Lay the functions of the tables this file's writes recorded in
+    /// `ctor_overlays` hold now the file is built over the scan's copies: a method
+    /// defined on a local table after it is exported (`ns.M = M` then
+    /// `function M:f()`) is the file's own too. An entry laid at the write, or
+    /// defined on the copy since (`function ns.M.f()`), stays.
+    fn overlay_written_functions(&mut self) {
+        for (scan_table, rhs) in std::mem::take(&mut self.ctor_overlays) {
+            self.overlay_table_functions(scan_table, rhs, 0, false);
+        }
+    }
+
+    /// Lay the function entries of the local table `rhs` holds over `scan_table`
+    /// (see [`Self::overlay_ctor_functions`]): all of them when `replace`, else
+    /// those the copy has no definition of from this file.
+    fn overlay_table_functions(&mut self, scan_table: TableIndex, rhs: ExprId, depth: usize, replace: bool) {
         if depth > 16 || !scan_table.is_external() || self.ir.table(scan_table).class_name.is_some() {
             return;
         }
@@ -2704,18 +2725,19 @@ impl<'a> Analysis<'a> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (name, fi) in entries {
-            match self.ir.expr(fi.expr) {
-                Expr::FunctionDef(_) => self.ir.insert_overlay_field(scan_table, name, fi),
-                Expr::TableConstructor(_) => {
-                    let nested = self.ir.table(scan_table).fields.get(&name).and_then(|f| match f.annotation {
-                        Some(ValueType::Table(Some(t))) => Some(t),
-                        _ => self.ir.find_table_index(f.expr),
-                    });
-                    if let Some(nested) = nested {
-                        self.overlay_ctor_functions(nested, fi.expr, depth + 1);
-                    }
+            if matches!(self.ir.expr(fi.expr), Expr::FunctionDef(_)) {
+                if replace || !self.ir.overlay_fields.get(&scan_table).is_some_and(|fields| fields.contains_key(&name)) {
+                    self.ir.insert_overlay_field(scan_table, name, fi);
                 }
-                _ => {}
+                continue;
+            }
+            // A nested constructor, or a local table the entry holds.
+            let nested = self.ir.table(scan_table).fields.get(&name).and_then(|f| match f.annotation {
+                Some(ValueType::Table(Some(t))) => Some(t),
+                _ => self.ir.find_table_index(f.expr),
+            });
+            if let Some(nested) = nested {
+                self.overlay_table_functions(nested, fi.expr, depth + 1, replace);
             }
         }
     }
