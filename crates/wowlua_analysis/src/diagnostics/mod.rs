@@ -641,6 +641,9 @@ pub fn unwrap_to_inner_expr(ir: &crate::analysis::Ir, mut id: ExprId) -> ExprId 
 ///   empty list, like an out-of-bounds index.
 /// - **unannotated parameters**: backward inference may resolve to a non-nil
 ///   type, but the parameter is intended to be optional.
+/// - **uninitialized upvalues**: a `local x` declared without a value, read in
+///   another function, is typed by the values the file assigns it but is nil
+///   until one of them runs.
 /// - **locals assigned from uncertain sources**: a local whose defining
 ///   expression is itself uncertain (e.g. `local x = self.lateinit_field`)
 ///   inherits that uncertainty (single-level only).
@@ -653,6 +656,7 @@ pub fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) 
     || is_dynamic_bracket_index(analysis, expr_id)
     || is_element_read_call(analysis, expr_id)
     || is_unannotated_param_ref(analysis, expr_id)
+    || is_uninitialized_upvalue_ref(analysis, expr_id)
     || is_symbol_from_uncertain_source(analysis, expr_id)
     || is_flavor_restricted_global(analysis, expr_id)
     || is_overridable_method_call(analysis, expr_id)
@@ -783,6 +787,15 @@ fn is_lateinit_local_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
     analysis.ir.lateinit_symbols.contains(sym_idx)
 }
 
+/// A read, in another function, of a `local x` declared without a value (see
+/// `analysis/upvalues.rs`): typed by the values the file assigns it, but nil
+/// until one of them runs.
+fn is_uninitialized_upvalue_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::SymbolRef(sym_idx, ver) = analysis.expr(id) else { return false };
+    analysis.ir.upvalue_entries.get(&(*sym_idx, *ver)).is_some_and(|e| e.uninitialized)
+}
+
 /// External global with flavor restrictions: may not exist in all targeted
 /// flavors, so nil-checking it is valid even though its static type is truthy.
 /// Only suppresses when the global's flavor mask doesn't cover all of the
@@ -890,11 +903,13 @@ fn is_symbol_from_uncertain_source(analysis: &AnalysisResult, expr_id: ExprId) -
     for _ in 0..16 {
         let Expr::SymbolRef(alias_sym, alias_ver) = analysis.expr(src) else { break };
         if alias_sym != sym_idx { break; }
+        if is_uninitialized_upvalue_ref(analysis, src) { return true; }
         let Some(next) = sym.versions.get(*alias_ver).and_then(|v| v.type_source) else { break };
         src = next;
     }
     is_lateinit_field_access(analysis, src)
     || is_lateinit_local_ref(analysis, src)
+    || is_uninitialized_upvalue_ref(analysis, src)
     || is_field_without_direct_annotation(analysis, src)
     || is_dynamic_bracket_index(analysis, src)
     || is_unannotated_param_ref(analysis, src)

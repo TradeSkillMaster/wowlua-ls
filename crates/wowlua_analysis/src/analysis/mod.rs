@@ -11,6 +11,7 @@ pub mod queries;
 pub mod semantic_tokens;
 pub mod deferred;
 pub mod layered_map;
+pub mod upvalues;
 
 #[cfg(test)]
 mod proptests;
@@ -749,6 +750,20 @@ pub struct Ir {
     /// nil-stripped inner, but the runtime value can start as nil and be
     /// initialized later, so `if not x then x = init() end` is not redundant.
     pub lateinit_symbols: HashSet<SymbolIndex>,
+    /// The entry versions through which a function reads a local declared
+    /// outside it, keyed by `(symbol, version)` (see `upvalues.rs`).
+    pub upvalue_entries: HashMap<(SymbolIndex, usize), upvalues::UpvalueEntry>,
+    /// The `BranchMerge`s typing `upvalue_entries`: unresolved, not `any`, while
+    /// none of their writes has resolved.
+    pub upvalue_merges: HashSet<ExprId>,
+    /// Versions of a local that a `local` statement repeating its name in the
+    /// same scope starts (see `insert_symbol`).
+    pub local_redeclarations: HashSet<(SymbolIndex, usize)>,
+    /// Tables of this file whose key type was inferred from keyed writes after
+    /// their constructor (`set[k] = true`). Those keys don't limit the keys the
+    /// table is read with, as a lookup with another key only misses, so they
+    /// don't type a parameter used as one (backward param-type inference).
+    pub write_keyed_tables: HashSet<TableIndex>,
     /// Scope in which each VarArgs expression was created (for event-param narrowing).
     pub varargs_scope: HashMap<ExprId, ScopeIndex>,
     /// Display alias for event type parameters. When a symbol's type is `String(None)`
@@ -1686,7 +1701,10 @@ impl Ir {
         // variables instead of shadowing them (e.g. function params with same name as outer locals).
         if let Some(&existing_symbol) = self.scopes[scope_idx.val()].symbols.get(&id)
             && !existing_symbol.is_external() {
-                self.symbols.get_mut(existing_symbol.val()).unwrap().versions.push(version);
+                let versions = &mut self.symbols.get_mut(existing_symbol.val()).unwrap().versions;
+                versions.push(version);
+                let ver = versions.len() - 1;
+                self.local_redeclarations.insert((existing_symbol, ver));
                 return existing_symbol;
             }
         {
@@ -1896,7 +1914,7 @@ impl Ir {
     /// field declaring a type, which types its elements instead.
     pub(super) fn element_write_tables(&self, expr: ExprId) -> Vec<TableIndex> {
         let mut tables = Vec::new();
-        if !self.collect_element_write_tables(expr, 0, &mut tables, &mut Vec::new()) {
+        if !self.collect_element_write_tables(expr, 0, &mut tables, &mut Vec::new(), &mut Vec::new()) {
             tables.clear();
         }
         tables
@@ -1959,13 +1977,15 @@ impl Ir {
     }
 
     /// [`Self::element_write_tables`]: false when `expr` may hold a value that
-    /// isn't one of this file's tables.
+    /// isn't one of this file's tables. `fields` and `merges` are the field reads
+    /// and upvalue merges being expanded, which a write may read back.
     fn collect_element_write_tables(
         &self,
         expr: ExprId,
         depth: usize,
         tables: &mut Vec<TableIndex>,
         fields: &mut Vec<(TableIndex, String)>,
+        merges: &mut Vec<ExprId>,
     ) -> bool {
         if depth > 8 {
             return false;
@@ -1985,14 +2005,25 @@ impl Ir {
                 }
                 fields.push(key);
                 let all = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
-                    .all(|write| self.collect_element_write_tables(write, depth + 1, tables, fields));
+                    .all(|write| self.collect_element_write_tables(write, depth + 1, tables, fields, merges));
                 fields.pop();
                 return all;
             }
             // `x or {}` holds what `x` does or the table it falls back to.
             Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs } => {
-                return self.collect_element_write_tables(*rhs, depth + 1, tables, fields)
-                    && self.collect_element_write_tables(*lhs, depth + 1, tables, fields);
+                return self.collect_element_write_tables(*rhs, depth + 1, tables, fields, merges)
+                    && self.collect_element_write_tables(*lhs, depth + 1, tables, fields, merges);
+            }
+            // An upvalue read holds any value the file assigns the local.
+            Expr::BranchMerge(members) if self.upvalue_merges.contains(&expr) => {
+                if merges.contains(&expr) {
+                    return true;
+                }
+                merges.push(expr);
+                let all = members.iter()
+                    .all(|&member| self.collect_element_write_tables(member, depth + 1, tables, fields, merges));
+                merges.pop();
+                return all;
             }
             Expr::SymbolRef(sym_idx, ver_idx) => {
                 let source = self.sym(*sym_idx).versions[*ver_idx].type_source;
@@ -2009,7 +2040,7 @@ impl Ir {
             _ => None,
         };
         if let Some(next) = next {
-            return self.collect_element_write_tables(next, depth + 1, tables, fields);
+            return self.collect_element_write_tables(next, depth + 1, tables, fields, merges);
         }
         let Some(idx) = self.find_table_index(expr).filter(|idx| !idx.is_external()) else {
             return false;
@@ -3511,6 +3542,11 @@ pub struct Analysis<'a> {
     pub(super) stmt_is_conditional: bool,
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(NodeId, ScopeIndex, Option<FunctionIndex>)>,
+    // Build-time: the plain writes to each local, the names they write, and each
+    // function body scope's function start (see `upvalues.rs`)
+    pub(super) local_writes: HashMap<(u32, &'a str), upvalues::LocalWrites>,
+    pub(super) local_written_names: HashSet<&'a str>,
+    pub(super) function_starts: HashMap<ScopeIndex, u32>,
     // Config
     pub allowed_read_globals: AllowedGlobals,
     pub allowed_write_globals: AllowedGlobals,
@@ -3715,6 +3751,10 @@ impl<'a> Analysis<'a> {
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::default(),
                 lateinit_symbols: HashSet::default(),
+                upvalue_entries: HashMap::default(),
+                upvalue_merges: HashSet::default(),
+                local_redeclarations: HashSet::default(),
+                write_keyed_tables: HashSet::default(),
                 varargs_scope: HashMap::default(),
                 event_type_display: HashMap::default(),
                 addon_table_override,
@@ -3775,6 +3815,9 @@ impl<'a> Analysis<'a> {
             current_func_id: None,
             stmt_is_conditional: false,
             pending_blocks: Vec::new(),
+            local_writes: HashMap::default(),
+            local_written_names: HashSet::default(),
+            function_starts: HashMap::default(),
             allowed_read_globals,
             allowed_write_globals,
             allow_slash_commands,

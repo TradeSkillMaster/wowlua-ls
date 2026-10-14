@@ -172,6 +172,7 @@ impl<'a> Analysis<'a> {
         let mut pending_exit_narrowings: Vec<PendingExitNarrowing<'a>> = Vec::new();
         let mut pending_while_narrowings: Vec<PendingWhileNarrowing> = Vec::new();
 
+        self.collect_local_writes();
         let root_block = Block::cast(self.root()).expect("everything starts with a block");
         let mut stack = vec![Frame {
             block: root_block,
@@ -192,6 +193,11 @@ impl<'a> Analysis<'a> {
             if frame.next_stmt == 0 {
                 let (start, end) = block_scope_range(frame.block);
                 self.ir.block_scopes.push((start, end, scope_idx));
+                if let Some(fid) = func_id
+                    && self.ir.functions[fid.val()].scope == scope_idx
+                {
+                    self.push_upvalue_entry_versions(fid, frame.block.syntax(), scope_idx);
+                }
             }
             let statements = frame.block.statements();
 
@@ -271,6 +277,7 @@ impl<'a> Analysis<'a> {
 
             self.push_pending_blocks(&mut stack);
         }
+        self.finish_upvalue_entry_versions();
     }
 
     /// Push a frame for each inline function body queued by `lower_expression`.
@@ -3314,6 +3321,7 @@ impl<'a> Analysis<'a> {
             .expect("FunctionDefinition should have params");
         let is_vararg = params.ellipsis();
         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+        self.function_starts.insert(new_scope_idx, node.start);
         let mut function = Function {
             def_node: node,
             scope: new_scope_idx,

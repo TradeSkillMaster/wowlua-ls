@@ -941,11 +941,11 @@ local function loopCarriedType(items)
             --    ^ hover: (local) usePhase: number
         end
     until phase == 1
-    -- Closures in loops should not be affected (preserve nil at definition time)
+    -- A closure in a loop may run after any iteration's assignment
     local captured = nil
     for j = 1, 5 do
         local fn_inside = function() return captured end
-        --                                  ^ hover: (local) captured: nil
+        --                                  ^ hover: (local) captured: number
         if not captured then
             captured = j
         end

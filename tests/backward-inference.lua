@@ -769,6 +769,30 @@ local function biBracketKeyNumHint(idx)
     return biNumBoolTable[idx]
 end
 
+-- A constructor's keys type the keys it's read with.
+local biGreetings = { ["en"] = "hi", ["fr"] = "salut" }
+
+local function biGreet(lang)
+--                     ^ hover: (param) lang: string
+    return biGreetings[lang]
+end
+
+-- Keys written into a table after it's built don't limit the keys it's read
+-- with: a lookup with another key only misses.
+local function biMakeSet()
+    local set = {}
+    for i = 1, 3 do
+        set[i] = true
+    end
+    return set
+end
+
+local function biInSet(key)
+    return biMakeSet()[key]
+end
+
+biInSet("WHO")
+
 -- ── Class hierarchy intersection ────────────────────────────────────────────
 -- When backward inference sees a parent-class hint (XAnimal) and a child-class
 -- hint (XCat), the intersection should yield the child (more specific) type.

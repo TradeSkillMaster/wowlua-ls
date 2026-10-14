@@ -164,6 +164,31 @@ function combine(a, b)
 end
 ```
 
+## Locals assigned in other functions
+
+A function can run after any assignment the file makes to a local declared outside it, so inside it the local has the type of every value the file assigns it. Declaring the local without a value (`local db` or `local db = nil`) doesn't make it nilable; a function that assigns `nil` to it does:
+
+```lua
+local db
+local frame
+
+function addon:OnInitialize()
+    db = LoadSettings()
+    frame = CreateFrame("Frame")
+end
+
+function addon:OnDisable()
+    frame = nil
+end
+
+function addon:Refresh()
+    print(db.profile.scale) -- db: the LoadSettings() return type
+    frame:Show() -- warning: need-check-nil (OnDisable assigns nil)
+end
+```
+
+Checking such a local before first use (`if not cache then cache = {} end`) is not reported as a redundant condition. A local annotated with `---@type` keeps its declared type.
+
 ## Correlated multi-return narrowing
 
 This is where wowlua-ls really shines. When a function returns multiple values that are correlated (either all set or all nil), guarding **one** narrows **all of them**:

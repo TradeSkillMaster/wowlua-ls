@@ -1662,6 +1662,15 @@ fn need_check_nil() {
 }
 
 #[test]
+fn upvalue_writes() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/upvalue-writes/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn type_guard() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/type-guard.lua",

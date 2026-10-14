@@ -769,13 +769,15 @@ impl<'a> Analysis<'a> {
             let mut key_types: Vec<ValueType> = Vec::new();
             let mut val_types: Vec<ValueType> = Vec::new();
             let mut all_resolved = true;
+            let mut keyed_by_writes = false;
 
-            for (key_expr, val_expr) in effective_bracket_fields {
+            for (i, (key_expr, val_expr)) in effective_bracket_fields.iter().enumerate() {
                 if let Some(kt) = self.resolve_expr_to_broad_type(*key_expr) {
                     if !key_types.contains(&kt) { key_types.push(kt); }
                 } else {
                     all_resolved = false;
                 }
+                keyed_by_writes |= i >= constructor_bracket_count && !self.is_append_key(table_idx, *key_expr);
                 if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
                     // Nil assignments clear a slot — don't include nil in the inferred element type
                     if let Some(vt) = self.bracket_written_element(table_idx, *key_expr, vt) && !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
@@ -848,6 +850,9 @@ impl<'a> Analysis<'a> {
                       else { ValueType::make_union(val_types) };
             self.ir.tables[table_idx.val()].key_type = Some(key);
             self.ir.tables[table_idx.val()].value_type = Some(val);
+            if keyed_by_writes {
+                self.ir.write_keyed_tables.insert(table_idx);
+            }
             made_progress = true;
         }
         made_progress
@@ -3761,8 +3766,12 @@ impl<'a> Analysis<'a> {
                 return if types.is_empty() {
                     // All branches are Any or unresolved — return Any if at
                     // least one branch produced Any (so the merge doesn't
-                    // block the fixpoint), otherwise None.
-                    if has_any || has_none { Some(ValueType::Any) } else { None }
+                    // block the fixpoint), otherwise None. An upvalue entry
+                    // merges writes from all over the file, which often resolve
+                    // later: it waits for them, as an `any` would stick to its
+                    // readers.
+                    let waits = self.ir.upvalue_merges.contains(&expr_id);
+                    if has_any || (has_none && !waits) { Some(ValueType::Any) } else { None }
                 } else if (has_none || (has_any && self.any_branches_settled)) && types.iter().all(|t| matches!(t, ValueType::Nil)) {
                     // All resolved branches contribute only Nil (typically
                     // the implicit-else path from `local x = nil; if cond

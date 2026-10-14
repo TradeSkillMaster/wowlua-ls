@@ -4619,7 +4619,8 @@ impl<'a> Analysis<'a> {
                     if let Some(sym) = self.candidate_ref_in(key, candidates) {
                         let table_expr = table;
                         if let Some(table_type) = self.resolve_expr(table_expr)
-                            && let ValueType::Table(Some(idx)) = &table_type {
+                            && let ValueType::Table(Some(idx)) = &table_type
+                            && !self.ir.write_keyed_tables.contains(idx) {
                                 let kt = self.table(*idx).key_type.clone();
                                 if let Some(mut key_vt) = kt {
                                     if key_vt.contains_type_variable() {

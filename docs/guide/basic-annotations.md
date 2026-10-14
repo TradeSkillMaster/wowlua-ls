@@ -260,6 +260,7 @@ Backward inference works from:
 - **Arithmetic and concatenation**: `x + 1` implies `number`, `x .. "hi"` implies `string | number`
 - **Typed function arguments**: if `x` is passed to a function expecting `number`, that's a hint
 - **Unary operators**: `-x` implies `number`, `#x` implies `table | string`
+- **Table keys**: `prices[x]` implies the table's key type when it's declared (`table<string, number>`) or comes from the table's constructor or list inserts. Keys written into a table later (`seen[k] = true`) don't type lookups, since a lookup with any other key just returns `nil`.
 
 ::: info Conflicting usages
 Backward inference treats each usage as an upper bound and intersects them. If a parameter is used in conflicting ways (passed to a function expecting `string` and another expecting `number`), the LS leaves it untyped rather than guessing wrong. When that happens, add an explicit `@param`.
