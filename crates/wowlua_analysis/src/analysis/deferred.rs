@@ -131,6 +131,8 @@ pub struct DeferredCallGlobal {
     /// A `@creates-global` creating call, rather than an `X = <call>` right-hand
     /// side.
     pub created: bool,
+    /// For `X = w`, the local `w` the call initializes.
+    pub local: Option<String>,
 }
 
 /// Locates a call a table field is written, like a [`DeferredCallGlobal`]'s: the
@@ -1526,16 +1528,18 @@ fn call_type_at(
         .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
 }
 
-/// Whether `call` still defines `dcg`'s global — creates it, or is the value
-/// assigned to it.
+/// Whether `call` still defines `dcg`'s global — creates it, is the value
+/// assigned to it, or initializes the local assigned to it.
 fn call_defines_global(
     call: &crate::ast::FunctionCall<'_>,
     dcg: &DeferredCallGlobal,
     specs: &crate::annotations::CreatesGlobalMap,
 ) -> bool {
-    use crate::annotations::scan_globals::{call_assigns_global, extract_created_global};
+    use crate::annotations::scan_globals::{call_assigns_global, call_initializes_local, extract_created_global};
     if dcg.created {
         extract_created_global(call, specs).as_deref() == Some(dcg.global.as_str())
+    } else if let Some(local) = &dcg.local {
+        call_initializes_local(call, local)
     } else {
         call_assigns_global(call, &dcg.global)
     }

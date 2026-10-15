@@ -85,8 +85,8 @@ struct BuildOnStubsContext<'a> {
     /// Call-valued constructor entries populated as placeholders; see
     /// `resolve_nested_ctor_calls`.
     nested_ctor_calls: Vec<super::NestedCtorCall>,
-    /// `(table, field)` call-assigned fields methods were defined through; see
-    /// `call_field_writes`.
+    /// `(table, field)` call-assigned fields methods were defined or fields written
+    /// through; see `call_field_writes`.
     call_field_methods: HashSet<(TableIndex, String)>,
     /// `---@type` annotation of each table global that has one (`---@type Foo` on
     /// `Bar = {}`); see `annotated_table_global_type`.
@@ -269,16 +269,14 @@ impl<'a> BuildOnStubsContext<'a> {
 
     /// The call the write `g` of `field_name` records its value comes from
     /// (`ExternalGlobal::assigned_call_offset`): its own right-hand side, or the call
-    /// initializing the local it assigns.
+    /// initializing the local it assigns (`assigned_call_local`).
     fn call_of(g: &crate::annotations::ExternalGlobal, field_name: &str) -> Option<crate::analysis::deferred::DeferredCallField> {
         use crate::analysis::deferred::{CallTarget, DeferredCallField};
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
         let (Some(call_offset), Some(path)) = (g.assigned_call_offset, &g.source_path) else { return None };
-        let target = match &g.kind {
-            ExternalGlobalKind::TableField(_, _, FieldValueKind::FunctionCall { .. }) => CallTarget::Field(field_name.to_string()),
-            ExternalGlobalKind::TableField(_, _, FieldValueKind::FieldRef(names)) if names.len() == 1 => {
-                CallTarget::Local(names[0].clone())
-            }
+        let target = match (&g.assigned_call_local, &g.kind) {
+            (Some(local), ExternalGlobalKind::TableField(..)) => CallTarget::Local(local.clone()),
+            (None, ExternalGlobalKind::TableField(_, _, FieldValueKind::FunctionCall { .. })) => CallTarget::Field(field_name.to_string()),
             _ => return None,
         };
         Some(DeferredCallField { path: path.clone(), call_offset, target })
@@ -1078,6 +1076,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 {
                     self.deferred_call_globals.insert(sym_idx, crate::analysis::deferred::DeferredCallGlobal {
                         path: path.clone(), call_offset, global: g.name.clone(), created: g.deferred_call_type,
+                        local: g.assigned_call_local.clone(),
                     });
                 }
                 if g.flavor_guard != 0 {
@@ -1189,7 +1188,11 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                // The call's object holds the methods defined through the field.
+                // The call's object holds the methods defined and fields written
+                // through the field.
+                if class_field_paths.written_through.contains(&g.name, path, field_name) {
+                    self.call_field_methods.insert((table_idx, field_name.clone()));
+                }
                 if let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name) {
                     let call_type = if g.returns.is_empty() {
                         self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name)
@@ -1764,6 +1767,12 @@ impl PreResolvedGlobals {
     ) -> PreResolvedGlobals {
         let mut returns_enum_paths = stubs_base.returns_enum_paths.clone();
         returns_enum_paths.extend(crate::annotations::build_returns_enum_paths(ws_globals));
+        // A built-in class no workspace file declares: a call returning one creates
+        // an instance of it, not the class.
+        let ws_class_names: HashSet<&str> = ws_classes.iter().map(|c| c.name.as_str()).collect();
+        let ws_globals = &*crate::annotations::apply_instance_guesses(ws_globals, |name| {
+            stubs_base.classes.contains_key(name) && !ws_class_names.contains(name)
+        });
         let ws_classes = &*crate::annotations::apply_enum_calls(ws_classes, &returns_enum_paths);
         let ws_globals = &*crate::annotations::apply_enum_call_globals(ws_globals, &returns_enum_paths);
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);

@@ -454,6 +454,19 @@ pub struct ExternalGlobal {
     /// again). Runtime only — `#[serde(skip)]`, no BLOB_VERSION bump.
     #[serde(skip)]
     pub assigned_call_offset: Option<u32>,
+    /// For a field or global assigned a local a call initializes (`t.f = w`, `G =
+    /// w` after `local w = f(...)`): the local, whose call `assigned_call_offset`
+    /// locates. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub assigned_call_local: Option<String>,
+    /// For an entry written through a local whose class the scan only guessed from
+    /// the call initializing it (`local w = F("Name", ...)`), and so emitted on that
+    /// class (`w.x = v` as `Name.x = v`): the local. Where the call returns an
+    /// instance of a built-in class instead (`CreateFrame("Frame")`), the build
+    /// moves the entry to the fields the local is assigned to
+    /// (`apply_instance_guesses`). Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub guessed_local: Option<String>,
     /// For a `Table` global assigned a constructor (`X = { a = 1 }`), the
     /// constructor's named entries (`a = 1`, or `["a"] = 1`), which both builds
     /// materialize onto the global's table. Runtime only — `#[serde(skip)]`, no
@@ -550,6 +563,8 @@ impl ExternalGlobal {
             body_derived_returns: false,
             deferred_call_type: false,
             assigned_call_offset: None,
+            assigned_call_local: None,
+            guessed_local: None,
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
@@ -1553,6 +1568,8 @@ pub fn scan_method_funcall_self_fields(
             body_derived_returns: false,
             deferred_call_type: false,
             assigned_call_offset: None,
+            assigned_call_local: None,
+            guessed_local: None,
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,

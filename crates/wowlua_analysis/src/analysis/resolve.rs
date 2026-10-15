@@ -2834,7 +2834,7 @@ impl<'a> Analysis<'a> {
             let ver_idx = assign
                 .receiver_version
                 .min(self.ir.sym(sym_idx).versions.len().saturating_sub(1));
-            let Some(mut table_idx) = self.deferred_receiver_table_idx(sym_idx, ver_idx) else {
+            let Some(mut table_idx) = self.deferred_write_table(sym_idx, ver_idx, &assign.field_name, assign.expr_id) else {
                 continue;
             };
             if assign.bracket_key && self.ir.is_element_write(table_idx, &assign.field_name) { continue; }
@@ -3091,8 +3091,10 @@ impl<'a> Analysis<'a> {
                 // class — e.g. one instance's `inst.SetValue = nil` (the
                 // "remove method" idiom) would make `SetValue` read as `nil` on
                 // a sibling instance, a false `cannot-call`. `undefined-field`
-                // already treats such instances permissively. The collapsed-`or`
-                // reassignment case is recovered from the operands below.
+                // already treats such instances permissively. A member the
+                // classes lack still lands there (`deferred_write_table`). The
+                // collapsed-`or` reassignment case is recovered from the operands
+                // below.
                 match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
                     Some(ValueType::Table(Some(idx))) => Some(*idx),
                     Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
@@ -3111,6 +3113,32 @@ impl<'a> Analysis<'a> {
                     .and_then(|ts| self.or_chain_table_index(ts))
                     .filter(|idx| idx.is_external())
             })
+    }
+
+    /// The table a deferred write of `value` to `field` through the local `sym_idx`
+    /// lands on: [`Self::deferred_receiver_table_idx`], or for a concrete frame
+    /// (`Frame & Template`) the file's view of its first class, as for a plain frame
+    /// — when the write adds a member: none of its classes has `field`, which the
+    /// write would then change on every frame of the file, and it isn't `nil`, which
+    /// clears what the frame's factory set (`f.SetValue = nil`).
+    fn deferred_write_table(&self, sym_idx: SymbolIndex, ver_idx: usize, field: &str, value: ExprId) -> Option<TableIndex> {
+        self.deferred_receiver_table_idx(sym_idx, ver_idx).or_else(|| {
+            let Some(ValueType::Intersection(members)) = &self.ir.sym(sym_idx).versions[ver_idx].resolved_type else {
+                return None;
+            };
+            if matches!(self.ir.expr(value), Expr::Literal(ValueType::Nil)) {
+                return None;
+            }
+            let classes: Vec<TableIndex> = members.iter().filter_map(|m| match m {
+                ValueType::Table(Some(idx)) if self.table(*idx).class_name.is_some() => Some(*idx),
+                _ => None,
+            }).collect();
+            if classes.iter().any(|&class| self.class_has_field(class, field)) {
+                return None;
+            }
+            // Only an external class has the overlay the file's writes go to.
+            classes.into_iter().find(|class| class.is_external())
+        })
     }
 
     /// Find receivers whose method-style def (`function f:M()` / `f.M = function`)
@@ -3141,7 +3169,7 @@ impl<'a> Analysis<'a> {
             let ver_idx = assign
                 .receiver_version
                 .min(self.ir.sym(sym_idx).versions.len().saturating_sub(1));
-            let Some(class_idx) = self.deferred_receiver_table_idx(sym_idx, ver_idx) else {
+            let Some(class_idx) = self.deferred_write_table(sym_idx, ver_idx, &assign.field_name, assign.expr_id) else {
                 continue;
             };
             if !class_idx.is_external() {
@@ -3185,8 +3213,15 @@ impl<'a> Analysis<'a> {
             metatable_index: Some(class_idx),
             ..Default::default()
         });
-        self.ir.symbols[sym_idx.val()].versions[ver_idx].resolved_type =
-            Some(ValueType::Table(Some(instance_idx)));
+        // A concrete frame (`Frame & Template`) keeps its other classes.
+        let ver = &mut self.ir.symbols[sym_idx.val()].versions[ver_idx];
+        let instance = ValueType::Table(Some(instance_idx));
+        ver.resolved_type = Some(match ver.resolved_type.take() {
+            Some(ValueType::Intersection(members)) => ValueType::Intersection(
+                members.into_iter().map(|m| if m == ValueType::Table(Some(class_idx)) { instance.clone() } else { m }).collect(),
+            ),
+            _ => instance,
+        });
         instance_idx
     }
 

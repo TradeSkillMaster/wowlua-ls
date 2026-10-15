@@ -610,9 +610,36 @@ fn call_field_writes(globals: &[crate::annotations::ExternalGlobal]) -> HashSet<
         .collect()
 }
 
+/// Every field a field write or method definition reaches through (`R.a.b.x = v`
+/// reaches `R.a` and `R.a.b`), by root and the path to the field's table.
+/// Assigned a call (`R.a.b = Call()`), such a field holds the object the call
+/// returns, the table walked into, which the call's write keeps
+/// (`keep_call_field_methods`).
+struct WrittenThrough<'a>(HashMap<(&'a str, &'a [String]), HashSet<&'a str>>);
+
+impl<'a> WrittenThrough<'a> {
+    fn new(globals: &'a [crate::annotations::ExternalGlobal]) -> Self {
+        use crate::annotations::ExternalGlobalKind;
+        let mut fields: HashMap<(&str, &[String]), HashSet<&str>> = HashMap::default();
+        for g in globals {
+            if let ExternalGlobalKind::TableField(path, _, _) | ExternalGlobalKind::Method(path, _, _) = &g.kind {
+                for (i, field) in path.iter().enumerate() {
+                    fields.entry((g.name.as_str(), &path[..i])).or_default().insert(field.as_str());
+                }
+            }
+        }
+        Self(fields)
+    }
+
+    /// Whether the field `field` under `path` of the root `root` is written through.
+    fn contains(&self, root: &str, path: &[String], field: &str) -> bool {
+        self.0.get(&(root, path)).is_some_and(|fields| fields.contains(field))
+    }
+}
+
 /// The anonymous table the field `field` of `owner` holds when methods were
-/// defined through it as a call-assigned field (`call_field_methods`, see
-/// [`call_field_writes`]).
+/// defined or fields written through it as a call-assigned field
+/// (`call_field_methods`, see [`call_field_writes`]).
 fn call_field_method_table(
     call_field_methods: &HashSet<(TableIndex, String)>,
     tables: &LayeredVec<TableInfo>,
@@ -1192,7 +1219,9 @@ fn instance_parents(tables: &LayeredVec<TableInfo>, class_idx: TableIndex) -> Ve
 /// (`C.sub = {}`). A field that a `@field`, the write's own annotation or the
 /// class declaration types otherwise is never walked, nor is one only a call or
 /// reference assigns — walking into it would shadow that type with a sub-table —
-/// and a segment that is none of these would be invented on the class. An
+/// except a call's object written through (`C.f = Call()` + `C.f.x = v`,
+/// [`WrittenThrough`]), which the call's write keeps; a segment that is none of
+/// these would be invented on the class. An
 /// existence-only write (`Unknown` / `MaybeCallable`, e.g. one inside a function)
 /// is skipped too: it would put a guessed type on the class's sub-table.
 ///
@@ -1213,6 +1242,7 @@ struct ClassFieldPaths<'a> {
     table_writes: HashSet<(&'a str, &'a str)>,
     inferred_tables: HashSet<(&'a str, &'a str)>,
     opened: Vec<(TableIndex, String)>,
+    written_through: WrittenThrough<'a>,
 }
 
 /// A class constructor entry a deep write or method definition walks into:
@@ -1241,8 +1271,18 @@ impl<'a> ClassFieldPaths<'a> {
         let mut walkable = HashSet::default();
         let mut table_writes = HashSet::default();
         let mut ctor_tables: HashMap<(&str, &str), Vec<CtorEntries>> = HashMap::default();
+        let written_through = WrittenThrough::new(globals);
         for g in globals {
             match &g.kind {
+                // A call's object the workspace writes through, which the call keeps.
+                ExternalGlobalKind::TableField(path, field, FieldValueKind::FunctionCall { .. })
+                    if path.is_empty() && g.returns.is_empty() =>
+                {
+                    let key = (g.name.as_str(), field.as_str());
+                    if !typed.contains(&key) && written_through.contains(key.0, path, key.1) {
+                        walkable.insert(key);
+                    }
+                }
                 ExternalGlobalKind::TableField(path, field, FieldValueKind::Table(_)) if path.is_empty() => {
                     let key = (g.name.as_str(), field.as_str());
                     table_writes.insert(key);
@@ -1285,7 +1325,7 @@ impl<'a> ClassFieldPaths<'a> {
                 .map(|(name, _, _)| (c.name.as_str(), name.as_str())))
             .filter(|key| !typed.contains(key))
             .collect();
-        Self { walkable, walked_ctor_tables, table_writes, inferred_tables, opened: Vec::new() }
+        Self { walkable, walked_ctor_tables, table_writes, inferred_tables, opened: Vec::new(), written_through }
     }
 
     /// Whether `g`, a field write through `path`, is a deep write rooted at one of
@@ -1953,8 +1993,8 @@ struct BuildContext {
     // Call-valued constructor entries populated as placeholders; see
     // `resolve_nested_ctor_calls`.
     nested_ctor_calls: Vec<NestedCtorCall>,
-    // `(table, field)` call-assigned fields methods were defined through; see
-    // `call_field_writes`.
+    // `(table, field)` call-assigned fields methods were defined or fields written
+    // through; see `call_field_writes`.
     call_field_methods: HashSet<(TableIndex, String)>,
     // Methods defined by a `stubs/overrides/` file (see `propagate_override_overloads`).
     override_methods: HashSet<FunctionIndex>,
@@ -2806,7 +2846,7 @@ impl BuildContext {
                     && let Some(path) = &g.source_path
                 {
                     self.deferred_call_globals.insert(sym_idx, crate::analysis::deferred::DeferredCallGlobal {
-                        path: path.clone(), call_offset: g.def_start, global: g.name.clone(), created: true,
+                        path: path.clone(), call_offset: g.def_start, global: g.name.clone(), created: true, local: None,
                     });
                 }
                 if g.flavor_guard != 0 {
@@ -2954,7 +2994,11 @@ impl BuildContext {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                // The call's object holds the methods defined through the field.
+                // The call's object holds the methods defined and fields written
+                // through the field.
+                if class_field_paths.written_through.contains(&g.name, path, field_name) {
+                    self.call_field_methods.insert((table_idx, field_name.clone()));
+                }
                 if let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name) {
                     let call_type = if g.returns.is_empty() {
                         self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name)

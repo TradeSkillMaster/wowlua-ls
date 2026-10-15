@@ -28,6 +28,19 @@ impl AnalysisResult {
         false
     }
 
+    /// This file's first write of `field` onto its view (overlay) of the external
+    /// class `table_idx` or an ancestor (`f.x = v` through a frame local).
+    fn overlay_field_write(&self, table_idx: TableIndex, field: &str) -> Option<TextRange> {
+        if !table_idx.is_external() {
+            return None;
+        }
+        let owner = std::iter::once(table_idx)
+            .chain(self.table(table_idx).parent_classes.iter().copied())
+            .find(|t| self.ir.overlay_fields.get(t).is_some_and(|fields| fields.contains_key(field)))?;
+        let write = self.ir.field_assignments.iter().find(|fa| fa.table_idx == owner && fa.field_name == field)?;
+        Some(TextRange::new(TextSize::from(write.ident_start), TextSize::from(write.ident_end)))
+    }
+
     /// Single-result go-to-definition (the primary definition). Convenience
     /// wrapper over [`Self::definitions_at`] for callers that only want one
     /// location (the CLI `test-query` and the integration-test harness).
@@ -70,6 +83,9 @@ impl AnalysisResult {
             // Fall back to external field location (stubs / workspace @field annotations)
             if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
                 return vec![DefinitionResult::External(loc.clone())];
+            }
+            if let Some(range) = self.overlay_field_write(table_idx, &field_name) {
+                return vec![DefinitionResult::Local(range)];
             }
             // Last resort for fields materialized from annotations (e.g. TableLiteral):
             // find the parent table that has a field pointing to this sub-table, then

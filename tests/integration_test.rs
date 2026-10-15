@@ -5986,6 +5986,27 @@ fn call_fields_multi_addon() {
 }
 
 #[test]
+fn frame_factory_locals_crossfile() {
+    // A local a frame factory initializes is an instance of the frame type its
+    // first argument names: what is written through it stays on it and follows it
+    // to the fields it is assigned to, and a global assigned it is the call's frame.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/frame-factory-locals/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/frame-factory-locals"),
+    });
+}
+
+#[test]
+fn frame_factory_locals_defining_file() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/frame-factory-locals/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/frame-factory-locals"),
+    });
+}
+
+#[test]
 fn call_fields_defining_file() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/call-fields-crossfile/defs.lua",

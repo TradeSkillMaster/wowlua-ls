@@ -723,6 +723,16 @@ fn extract_mixin_parents(
     parents
 }
 
+/// Tag the entries from `span.0` on, written through the guessed local `span.1`
+/// (`ExternalGlobal::guessed_local`).
+fn tag_guessed_writes(globals: &mut [ExternalGlobal], span: Option<(usize, String)>) {
+    if let Some((start, local)) = span {
+        for g in &mut globals[start..] {
+            g.guessed_local = Some(local.clone());
+        }
+    }
+}
+
 /// Emit an `ExternalGlobal` as a Method on the namespace/class, resolving
 /// visibility from the function's own annotation or the field name convention.
 /// When `addon_assigned_fields` is Some, also tracks the field for local-table-
@@ -858,17 +868,28 @@ enum CtorEntries {
 /// tables would multiply them.
 const MAX_LOCAL_TABLE_EXPORTS: usize = 64;
 
+/// A field a local table is exported to ([`CtorEntryScan::export`]).
+struct TableExport {
+    owner: String,
+    path: Vec<String>,
+    /// The local the owner was guessed from (`ExternalGlobal::guessed_local`).
+    guessed_local: Option<String>,
+}
+
 /// Emits a file's table-constructor entries as the field writes they amount to
 /// (see [`Self::push`]), and records where the file exports its local tables.
 struct CtorEntryScan<'a> {
     locals: &'a LocalValues<'a>,
     owned_path: Option<&'a Path>,
     implicit_protected_prefix: bool,
-    /// The fields each local table is exported to, as the owner and path of the
-    /// field: its methods are those tables' ([`Self::export`]).
-    exports: HashMap<String, Vec<(String, Vec<String>)>>,
+    /// The fields each local table is exported to: its methods are those tables'
+    /// ([`Self::export`]).
+    exports: HashMap<String, Vec<TableExport>>,
     /// The locals of `exports`, in the order they were first exported.
     exported_locals: Vec<String>,
+    /// The local whose guessed class owns what the statement being scanned writes
+    /// (`ExternalGlobal::guessed_local`).
+    guessed_local: Option<String>,
 }
 
 impl CtorEntryScan<'_> {
@@ -943,13 +964,13 @@ impl CtorEntryScan<'_> {
         // Already exported there, or inside a table it is exported to: an entry
         // naming it in its own constructor would export it again one level down,
         // without end.
-        if fields.len() >= MAX_LOCAL_TABLE_EXPORTS || fields.iter().any(|(o, p)| o == owner && path.starts_with(p)) {
+        if fields.len() >= MAX_LOCAL_TABLE_EXPORTS || fields.iter().any(|e| e.owner == owner && path.starts_with(&e.path)) {
             return;
         }
         if fields.is_empty() {
             self.exported_locals.push(local.to_string());
         }
-        fields.push((owner.to_string(), path.to_vec()));
+        fields.push(TableExport { owner: owner.to_string(), path: path.to_vec(), guessed_local: self.guessed_local.clone() });
         if let Some(entries) = entries
             && let Some(tc) = self.locals.local_table_ctors.get(local)
         {
@@ -962,15 +983,16 @@ impl CtorEntryScan<'_> {
     fn push_exported_methods(&self, globals: &mut Vec<ExternalGlobal>, methods: &HashMap<String, Vec<ExternalGlobal>>) {
         for local in &self.exported_locals {
             let Some(local_methods) = methods.get(local) else { continue };
-            for (owner, path) in &self.exports[local] {
+            for export in &self.exports[local] {
                 for method in local_methods {
                     let ExternalGlobalKind::Method(intermediates, method_name, is_colon) = &method.kind else { continue };
-                    let mut method_path = path.clone();
+                    let mut method_path = export.path.clone();
                     method_path.extend(intermediates.iter().cloned());
                     globals.push(ExternalGlobal {
-                        name: owner.clone(),
+                        name: export.owner.clone(),
                         kind: ExternalGlobalKind::Method(method_path, method_name.clone(), *is_colon),
                         export_method: true,
+                        guessed_local: export.guessed_local.clone(),
                         ..method.clone()
                     });
                 }
@@ -1011,6 +1033,8 @@ impl CtorEntryScan<'_> {
             body_derived_returns: false,
             deferred_call_type: false,
             assigned_call_offset: None,
+            assigned_call_local: None,
+            guessed_local: None,
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
@@ -1201,6 +1225,8 @@ fn build_func_external(
         body_derived_returns: is_body_derived,
         deferred_call_type: false,
         assigned_call_offset: None,
+        assigned_call_local: None,
+        guessed_local: None,
         ctor_fields: Vec::new(),
         declares_class: false,
         ctor_method: false,
@@ -1512,9 +1538,10 @@ pub fn scan_file_globals_with_synth(
     // The `class_vars` locals only guessed from a call's string argument
     // (`local X = DefineClass("Name")`, below).
     let mut class_var_guesses: HashSet<String> = HashSet::default();
-    // Where the call of each guessed local declared and assigned once starts: a
-    // field the local is assigned to is harvested from it (`assigned_call_offset`).
-    let mut guess_call_offsets: HashMap<String, u32> = HashMap::default();
+    // Where the call initializing each unannotated local declared and assigned once
+    // starts: a field or global the local is assigned to is harvested from it
+    // (`assigned_call_offset`).
+    let mut call_offsets: HashMap<String, u32> = HashMap::default();
     // Track locals with @type annotations so field assignments on them are emitted
     // under the annotated class name (cross-file overlay tracking).
     let mut local_type_vars: HashMap<String, String> = HashMap::default();
@@ -1542,7 +1569,7 @@ pub fn scan_file_globals_with_synth(
                         rebound_locals.insert(name.clone());
                     }
                     first_local_offset.entry(name.clone()).or_insert(decl_offset);
-                    guess_call_offsets.remove(name);
+                    call_offsets.remove(name);
                 }
                 if names.len() == 1 && exprs.len() == 1 {
                     if let Expression::Identifier(ident) = &exprs[0] {
@@ -1567,6 +1594,13 @@ pub fn scan_file_globals_with_synth(
                 let annotations = extract_annotations(assign.syntax());
                 let class_name = annotations.class
                     .or_else(|| super::extract_inline_class(assign.syntax()));
+                if let ([name], [Expression::FunctionCall(call)]) = (names.as_slice(), exprs.as_slice())
+                    && class_name.is_none()
+                    && annotations.var_type.is_none()
+                    && first_local_offset.get(name) == Some(&decl_offset)
+                {
+                    call_offsets.insert(name.clone(), u32::from(call.syntax().text_range().start()));
+                }
                 if let Some(class_name) = class_name {
                     if names.len() == 1 {
                         class_vars.insert(names[0].clone(), class_name);
@@ -1615,9 +1649,6 @@ pub fn scan_file_globals_with_synth(
                     {
                         class_vars.insert(names[0].clone(), cn);
                         class_var_guesses.insert(names[0].clone());
-                        if annotations.var_type.is_none() && first_local_offset.get(&names[0]) == Some(&decl_offset) {
-                            guess_call_offsets.insert(names[0].clone(), u32::from(call.syntax().text_range().start()));
-                        }
                     }
                 }
                 // Record the local's value type for cross-file `ns.Field = local`
@@ -1651,7 +1682,7 @@ pub fn scan_file_globals_with_synth(
                 if !ident.has_prefix_expr_base() && !ident.has_non_string_bracket_tail()
                     && let [name] = ident.names().as_slice()
                 {
-                    guess_call_offsets.remove(name);
+                    call_offsets.remove(name);
                     rebound_locals.insert(name.clone());
                 }
             }
@@ -1741,16 +1772,15 @@ pub fn scan_file_globals_with_synth(
                     && let Expression::FunctionCall(call) = &exprs[0]
                     && let Some(call_ident) = call.identifier() {
                         let call_names = call_ident.names();
-                        // A `class_vars` local (a `@class` local, or the defclass-style guess
-                        // that `F("Name", ...)` builds class `Name`) is exported as that
-                        // class. Its call is still recorded when every argument is a string
-                        // literal: a `@returns-enum` call's members replace the guess
-                        // (`apply_enum_call_globals`).
+                        // A `@class` local is exported as its class. Its call is still
+                        // recorded when every argument is a string literal, as a guessed
+                        // class's always is (`F("Name", ...)` may return an instance of
+                        // `Name`, or a `@returns-enum` table, `apply_enum_call_globals`).
                         let literal_args = literal_call_args(call);
-                        let class_typed = class_vars.contains_key(&names[0]);
+                        let class_typed = class_vars.contains_key(&names[0]) && !class_var_guesses.contains(&names[0]);
                         if !call_names.is_empty() && (!class_typed || !literal_args.is_empty()) {
                             let func_key = call_names.join(".");
-                            if !class_typed && let Some(ret_type) = func_return_types.get(&func_key) {
+                            if !class_vars.contains_key(&names[0]) && let Some(ret_type) = func_return_types.get(&func_key) {
                                 local_return_types.insert(names[0].clone(), ret_type.clone());
                             } else {
                                 // Return type not known from same-file definitions; store the
@@ -1880,6 +1910,7 @@ pub fn scan_file_globals_with_synth(
         implicit_protected_prefix,
         exports: HashMap::default(),
         exported_locals: Vec::new(),
+        guessed_local: None,
     };
 
     // Named globals created as a side effect of calling functions annotated with
@@ -1913,7 +1944,12 @@ pub fn scan_file_globals_with_synth(
         local_at(root, offset) && !local_tables.contains(root) && !renamed_local(root)
     };
 
+    // Where the entries the statement being scanned writes through a guessed local
+    // start, and the local (`tag_guessed_writes`).
+    let mut guessed_span: Option<(usize, String)> = None;
     for stmt in &all_stmts {
+        tag_guessed_writes(&mut globals, guessed_span.take());
+        ctor_entries.guessed_local = None;
         match stmt {
             Statement::FunctionDefinition(func) => {
                 // Parser2 emits simple function names as bare Name tokens (no Identifier node).
@@ -1946,6 +1982,9 @@ pub fn scan_file_globals_with_synth(
                         let func_offset: u32 = func.syntax().text_range().start().into();
                         if unrouted_local(root_name, func_offset) {
                             continue;
+                        }
+                        if class_var_guesses.contains(root_name) {
+                            guessed_span = Some((globals.len(), root_name.clone()));
                         }
                         // Buffer methods defined on a local table (any depth) until the
                         // scan knows where the table is exported: `push_exported_methods`
@@ -2035,12 +2074,21 @@ pub fn scan_file_globals_with_synth(
                                 [local] if plain_local_table(local, u32::from(range.start())) => Some(local.clone()),
                                 _ => None,
                             });
+                            // A global assigned a local a call initializes is that call.
+                            let call_local = named_value(&effective).and_then(|ident| match ident.names().as_slice() {
+                                [local] if call_offsets.contains_key(local) && local_at(local, u32::from(range.start())) => {
+                                    local_call_origins.get(local).map(|origin| (local.clone(), origin.clone()))
+                                }
+                                _ => None,
+                            });
                             let (kind, string_value, number_value, mixin_parents) = if let Some(vk) = classify_literal_value_kind(&effective) {
                                 let sv = if let Expression::Literal(lit) = &effective {
                                     lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
                                 } else { None };
                                 let nv = super::annotation_scanning::extract_number_from_expr(&effective);
                                 (ExternalGlobalKind::Variable(vk), sv, nv, Vec::new())
+                            } else if let Some((_, origin)) = &call_local {
+                                (ExternalGlobalKind::Variable(origin.clone()), None, None, Vec::new())
                             } else { match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None, Vec::new()),
                                 Expression::Identifier(_) if exported.is_some() => (ExternalGlobalKind::Table, None, None, Vec::new()),
@@ -2116,11 +2164,12 @@ pub fn scan_file_globals_with_synth(
                             // An unannotated call's resolved return type is harvested
                             // as the global's type; a constructor's named entries
                             // become the global table's fields.
+                            let assigned_call_local = call_local.map(|(local, _)| local).filter(|_| returns.is_empty());
                             let assigned_call_offset = match &effective {
                                 Expression::FunctionCall(call) if returns.is_empty() => {
                                     Some(u32::from(call.syntax().text_range().start()))
                                 }
-                                _ => None,
+                                _ => assigned_call_local.as_ref().and_then(|local| call_offsets.get(local)).copied(),
                             };
                             let ctor_fields = match (&effective, &exported) {
                                 (Expression::TableConstructor(tc), _) => extract_ctor_fields(tc, &callee_scope),
@@ -2172,6 +2221,8 @@ pub fn scan_file_globals_with_synth(
                                 body_derived_returns: false,
                                 deferred_call_type: false,
                                 assigned_call_offset,
+                                assigned_call_local,
+                                guessed_local: None,
                                 ctor_fields,
                                 declares_class,
                                 ctor_method: false,
@@ -2205,6 +2256,10 @@ pub fn scan_file_globals_with_synth(
                             let assign_offset: u32 = assign.syntax().text_range().start().into();
                             if unrouted_local(root_name, assign_offset) {
                                 continue;
+                            }
+                            if class_var_guesses.contains(root_name) {
+                                guessed_span = Some((globals.len(), root_name.clone()));
+                                ctor_entries.guessed_local = Some(root_name.clone());
                             }
                             // Drop 3+ part chains for local non-class variables to avoid
                             // fabricating sub-tables on e.g. local Frame instances.
@@ -2286,18 +2341,22 @@ pub fn scan_file_globals_with_synth(
                             // The call whose type in this file can refine the field's
                             // class in other files (a template frame's `Frame &
                             // Template`): an unannotated right-hand side, or the call
-                            // the class of the local assigned was only guessed from.
+                            // initializing the local assigned. A guessed local's field
+                            // is typed its guessed class (`returns`), which the build
+                            // drops for a built-in class (`apply_instance_guesses`).
+                            let assigned_call_local = match assigned_ident.map(|ident| ident.names()).as_deref() {
+                                Some([local]) if call_offsets.contains_key(local)
+                                    && local_at(local, assign_offset)
+                                    && annotations.var_type.is_none()
+                                    && annotations.class.is_none()
+                                    && (returns.is_empty() || class_var_guesses.contains(local)) => Some(local.clone()),
+                                _ => None,
+                            };
                             let assigned_call_offset = match &effective {
                                 Expression::FunctionCall(call) if returns.is_empty() => {
                                     Some(u32::from(call.syntax().text_range().start()))
                                 }
-                                Expression::Identifier(ident) if annotations.var_type.is_none()
-                                    && annotations.class.is_none()
-                                    && matches!(&value_kind, FieldValueKind::FieldRef(names) if names.len() == 1) =>
-                                {
-                                    ident.names().first().and_then(|name| guess_call_offsets.get(name)).copied()
-                                }
-                                _ => None,
+                                _ => assigned_call_local.as_ref().and_then(|local| call_offsets.get(local)).copied(),
                             };
                             // A field of a plain local table, which only the table's
                             // exports carry (`ns.M = M`): a function written to it is a
@@ -2407,6 +2466,8 @@ pub fn scan_file_globals_with_synth(
                                 body_derived_returns: false,
                                 deferred_call_type: false,
                                 assigned_call_offset,
+                                assigned_call_local,
+                                guessed_local: None,
                                 ctor_fields: Vec::new(),
                                 declares_class: false,
                                 ctor_method: false,
@@ -2455,6 +2516,8 @@ pub fn scan_file_globals_with_synth(
             _ => {}
         }
     }
+
+    tag_guessed_writes(&mut globals, guessed_span.take());
 
     // Flush buffered local table methods onto the tables they are exported as.
     // The local root is rewritten to the export's owner and its path prepended to
@@ -2591,6 +2654,8 @@ pub fn scan_file_globals_with_synth(
                     body_derived_returns: false,
                     deferred_call_type: false,
                     assigned_call_offset: None,
+                    assigned_call_local: None,
+                    guessed_local: None,
                     ctor_fields: Vec::new(),
                     declares_class: false,
                     ctor_method: false,
@@ -2734,6 +2799,7 @@ pub fn scan_file_globals_with_synth(
             let (ns, ne) = last_name_range
                 .map(|r| (u32::from(r.start()), u32::from(r.end())))
                 .unwrap_or((u32::from(range.start()), u32::from(range.end())));
+            let guessed_local = class_var_guesses.contains(root_name).then(|| root_name.clone());
             globals.push(ExternalGlobal {
                 name: canonical_name,
                 kind: ExternalGlobalKind::TableField(intermediates, field_name, field_value_kind),
@@ -2758,6 +2824,8 @@ pub fn scan_file_globals_with_synth(
                 body_derived_returns: false,
                 deferred_call_type: false,
                 assigned_call_offset: None,
+                assigned_call_local: None,
+                guessed_local,
                 ctor_fields: Vec::new(),
                 declares_class: false,
                 ctor_method: false,
@@ -2962,6 +3030,135 @@ pub fn apply_enum_call_globals<'a>(
     std::borrow::Cow::Owned(out)
 }
 
+/// How many fields deep [`apply_instance_guesses`] follows a local assigned to a
+/// field of another (`a.b = w`), whose members follow it there in turn.
+const MAX_INSTANCE_MOVE_DEPTH: usize = 8;
+
+/// A local of a file, as `(source_path, name)`.
+type FileLocal<'g> = (Option<&'g Path>, &'g str);
+
+/// Undo the scan's guess that a local is the class its call names (`local w =
+/// F("Name", ...)`) where the call returns an instance of it instead —
+/// `instance_class("Name")`, as `CreateFrame("Frame")` does, unlike
+/// `DefineClass("Name")` or `LibStub("Lib")`. A field assigned the local (`t.f =
+/// w`, `assigned_call_local`), which the scan types its guessed class, is typed
+/// from the call; what the file writes through the local (`ExternalGlobal::
+/// guessed_local`) goes to those fields instead of the class, as if written `t.f.x
+/// = v`, so a field holds it as the object its call returns. The scan can't tell
+/// the two apart: it runs before the stubs declaring the built-in classes load.
+pub fn apply_instance_guesses<'g>(
+    globals: &'g [ExternalGlobal],
+    instance_class: impl Fn(&str) -> bool,
+) -> std::borrow::Cow<'g, [ExternalGlobal]> {
+    let moves = |g: &ExternalGlobal| g.guessed_local.is_some() && instance_class(&g.name);
+    let mut members: HashMap<FileLocal<'g>, Vec<&'g ExternalGlobal>> = HashMap::default();
+    for g in globals {
+        if moves(g)
+            && let Some(local) = &g.guessed_local
+        {
+            members.entry((g.source_path.as_deref(), local.as_str())).or_default().push(g);
+        }
+    }
+    if members.is_empty() && !globals.iter().any(|g| instance_export(g, &instance_class)) {
+        return std::borrow::Cow::Borrowed(globals);
+    }
+    let mut moved = MovedMembers { members, instance_class: &instance_class, expanding: Vec::new(), targets: HashMap::default() };
+    let mut out = Vec::with_capacity(globals.len());
+    for g in globals {
+        if moves(g) {
+            continue;
+        }
+        out.push(typed_from_call(g, &instance_class));
+        if let Some(local) = &g.assigned_call_local {
+            moved.push_at(g, (g.source_path.as_deref(), local.as_str()), &mut out);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Whether `g` is a field assigned a local whose class the scan guessed
+/// (`returns`, only ever alongside `assigned_call_local` for such a local) and
+/// `instance_class` finds the call returns an instance of.
+fn instance_export(g: &ExternalGlobal, instance_class: &dyn Fn(&str) -> bool) -> bool {
+    g.assigned_call_local.is_some()
+        && matches!(g.kind, ExternalGlobalKind::TableField(..))
+        && matches!(g.returns.as_slice(), [AnnotationType::Simple(class)] if instance_class(class))
+}
+
+/// `g`, typed from its call rather than the class guessed for its local when that
+/// class is an instance's ([`instance_export`]).
+fn typed_from_call(g: &ExternalGlobal, instance_class: &dyn Fn(&str) -> bool) -> ExternalGlobal {
+    let returns = if instance_export(g, instance_class) { Vec::new() } else { g.returns.clone() };
+    ExternalGlobal { returns, ..g.clone() }
+}
+
+/// What [`apply_instance_guesses`] moves: the members written through each local,
+/// to the fields it is assigned to.
+struct MovedMembers<'g, 'f> {
+    members: HashMap<FileLocal<'g>, Vec<&'g ExternalGlobal>>,
+    instance_class: &'f dyn Fn(&str) -> bool,
+    /// The locals whose members are being moved, outermost first, with the field
+    /// path they go to: one of them assigned again inside (`child.owner = frame`)
+    /// is that same object, a reference to that field rather than another to copy.
+    expanding: Vec<(FileLocal<'g>, Vec<String>)>,
+    /// How many fields each local's members went to, at most
+    /// `MAX_LOCAL_TABLE_EXPORTS` as for a local table: locals holding one another
+    /// would otherwise unfold into every path.
+    targets: HashMap<FileLocal<'g>, usize>,
+}
+
+impl<'g> MovedMembers<'g, '_> {
+    /// Push the members of `local`, which the field write `export` assigns (`t.f =
+    /// w`), as writes of that field (`t.f.x = v`), then theirs for a local one of
+    /// them assigns in turn.
+    fn push_at(&mut self, export: &ExternalGlobal, local: FileLocal<'g>, out: &mut Vec<ExternalGlobal>) {
+        let ExternalGlobalKind::TableField(path, field, _) = &export.kind else { return };
+        let Some(members) = self.members.get(&local).cloned() else { return };
+        if self.expanding.len() >= MAX_INSTANCE_MOVE_DEPTH {
+            return;
+        }
+        let targets = self.targets.entry(local).or_default();
+        if *targets >= MAX_LOCAL_TABLE_EXPORTS {
+            return;
+        }
+        *targets += 1;
+        let mut prefix = path.clone();
+        prefix.push(field.clone());
+        self.expanding.push((local, std::iter::once(export.name.clone()).chain(prefix.iter().cloned()).collect()));
+        for member in members {
+            let kind = match &member.kind {
+                ExternalGlobalKind::Method(inner, name, is_colon) => {
+                    ExternalGlobalKind::Method(prefix.iter().chain(inner).cloned().collect(), name.clone(), *is_colon)
+                }
+                ExternalGlobalKind::TableField(inner, name, value) => {
+                    ExternalGlobalKind::TableField(prefix.iter().chain(inner).cloned().collect(), name.clone(), value.clone())
+                }
+                _ => continue,
+            };
+            let mut write = ExternalGlobal {
+                name: export.name.clone(),
+                kind,
+                guessed_local: export.guessed_local.clone(),
+                ..member.clone()
+            };
+            let Some(next) = member.assigned_call_local.as_deref().map(|next| (member.source_path.as_deref(), next)) else {
+                out.push(write);
+                continue;
+            };
+            if let Some((_, enclosing)) = self.expanding.iter().find(|(l, _)| *l == next) {
+                if let ExternalGlobalKind::TableField(_, _, value) = &mut write.kind {
+                    *value = FieldValueKind::FieldRef(enclosing.clone());
+                }
+                out.push(ExternalGlobal { returns: Vec::new(), assigned_call_offset: None, assigned_call_local: None, ..write });
+                continue;
+            }
+            out.push(typed_from_call(&write, self.instance_class));
+            self.push_at(&write, next, out);
+        }
+        self.expanding.pop();
+    }
+}
+
 /// Scan a file for calls to `@creates-global` functions and return the implicit
 /// named globals they create as a side effect (e.g. WoW's
 /// `CreateFrame(type, "Name")` creates `_G.Name`). Registering these eliminates
@@ -3038,6 +3235,8 @@ pub fn scan_created_globals(
                 body_derived_returns: false,
                 deferred_call_type: true,
                 assigned_call_offset: None,
+                assigned_call_local: None,
+                guessed_local: None,
                 ctor_fields: Vec::new(),
                 declares_class: false,
                 ctor_method: false,
@@ -3295,5 +3494,28 @@ end
             .filter(|g| matches!(&g.kind, ExternalGlobalKind::Method(_, name, _) if name == "Leaf"))
             .count();
         assert_eq!(leaf_methods, MAX_LOCAL_TABLE_EXPORTS);
+    }
+
+    // Children pointing back at the frame they belong to (`child.owner = frame`)
+    // hold that frame: a reference to the field its members moved to, not another
+    // copy of them under every child, which unfolded exponentially.
+    #[test]
+    fn instance_guess_back_references_refer_to_the_enclosing_field() {
+        let mut src = String::from("local _, ns = ...\nlocal frame = CreateFrame(\"Frame\")\nframe.title = \"x\"\n");
+        for i in 0..20 {
+            src.push_str(&format!("local child{i} = CreateFrame(\"Frame\", nil, frame)\nchild{i}.owner = frame\nframe.child{i} = child{i}\n"));
+        }
+        src.push_str("ns.Main = frame\n");
+        let globals = scan(&src);
+        let moved = apply_instance_guesses(&globals, |class| class == "Frame");
+        assert!(moved.len() < 2 * globals.len(), "{} entries from {}", moved.len(), globals.len());
+        let owner = moved.iter().find_map(|g| match &g.kind {
+            ExternalGlobalKind::TableField(path, field, kind) if field == "owner" && path == &["Main", "child3"] => Some(kind),
+            _ => None,
+        });
+        assert!(
+            matches!(owner, Some(FieldValueKind::FieldRef(names)) if names == &[ADDON_NS_NAME, "Main"]),
+            "`ns.Main.child3.owner` refers to `ns.Main`, got {owner:?}",
+        );
     }
 }

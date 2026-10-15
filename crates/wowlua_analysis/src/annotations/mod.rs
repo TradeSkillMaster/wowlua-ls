@@ -2281,7 +2281,7 @@ pub use scan_globals::scan_file_globals;
 pub use scan_globals::scan_dynamic_global_prefixes;
 pub use scan_globals::scan_file_globals_with_synth;
 pub use scan_globals::{CorrelatedReturns, ProtectedPrefix};
-pub use scan_globals::{CreatesGlobalMap, build_creates_global_map, build_returns_enum_paths, apply_enum_call_globals};
+pub use scan_globals::{CreatesGlobalMap, build_creates_global_map, build_returns_enum_paths, apply_enum_call_globals, apply_instance_guesses};
 pub use scan_globals::scan_created_globals;
 pub use scan_defclass::scan_defclass_calls;
 pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};
