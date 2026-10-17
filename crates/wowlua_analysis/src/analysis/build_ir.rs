@@ -4178,7 +4178,8 @@ impl<'a> Analysis<'a> {
             let Some(arg_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].to_string()), scope_idx) else { return };
             if arg_sym_idx.is_external() { return; }
             let prev_ver = self.ir.version_for_scope(arg_sym_idx, scope_idx);
-            let node = self.ir.symbols[arg_sym_idx.val()].versions[prev_ver].def_node;
+            let prev = &self.ir.symbols[arg_sym_idx.val()].versions[prev_ver];
+            let (node, prev_source) = (prev.def_node, prev.type_source);
             let order = self.ir.next_order();
             self.ir.symbols[arg_sym_idx.val()].versions.push(SymbolVersion {
                 def_node: node,
@@ -4189,7 +4190,13 @@ impl<'a> Analysis<'a> {
                 creation_order: order,
                 original_type_source: None,
             });
+            if let Some(origin) = prev_source.and_then(|src| self.ir.narrowed_call_origin(src)) {
+                self.ir.narrowed_calls.insert(origin, call_expr_id);
+            }
         } else if arg_names.len() == 2 {
+            if let Some(origin) = field_call_before(call.syntax(), &arg_names) {
+                self.ir.narrowed_calls.insert(origin, call_expr_id);
+            }
             // Field target (`Mixin(self.Child, M)`): a field has no symbol versions,
             // so record a deferred mixin to augment the field's type after the
             // Phase 2 fixpoint (its base type intersected with each mixin). The
@@ -4385,4 +4392,40 @@ impl<'a> Analysis<'a> {
         }
     }
 
+}
+
+/// The start of the call the field `names` (`[t, f]`) was last assigned before
+/// the statement `stmt` in its function (`t.f = CreateFrame(...)`, or the
+/// right-hand side of an `or` / `and` there): `None` when that write isn't a
+/// call, or when there's none.
+fn field_call_before(stmt: SyntaxNode<'_>, names: &[String]) -> Option<u32> {
+    use crate::ast::{AstNode, Expression, Statement};
+    let mut node = stmt;
+    loop {
+        let parent = node.parent()?;
+        if parent.kind() != SyntaxKind::Block {
+            if parent.kind() == SyntaxKind::FunctionDefinition {
+                return None;
+            }
+            node = parent;
+            continue;
+        }
+        let earlier: Vec<SyntaxNode<'_>> = parent.children().take_while(|c| c.text_range() != node.text_range()).collect();
+        for prev in earlier.into_iter().rev() {
+            let Some(Statement::Assign(assign)) = Statement::cast(prev) else { continue };
+            let idents = assign.variable_list().map(|list| list.identifiers()).unwrap_or_default();
+            if !idents.iter().any(|ident| ident.names() == names) {
+                continue;
+            }
+            let values = assign.expression_list().map(|list| list.expressions()).unwrap_or_default();
+            return match (idents.as_slice(), values.as_slice()) {
+                ([_], [value]) => match crate::annotations::scan_globals::unwrap_logical_chain(*value) {
+                    Expression::FunctionCall(call) => Some(u32::from(call.syntax().text_range().start())),
+                    _ => None,
+                },
+                _ => None,
+            };
+        }
+        node = parent;
+    }
 }

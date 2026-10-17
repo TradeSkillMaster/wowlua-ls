@@ -193,9 +193,9 @@ fn refine_any_field_exprs(
 
 /// Query-side (read-only) entry to the shared [`crate::analysis::enriched_class_field`]
 /// rule: enrich a self-field's concrete class annotation from its own local
-/// assignment (`AceDB:New`'s generic binding, carried only in the defining file).
+/// assignments (`AceDB:New`'s generic binding, carried only in the defining file).
 /// Resolves each expr through the read-only `resolve_expr_type_impl`; the fixpoint
-/// resolver calls `enriched_class_field` directly with `Analysis::resolve_expr`.
+/// resolver resolves them with `Analysis::resolve_expr`.
 fn enrich_class_field_from_local(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
@@ -205,9 +205,10 @@ fn enrich_class_field_from_local(
     depth: usize,
 ) -> Option<ValueType> {
     let exprs = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied());
-    crate::analysis::enriched_class_field(ann, ir.instance_class(ann).as_ref(), exprs, |e| {
+    let writes = crate::analysis::local_class_field_writes(ann, exprs, |e| {
         resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1)
-    })
+    });
+    crate::analysis::enriched_class_field(ann, &writes, ir)
 }
 
 /// Shared implementation for read-only expression type resolution.

@@ -777,11 +777,10 @@ impl Ir {
         for call in self.ext.deferred_call_fields.get(&expr).into_iter().flatten() {
             self.deferred_dep_files.insert(call.path.clone());
         }
-        let instance_of = coarse.as_ref().and_then(|coarse| self.instance_class(coarse));
         // A placeholder the scan left for a call it couldn't type takes the call's type.
         let Some(ty) = resolve_deferred_call_field_type(&self.ext, expr).and_then(|ty| match &coarse {
             _ if placeholder => (!contains_coarse_placeholder(&ty)).then_some(ty),
-            Some(coarse) => crate::analysis::refined_class_view(&ty, coarse, instance_of.as_ref()),
+            Some(coarse) => crate::analysis::refined_class_view(&ty, coarse, self),
             None => None,
         }) else {
             return false;
@@ -1503,7 +1502,8 @@ fn harvest_call_fields(
 
 /// The resolved type of the value of the call starting at `offset` in the analyzed
 /// file (its first return, matching `Expr::FunctionCall.call_range.0`), if `accepts`
-/// that call — the check that a stale offset hasn't landed on another call.
+/// that call — the check that a stale offset hasn't landed on another call. A
+/// `@narrows-arg` call changing the object in place (`Mixin(f, M)`) gives its type.
 fn call_type_at(
     result: &crate::analysis::AnalysisResult,
     root: crate::syntax::SyntaxNode<'_>,
@@ -1525,7 +1525,10 @@ fn call_type_at(
                 (u32::from(r.start()), u32::from(r.end())) == range && accepts(&call)
             })
         })
-        .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
+        .and_then(|(eid, _)| {
+            let narrowed = result.ir.narrowed_calls.get(&offset).copied().unwrap_or(eid);
+            result.resolved_expr_cache_get(narrowed).cloned()
+        })
 }
 
 /// Whether `call` still defines `dcg`'s global — creates it, is the value

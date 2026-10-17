@@ -1990,6 +1990,9 @@ struct BuildContext {
     // `(table, field)` entries created from a global table constructor; a typed
     // write replaces one (see `BuildOnStubsContext::ctor_entries`).
     ctor_entries: HashSet<(TableIndex, String)>,
+    // Fields only an existence-only write registered (`any`, `function & table`):
+    // a call the build types replaces one.
+    existence_fields: HashSet<(TableIndex, String)>,
     // Call-valued constructor entries populated as placeholders; see
     // `resolve_nested_ctor_calls`.
     nested_ctor_calls: Vec<NestedCtorCall>,
@@ -2053,6 +2056,7 @@ impl BuildContext {
             class_globals: HashSet::default(),
             sub_tables: HashMap::default(),
             ctor_entries: HashSet::default(),
+            existence_fields: HashSet::default(),
             nested_ctor_calls: Vec::new(),
             call_field_methods: HashSet::default(),
             override_methods: HashSet::default(),
@@ -2703,6 +2707,9 @@ impl BuildContext {
                     // this placeholder only fires when no better type exists.
                     ValueType::Any
                 };
+                if !matches!(value_type, ValueType::Table(Some(_))) {
+                    self.existence_fields.insert((leaf_idx, field_name.clone()));
+                }
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
                 self.tables[local_idx].fields.insert(field_name.clone(),
@@ -2994,12 +3001,19 @@ impl BuildContext {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
+                let ctor_entry = (table_idx, field_name.clone());
+                let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
                 // The call's object holds the methods defined and fields written
-                // through the field.
-                if class_field_paths.written_through.contains(&g.name, path, field_name) {
+                // through the field — unless a file-level write put a table there
+                // (see `BuildOnStubsContext`'s call pass).
+                let file_table = g.in_function
+                    && (is_ctor_entry || self.tables[local_idx].fields.get(field_name).is_some_and(|fi| fi.annotation.is_some()));
+                if class_field_paths.written_through.contains(&g.name, path, field_name) && !file_table {
                     self.call_field_methods.insert((table_idx, field_name.clone()));
                 }
-                if let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name) {
+                if !file_table
+                    && let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name)
+                {
                     let call_type = if g.returns.is_empty() {
                         self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name)
                     } else {
@@ -3009,10 +3023,10 @@ impl BuildContext {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
                 }
-                let ctor_entry = (table_idx, field_name.clone());
-                let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
+                // An existence-only write's `any` yields to a call typed here.
+                let existence = self.existence_fields.contains(&ctor_entry);
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
-                if !is_ctor_entry && self.tables[local_idx].fields.get(field_name)
+                if !is_ctor_entry && !existence && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
@@ -3022,19 +3036,28 @@ impl BuildContext {
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix, g.visibility));
                         self.ctor_entries.remove(&ctor_entry);
+                        self.existence_fields.remove(&ctor_entry);
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
                 }
 
                 let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name);
-                // A call the scan can't type leaves a constructor entry in place.
-                if resolved.is_none() && is_ctor_entry {
+                // A call the scan can't type leaves a constructor entry in place (in a
+                // function body, one typed beyond a bare `table`), and an existence-only
+                // write's `any`.
+                let kept_entry = is_ctor_entry
+                    && (!g.in_function || self.tables[local_idx].fields.get(field_name)
+                        .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))));
+                if resolved.is_none() && (kept_entry || existence) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
                 }
+                let untyped = resolved.is_none();
                 let vt = resolved.or_else(|| {
-                    if g.name == crate::annotations::ADDON_NS_NAME {
+                    if g.in_function {
+                        Some(ValueType::Any)
+                    } else if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                         self.tables.push(TableInfo { placeholder: true, ..TableInfo::default() });
                         self.sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
@@ -3055,6 +3078,11 @@ impl BuildContext {
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
                     self.ctor_entries.remove(&ctor_entry);
+                    if g.in_function && untyped {
+                        self.existence_fields.insert(ctor_entry);
+                    } else {
+                        self.existence_fields.remove(&ctor_entry);
+                    }
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }

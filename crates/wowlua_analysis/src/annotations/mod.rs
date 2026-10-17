@@ -2243,6 +2243,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
 pub mod annotation_types;
 pub mod annotation_scanning;
 pub mod scan_globals;
+pub mod function_locals;
 pub mod scan_defclass;
 pub mod scan_built_name;
 pub mod scan_callback;

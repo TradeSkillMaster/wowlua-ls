@@ -5,7 +5,7 @@ local _, ns = ...
 
 local item = ns.Pool:Acquire()
 local pool = ns.Pool
---    ^ hover: (local) pool: ObjectPool {
+--    ^ hover: (local) pool: FramePool {
 
 local data = CreateFrame("Frame").myData
 --                                ^ diag: undefined-field

@@ -161,51 +161,65 @@ pub fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Iterator<Ite
 }
 
 /// Enrichment rule for a class-annotated self-field. When the field's own LOCAL
-/// (non-external) assignment resolves to a richer view of the class annotation
-/// `ann` ([`refined_class_view`]; `instance_of` is the class `ann` is an instance
-/// of, `Ir::instance_class`), return it — it is assignable to `ann` (never a
-/// contradiction), only more specific. This threads `AceDB:New`'s generic
+/// (non-external) assignments `writes` ([`local_class_field_writes`]) agree on a
+/// richer view of the class annotation `ann` ([`refined_class_view`]) — each but a
+/// `nil` clearing the field is that view, as the cross-file harvest requires of a
+/// field's calls — return it: it is assignable to `ann` (never a contradiction),
+/// only more specific. This threads `AceDB:New`'s generic
 /// `Defaults & AceDBObject-3.0` (the typed default-section shapes) through the
 /// *defining* file, while other files keep the base `AceDBObject-3.0` the
 /// cross-file funcall scanner registered (a field written the call directly
 /// harvests it, `Ir::ensure_call_field_overlay`). Returns `None` when the field
-/// isn't a class annotation, has no local assignment, or no local expr resolves to
-/// a richer view.
-///
-/// Resolver-agnostic so the two engines share one rule: `exprs` is the field's
-/// assignment exprs (primary + extras) and `resolve` is the caller's own resolver
-/// — the mutable fixpoint `Analysis::resolve_expr` or the read-only
-/// `resolve_expr_type_impl`. The non-external gate lets pure cross-file reads
-/// short-circuit before resolving anything.
-pub(crate) fn enriched_class_field(
-    ann: &ValueType,
-    instance_of: Option<&ValueType>,
-    mut exprs: impl Iterator<Item = ExprId> + Clone,
-    mut resolve: impl FnMut(ExprId) -> Option<ValueType>,
-) -> Option<ValueType> {
-    if !matches!(ann, ValueType::Table(Some(_))) {
-        return None;
-    }
-    if !exprs.clone().any(|e| !e.is_external()) {
-        return None;
-    }
-    exprs.find_map(|e| resolve(e).and_then(|ty| refined_class_view(&ty, ann, instance_of)))
+/// isn't a class annotation, has no local assignment, or they don't agree on a
+/// richer view.
+pub(crate) fn enriched_class_field(ann: &ValueType, writes: &[ValueType], ir: &Ir) -> Option<ValueType> {
+    let mut views = writes.iter().filter(|ty| **ty != ValueType::Nil).map(|ty| refined_class_view(ty, ann, ir));
+    let view = views.next()??;
+    views.all(|v| v.as_ref() == Some(&view)).then_some(view)
 }
 
-/// `ty` as a richer view of the class `ann`: an intersection still containing it,
-/// or containing the class `ann` is an instance of (`instance_of`, for a table
-/// holding the methods defined through a field), which `ann` then stands in for.
-pub(crate) fn refined_class_view(ty: &ValueType, ann: &ValueType, instance_of: Option<&ValueType>) -> Option<ValueType> {
-    let ValueType::Intersection(members) = ty else { return None };
+/// The writes [`enriched_class_field`] weighs: the LOCAL (non-external) ones among
+/// a class-annotated field's assignment exprs (primary + extras), resolved by the
+/// caller's own resolver — the mutable fixpoint `Analysis::resolve_expr` or the
+/// read-only `resolve_expr_type_impl` — so the two engines share one rule. None for
+/// a field that isn't a class, and a pure cross-file read resolves nothing.
+pub(crate) fn local_class_field_writes(
+    ann: &ValueType,
+    exprs: impl Iterator<Item = ExprId>,
+    resolve: impl FnMut(ExprId) -> Option<ValueType>,
+) -> Vec<ValueType> {
     if !matches!(ann, ValueType::Table(Some(_))) {
-        return None;
+        return Vec::new();
     }
-    if members.contains(ann) {
-        return Some(ty.clone());
+    exprs.filter(|e| !e.is_external()).filter_map(resolve).collect()
+}
+
+/// `ty` as a richer view of the class `ann`: an intersection containing it, or
+/// containing the class `ann` is an instance of (`Ir::instance_class`, for a
+/// table holding the methods defined through a field), which `ann` then stands in
+/// for; for a class itself, also a subclass of it (the narrower return an
+/// overload picks) or an intersection containing one.
+pub(crate) fn refined_class_view(ty: &ValueType, ann: &ValueType, ir: &Ir) -> Option<ValueType> {
+    let ValueType::Table(Some(class)) = ann else { return None };
+    if let Some(instance_of) = ir.instance_class(ann) {
+        let ValueType::Intersection(members) = ty else { return None };
+        if members.contains(ann) {
+            return Some(ty.clone());
+        }
+        if !members.contains(&instance_of) {
+            return None;
+        }
+        let members = members.iter().map(|m| if *m == instance_of { ann.clone() } else { m.clone() });
+        return Some(ValueType::Intersection(members.collect()));
     }
-    let class = instance_of.filter(|class| members.contains(class))?;
-    let members = members.iter().map(|m| if m == class { ann.clone() } else { m.clone() });
-    Some(ValueType::Intersection(members.collect()))
+    let subclass = |m: &ValueType| {
+        matches!(m, ValueType::Table(Some(t)) if !ir.same_class(*t, *class) && ir.is_subclass_of(*t, *class))
+    };
+    match ty {
+        ValueType::Table(Some(_)) if subclass(ty) => Some(ty.clone()),
+        ValueType::Intersection(members) if members.iter().any(|m| m == ann || subclass(m)) => Some(ty.clone()),
+        _ => None,
+    }
 }
 
 fn scope_set_contains<T: Eq + std::hash::Hash>(
@@ -727,6 +741,11 @@ pub struct Ir {
     /// (`R.f = Call()` + `function R.f:m()`), by that call. See
     /// [`Self::call_object_table`].
     pub call_objects: HashMap<ExprId, TableIndex>,
+    /// Calls whose object a `@narrows-arg` call changes in place (`local f =
+    /// CreateFrame(...)` + `Mixin(f, M)`, or `t.f = CreateFrame(...)` +
+    /// `Mixin(t.f, M)`), by the call's start: the last such call, whose type is
+    /// the object's from then on (the cross-file call harvest reads it).
+    pub narrowed_calls: HashMap<u32, ExprId>,
     pub call_resolutions: HashMap<ExprId, CallResolution>,
     pub and_guarded_call_exprs: HashSet<ExprId>,
     /// Every expression evaluated only under a short-circuit `and` chain's
@@ -2364,6 +2383,18 @@ impl Ir {
         self.get_field_via_metatable(table_idx, field_name, &mut visited)
     }
 
+    /// The start of the call whose object `expr` is: the call itself, or the one
+    /// a `@narrows-arg` call in [`Self::narrowed_calls`] narrowed.
+    pub(crate) fn narrowed_call_origin(&self, expr: ExprId) -> Option<u32> {
+        if let Some((&origin, _)) = self.narrowed_calls.iter().find(|&(_, &call)| call == expr) {
+            return Some(origin);
+        }
+        match self.expr(expr) {
+            Expr::FunctionCall { call_range, ret_index: 0, .. } => Some(call_range.0),
+            _ => None,
+        }
+    }
+
     /// Direct field lookup: overlay → own fields → parent_classes. No metatable fallback.
     fn get_field_direct(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
         if table_idx.is_external()
@@ -3747,6 +3778,7 @@ impl<'a> Analysis<'a> {
                 field_assignments: Vec::new(),
                 sub_field_writes: Vec::new(),
                 call_objects: HashMap::default(),
+                narrowed_calls: HashMap::default(),
                 call_resolutions: HashMap::default(),
                 and_guarded_call_exprs: HashSet::default(),
                 and_guarded_flavor_exprs: HashMap::default(),

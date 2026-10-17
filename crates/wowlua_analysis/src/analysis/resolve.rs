@@ -4097,7 +4097,7 @@ impl<'a> Analysis<'a> {
                         }
                     } else if !field_types.contains(ann_vt) {
                         // Enrich a class annotation from the field's own local
-                        // assignment via the shared `enriched_class_field` rule: in the
+                        // assignments via the shared `enriched_class_field` rule: in the
                         // defining file a `self.field = Lib("X"):New(...)` idiom field
                         // binds the generic (`Defaults & AceDBObject-3.0` — the typed
                         // default sections), while other files keep the base class the
@@ -4107,8 +4107,8 @@ impl<'a> Analysis<'a> {
                         // placeholder used to expose.
                         let exprs = std::iter::once(field_primary).chain(field_extras.iter().copied());
                         self.note_constructor_twin(ann_vt, has_author_text, exprs.clone());
-                        let instance_of = self.ir.instance_class(ann_vt);
-                        let enriched = super::enriched_class_field(ann_vt, instance_of.as_ref(), exprs, |e| self.resolve_expr(e));
+                        let writes = super::local_class_field_writes(ann_vt, exprs, |e| self.resolve_expr(e));
+                        let enriched = super::enriched_class_field(ann_vt, &writes, &self.ir);
                         field_types.push(enriched.unwrap_or_else(|| ann_vt.clone()));
                     }
                 } else {

@@ -1,11 +1,11 @@
 -- Cross-file: namespace fields assigned only from INSIDE function bodies must
 -- still register as fields, so reads in other files don't false-positive as
--- `undefined-field`. The coarse cross-file scan deliberately does not *type*
--- values produced inside functions (it can't see runtime mixins, local frames,
--- etc.), so these fields are registered existence-only (a bare `table`); that
--- suppresses `undefined-field` on reads without fabricating a wrong concrete
--- type that would cause `field-type-mismatch` on the write or spurious
--- `undefined-field` on the field's own sub-accesses.
+-- `undefined-field`. A value the cross-file build can't type (a file-local
+-- function's result, a literal) registers the field existence-only (`any`);
+-- that suppresses `undefined-field` on reads without fabricating a wrong
+-- concrete type that would cause `field-type-mismatch` on the write or spurious
+-- `undefined-field` on the field's own sub-accesses. (A call it can type is
+-- typed as at file level: tests/infunc-call-fields.)
 ---@class InFuncNS
 local addonTable = select(2, ...)
 
@@ -38,8 +38,9 @@ function addonTable.Setup()
     -- deep-chain field write inside a function
     addonTable.Sub = {}
     addonTable.Sub.Value = 5
-    -- complex value assigned inside a function: must NOT be typed precisely
-    -- (otherwise its mixin'd `:Ping` would wrongly report undefined-field)
+    -- a file-local function's result, which the cross-file build can't follow:
+    -- must NOT be typed (otherwise its mixin'd `:Ping` would wrongly report
+    -- undefined-field)
     addonTable.InFuncWidget = makeWidget()
 end
 
@@ -47,10 +48,8 @@ end
 -- *parameter* inside a function body. The coarse scan can't see the forwarded
 -- value's type, but it may be a callable, so these register callable-or-unknown
 -- (`function & table`) rather than a bare non-callable `table` — calling them
--- cross-file must not false-positive as `cannot-call`. (A function *call* RHS
--- like `makeWidget()` above instead stays a bare `table`: its result is more
--- often a frame/table than a callable, and the bare type lets a competing
--- concrete type subsume it in a union.)
+-- cross-file must not false-positive as `cannot-call`. (A call RHS the build
+-- can't type, like `makeWidget()` above, stays existence-only `any` instead.)
 function addonTable.Wire(handler)
     -- forwarded from a parameter
     addonTable.OnClick = handler

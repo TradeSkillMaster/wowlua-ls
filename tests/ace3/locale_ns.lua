@@ -27,10 +27,10 @@ ns.G = loc
 -- ^ hover: (field) G: table<string, string>
 
 -- (d) the method's RETURN wins, not the receiver/library class: AceGUI:Create
---     returns AceGUIWidget (a distinct class), so the field is AceGUIWidget — never
---     AceGUI-3.0 (the library named by the receiver string).
+--     returns the widget class its type argument picks (AceGUIFrame, an
+--     AceGUIWidget) — never AceGUI-3.0 (the library named by the receiver string).
 ns.widget = LibStub("AceGUI-3.0"):Create("Frame")
--- ^ hover: (field) widget: AceGUIWidget {
+-- ^ hover: (field) widget: AceGUIFrame {
 
 -- (e) the idiom is tightly shaped: a `.field`/`[k]` navigation between the getter
 --     and the method (`Lib("X").field:M()`) is NOT `Lib("X"):M()` — the method runs

@@ -5986,6 +5986,20 @@ fn call_fields_multi_addon() {
 }
 
 #[test]
+fn infunc_call_fields_crossfile() {
+    // Fields a function body writes a call are typed in other files as file-level
+    // writes are, with what the function writes through a frame local and a mixin
+    // applied to it; the defining file reads them the same way.
+    for lua_file in ["user.lua", "defs.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file: &format!("tests/infunc-call-fields/{lua_file}"),
+            with_stubs: true,
+            scan_dir: Some("tests/infunc-call-fields"),
+        });
+    }
+}
+
+#[test]
 fn frame_factory_locals_crossfile() {
     // A local a frame factory initializes is an instance of the frame type its
     // first argument names: what is written through it stays on it and follows it

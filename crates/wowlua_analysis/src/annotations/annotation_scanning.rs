@@ -456,7 +456,8 @@ pub struct ExternalGlobal {
     pub assigned_call_offset: Option<u32>,
     /// For a field or global assigned a local a call initializes (`t.f = w`, `G =
     /// w` after `local w = f(...)`): the local, whose call `assigned_call_offset`
-    /// locates. Runtime only — `#[serde(skip)]`.
+    /// locates — a function body's by its key (`w#1`, `function_locals::CallLocal`).
+    /// Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub assigned_call_local: Option<String>,
     /// For an entry written through a local whose class the scan only guessed from
@@ -464,9 +465,17 @@ pub struct ExternalGlobal {
     /// class (`w.x = v` as `Name.x = v`): the local. Where the call returns an
     /// instance of a built-in class instead (`CreateFrame("Frame")`), the build
     /// moves the entry to the fields the local is assigned to
-    /// (`apply_instance_guesses`). Runtime only — `#[serde(skip)]`.
+    /// (`apply_instance_guesses`). An entry written through a local a call
+    /// initializes in a function body is keyed by that local's key (`w#1`), and
+    /// moved by the scan itself. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub guessed_local: Option<String>,
+    /// A field written inside a function body (`function M.f() ns.x = F() end`):
+    /// a call the build can't type registers its existence, `any`, rather than the
+    /// placeholder (or the constructor entry) a file-level write keeps. Runtime
+    /// only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub in_function: bool,
     /// For a `Table` global assigned a constructor (`X = { a = 1 }`), the
     /// constructor's named entries (`a = 1`, or `["a"] = 1`), which both builds
     /// materialize onto the global's table. Runtime only — `#[serde(skip)]`, no
@@ -565,6 +574,7 @@ impl ExternalGlobal {
             assigned_call_offset: None,
             assigned_call_local: None,
             guessed_local: None,
+            in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
@@ -1570,6 +1580,7 @@ pub fn scan_method_funcall_self_fields(
             assigned_call_offset: None,
             assigned_call_local: None,
             guessed_local: None,
+            in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
             ctor_method: false,
