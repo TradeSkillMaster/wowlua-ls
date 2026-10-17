@@ -51,6 +51,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `multi-return-projection` | `returns<F>` discards extra return values from F |
 | `builds-field-not-self` | `@builds-field` method uses `@return ClassName` instead of `@return self` |
 | `unknown-diag-code` | Unknown code in `@diagnostic` directives |
+| `unknown-cast-variable` | `@cast` of a variable that isn't in scope |
 | `duplicate-constructor` | Multiple `@constructor` on a single class |
 | `constructor-return` | `@constructor` with return other than `@return self` |
 | `count-down-loop` | For-loop step direction doesn't match start/end |

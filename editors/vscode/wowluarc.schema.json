@@ -338,6 +338,7 @@
         "undefined-field",
         "undefined-global",
         "unknown-callback-event",
+        "unknown-cast-variable",
         "unknown-diag-code",
         "unknown-field-type",
         "unknown-local-type",

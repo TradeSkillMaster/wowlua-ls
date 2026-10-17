@@ -458,6 +458,12 @@ pub fn parse_cast_comment(text: &str) -> Option<(&str, CastMode, &str)> {
     Some((var_name, mode, type_str))
 }
 
+/// Whether a `@cast` target is a field path (`self.frame`, `obj:m`, `t[1]`) rather
+/// than a variable name. A cast only retypes a variable, so such a cast is dropped.
+pub fn cast_target_is_field_path(target: &str) -> bool {
+    target.contains(['.', ':', '['])
+}
+
 /// Strip a line doc-comment opener (`---` plus an optional single space) and the
 /// `@`, returning the annotation body (e.g. `class Foo` for both `---@class Foo`
 /// and `--- @class Foo`). Returns `None` for non-annotation comments. This is the

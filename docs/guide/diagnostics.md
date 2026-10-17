@@ -403,6 +403,15 @@ Undefined type name in any annotation:
 function foo(x) end
 ```
 
+### `unknown-cast-variable` <Badge type="warning" text="Warning" />
+
+`@cast` names a variable that isn't in scope, so the cast has no effect:
+
+```lua
+local parent = frame:GetParent()
+---@cast parnet Frame -- unknown-cast-variable (typo: should be 'parent')
+```
+
 ### `undefined-doc-param` <Badge type="warning" text="Warning" />
 
 `@param` name doesn't match any function parameter:

@@ -699,6 +699,10 @@ pub struct Ir {
     /// Numeric `for` loop start/limit/step expressions (for `secret-comparison`).
     /// Each entry is (expr_id, start, end).
     pub numeric_for_bound_sites: Vec<(ExprId, u32, u32)>,
+    /// `@cast` targets that named no variable when the cast was applied, so the
+    /// cast has no effect (for `unknown-cast-variable`). Each entry is the name,
+    /// its (start, end), and the scope the cast was applied in.
+    pub unknown_cast_vars: Vec<(String, u32, u32, ScopeIndex)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
     pub class_def_ranges: HashMap<String, (u32, u32)>,
     /// Maps @class annotation byte offset → TableIndex for positional disambiguation
@@ -3390,12 +3394,21 @@ impl AnalysisResult {
             .fold(scoped, |mask, &(_, _, chain_mask)| mask & chain_mask)
     }
 
+    /// Whether the project declares `name` a global without a definition the
+    /// analysis sees: config `globals.read`/`globals.write`, `.toc` `SavedVariables`,
+    /// `_G` dynamic prefixes, XML-bound names, and `SLASH_*`/`BINDING_*` names
+    /// when their toggles are on.
+    pub fn is_allowed_global(&self, name: &str) -> bool {
+        self.allowed_read_globals.contains(name)
+            || self.allowed_write_globals.contains(name)
+            || (self.allow_slash_commands && name.starts_with("SLASH_"))
+            || (self.allow_binding_globals
+                && (name.starts_with("BINDING_HEADER_") || name.starts_with("BINDING_NAME_")))
+    }
+
     pub fn suppress_inject_field_on_g(&self, class_name: &str, field_name: &str, scope_idx: ScopeIndex) -> bool {
         if class_name != "_G" { return false; }
-        if self.allowed_read_globals.contains(field_name)
-            || self.allowed_write_globals.contains(field_name) {
-            return true;
-        }
+        if self.is_allowed_global(field_name) { return true; }
         self.ir.get_symbol(&SymbolIdentifier::Name(field_name.to_string()), scope_idx).is_some()
     }
 
@@ -3766,6 +3779,7 @@ impl<'a> Analysis<'a> {
                 unary_op_sites: Vec::new(),
                 access_sites: Vec::new(),
                 numeric_for_bound_sites: Vec::new(),
+                unknown_cast_vars: Vec::new(),
                 class_def_ranges: HashMap::default(),
                 class_table_by_offset: HashMap::default(),
                 class_def_symbols: HashSet::default(),

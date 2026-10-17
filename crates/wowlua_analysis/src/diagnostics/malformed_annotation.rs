@@ -68,6 +68,15 @@ impl DiagnosticPass for MalformedAnnotation {
             // isn't mis-parsed as this annotation's content (e.g. a `@class`
             // parent without a `:` separator).
             let text = crate::annotations::strip_trailing_diagnostic_directive(tok.text());
+            // Checked ahead of the line-comment tags so the block form (`--[[@cast`) is too.
+            if let Some((target, _, _)) = crate::annotations::parse_cast_comment(text)
+                && crate::annotations::cast_target_is_field_path(target)
+            {
+                // `target` is a slice of `text`, which starts at the token's start.
+                let start = u32::from(tok.text_range().start()) as usize + (target.as_ptr() as usize - text.as_ptr() as usize);
+                check(diags, "@cast target must be a variable name, not a field path".to_string(), start, start + target.len());
+                continue;
+            }
             let Some(after_at) = crate::annotations::strip_line_annotation_prefix(text) else { continue };
             // Skip @diagnostic — handled by unknown_diag_code::run
             if after_at.starts_with("diagnostic") { continue; }

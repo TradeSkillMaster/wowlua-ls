@@ -23,17 +23,7 @@ impl DiagnosticPass for UndefinedGlobal {
                 .find(|t| t.kind() == SyntaxKind::Name)
             else { continue };
             let name = token.text().to_string();
-            if analysis.allowed_read_globals.contains(&name) || analysis.allowed_write_globals.contains(&name) {
-                continue;
-            }
-            if analysis.allow_slash_commands && name.starts_with("SLASH_") {
-                continue;
-            }
-            if analysis.allow_binding_globals
-                && (name.starts_with("BINDING_HEADER_") || name.starts_with("BINDING_NAME_"))
-            {
-                continue;
-            }
+            if analysis.is_allowed_global(&name) { continue; }
             let r = token.text_range();
             let offset = u32::from(r.start());
             let scope_idx = analysis.scope_at_offset(offset).unwrap_or(ScopeIndex(0));

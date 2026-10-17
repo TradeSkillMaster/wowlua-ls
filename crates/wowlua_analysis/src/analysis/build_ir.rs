@@ -3956,7 +3956,7 @@ impl<'a> Analysis<'a> {
                 }
                 let text = token.text();
                 if crate::annotations::is_cast_comment(text) {
-                    cast_lines.push(text.to_string());
+                    cast_lines.push((text.to_string(), u32::from(token.text_range().start())));
                 }
                 tok = token.prev_token();
                 continue;
@@ -4017,7 +4017,7 @@ impl<'a> Analysis<'a> {
             if kind == SyntaxKind::Comment {
                 let text = token.text();
                 if crate::annotations::is_cast_comment(text) {
-                    cast_lines.push(text.to_string());
+                    cast_lines.push((text.to_string(), u32::from(token.text_range().start())));
                     newlines_since_cast = 0;
                     tok = token.prev_token();
                     continue;
@@ -4029,11 +4029,20 @@ impl<'a> Analysis<'a> {
         self.apply_cast_lines(&cast_lines, scope_idx);
     }
 
-    fn apply_cast_lines(&mut self, cast_lines: &[String], scope_idx: ScopeIndex) {
-        for line in cast_lines {
+    /// Apply `@cast` comments, each given as its text and start offset.
+    fn apply_cast_lines(&mut self, cast_lines: &[(String, u32)], scope_idx: ScopeIndex) {
+        for (line, line_start) in cast_lines {
             // Parse ---@cast, --- @cast (spaced), and --[[@cast forms.
             let Some((var_name, mode, type_str)) = crate::annotations::parse_cast_comment(line) else { continue };
-            let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else { continue };
+            let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else {
+                // A field path is `malformed-annotation`, not an unknown variable.
+                if !crate::annotations::cast_target_is_field_path(var_name) {
+                    // `var_name` is a slice of `line`, so its offset in the comment is the pointer difference.
+                    let start = line_start + (var_name.as_ptr() as usize - line.as_ptr() as usize) as u32;
+                    self.ir.unknown_cast_vars.push((var_name.to_string(), start, start + var_name.len() as u32, scope_idx));
+                }
+                continue;
+            };
             if sym_idx.is_external() { continue; }
             let ann_type = crate::annotations::parse_type(type_str);
             let Some(cast_vt) = self.resolve_annotation_type_mut_gen(&ann_type, &[]) else { continue };

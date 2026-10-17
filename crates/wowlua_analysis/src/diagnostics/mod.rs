@@ -43,6 +43,7 @@ mod undefined_doc_class;
 mod undefined_doc_name;
 mod undefined_field;
 mod undefined_global;
+mod unknown_cast_variable;
 mod unknown_diag_code;
 mod unknown_field_type;
 mod unknown_local_type;
@@ -131,6 +132,7 @@ pub const DOC_FIELD_NO_CLASS: DiagnosticDef      = DiagnosticDef { code: "doc-fi
 pub const DOC_FUNC_NO_FUNCTION: DiagnosticDef   = DiagnosticDef { code: "doc-func-no-function",    severity: DiagnosticSeverity::WARNING };
 pub const UNDEFINED_DOC_CLASS: DiagnosticDef     = DiagnosticDef { code: "undefined-doc-class",      severity: DiagnosticSeverity::WARNING };
 pub const UNDEFINED_DOC_NAME: DiagnosticDef      = DiagnosticDef { code: "undefined-doc-name",       severity: DiagnosticSeverity::WARNING };
+pub const UNKNOWN_CAST_VARIABLE: DiagnosticDef   = DiagnosticDef { code: "unknown-cast-variable",    severity: DiagnosticSeverity::WARNING };
 pub const MISSING_FIELDS: DiagnosticDef          = DiagnosticDef { code: "missing-fields",           severity: DiagnosticSeverity::WARNING };
 pub const MALFORMED_ANNOTATION: DiagnosticDef    = DiagnosticDef { code: "malformed-annotation",     severity: DiagnosticSeverity::WARNING };
 pub const CIRCLE_DOC_CLASS: DiagnosticDef        = DiagnosticDef { code: "circle-doc-class",         severity: DiagnosticSeverity::WARNING };
@@ -186,7 +188,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &DUPLICATE_DOC_ALIAS, &UNKNOWN_DIAG_CODE, &REDUNDANT_RETURN_VALUE, &REDUNDANT_VALUE,
     &UNBALANCED_ASSIGNMENTS, &DUPLICATE_SET_FIELD, &UNUSED_FUNCTION,
     &GENERIC_CONSTRAINT_MISMATCH, &PARAM_CONSTRAINT_MISMATCH, &DOC_FIELD_NO_CLASS, &DOC_FUNC_NO_FUNCTION, &UNDEFINED_DOC_CLASS,
-    &UNDEFINED_DOC_NAME, &MISSING_FIELDS, &MALFORMED_ANNOTATION, &CIRCLE_DOC_CLASS,
+    &UNDEFINED_DOC_NAME, &UNKNOWN_CAST_VARIABLE, &MISSING_FIELDS, &MALFORMED_ANNOTATION, &CIRCLE_DOC_CLASS,
     &GROUPED_RETURN_MISMATCH, &BUILDS_FIELD_NOT_SELF, &RETURN_SELF_CLASS_NAME,
     &IMPLICIT_NIL_RETURN, &CREATE_GLOBAL, &DUPLICATE_CONSTRUCTOR, &CONSTRUCTOR_RETURN,
     &COUNT_DOWN_LOOP, &UNUSED_VARARG, &INCOMPLETE_SIGNATURE_DOC,
@@ -340,6 +342,7 @@ pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnosti
         &undefined_doc_class::UndefinedDocClass,
         &function_annotation_checks::FunctionAnnotationChecks,
         &undefined_doc_name::UndefinedDocName,
+        &unknown_cast_variable::UnknownCastVariable,
         &duplicate_index::DuplicateIndex,
         &malformed_annotation::MalformedAnnotation,
         &missing_return_value::MissingReturnValue,
@@ -464,7 +467,6 @@ pub const LUALS_ONLY_CODES: &[&str] = &[
     "not-yieldable",
     "spell-check",
     "undefined-env-child",
-    "unknown-cast-variable",
     "unknown-operator",
     "unnecessary-assert",
     "unused-label",

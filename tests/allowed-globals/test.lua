@@ -148,3 +148,17 @@ _consume(BINDING_NAME_NEVERASSIGNED)
 -- Should STILL warn: BINDING_ alone is not auto-allowed
 BINDING_FOO = "bar"
 -- ^ diag: create-global
+
+-- ── @cast of an allowed global ──
+
+-- Should NOT warn: the project declares these globals, so no cast names an undefined variable
+---@cast AllowedReadGlobal table
+---@cast PatternedFooRead table
+---@cast SLASH_NEVERASSIGNED1 string
+---@cast BINDING_NAME_NEVERASSIGNED string
+_consume(AllowedReadGlobal, PatternedFooRead, SLASH_NEVERASSIGNED1, BINDING_NAME_NEVERASSIGNED)
+
+-- Should STILL warn: not an allowed global
+---@cast NotAllowedCastTarget string
+--       ^ diag: unknown-cast-variable
+_consume()

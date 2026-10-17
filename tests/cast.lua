@@ -429,3 +429,65 @@ print(spacedUnknown)
 local semiAs = nil; --[[@as string]]
 print(semiAs)
 --    ^ hover: (local) semiAs: string  def: local
+
+-- ── @cast of an undefined variable (unknown-cast-variable) ──────────────────
+-- A cast naming no variable in scope (typically a typo) has no effect.
+
+---@type string|nil
+local castTarget = nil
+assert(castTarget)
+---@cast castTraget string
+--       ^ diag: unknown-cast-variable
+print(castTarget)
+
+--[[@cast castTraget string]]
+--        ^ diag: unknown-cast-variable
+print(castTarget)
+
+local function castOtherScope()
+    local castInner = nil --[[@as string?]]
+    return castInner
+end
+---@cast castInner string
+--       ^ diag: unknown-cast-variable
+print(castOtherScope())
+
+-- Upvalues, globals, and `self` are all in scope.
+
+---@type string|nil
+castGlobal = nil
+-- ^ diag: create-global
+
+---@class CastSelfClass
+local CastSelfClass = {}
+
+function CastSelfClass:Method()
+    ---@cast castTarget string
+    ---@cast castGlobal string
+    ---@cast self CastSelfClass
+    print(castTarget, castGlobal, self)
+end
+
+-- So is a global the file assigns after the cast.
+
+local function castLaterGlobalUser()
+    ---@cast castLaterGlobal string
+    print(castLaterGlobal)
+end
+
+castLaterGlobal = "x"
+-- ^ diag: create-global
+castLaterGlobalUser()
+
+-- A field path isn't a variable name, so the cast is malformed rather than unknown.
+
+function CastSelfClass:PathMethod()
+    ---@cast self.frame table
+    --       ^ diag: malformed-annotation ~not a field path
+    --[[@cast self.frame table]]
+    --        ^ diag: malformed-annotation
+    -- With that suppressed, no unknown-cast-variable remains.
+    ---@diagnostic disable-next-line: malformed-annotation
+    ---@cast self.frame table
+    print(self)
+end

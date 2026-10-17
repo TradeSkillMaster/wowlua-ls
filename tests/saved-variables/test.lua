@@ -17,6 +17,10 @@ _consume(TestAddonStatsDB)
 -- Should NOT warn: SavedVariablesPerCharacter declared in TestAddon.toc
 _consume(TestAddonCharDB)
 
+-- Should NOT warn: a cast of a SavedVariable names a declared global
+---@cast TestAddonStatsDB table
+_consume(TestAddonStatsDB)
+
 -- Should NOT warn: SavedVariables from second .toc file (TestAddon_Options.toc)
 _consume(TestAddonOptionsDB)
 
