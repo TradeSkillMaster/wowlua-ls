@@ -72,6 +72,40 @@ pub(in crate::stub_gen) fn parse_blizzard_api_docs(ui_source_dir: &Path) -> Bliz
 }
 
 
+impl BlizzardFunction {
+    /// The name the function is called by, namespace included (`C_Intl.FormatNumber`).
+    pub(in crate::stub_gen) fn qualified_name(&self) -> String {
+        match &self.namespace {
+            Some(ns) => format!("{ns}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+
+/// Our class for a ScriptObject API (`SimpleScriptRegionAPI` → `ScriptRegion`), if mapped.
+pub(in crate::stub_gen) fn scriptobject_class(api: &str) -> Option<&'static str> {
+    SCRIPTOBJECT_CLASS_MAP.iter().find(|(name, _)| *name == api).map(|(_, class)| *class)
+}
+
+
+/// The global functions `docs` document, by qualified name.
+pub(in crate::stub_gen) fn documented_functions(docs: &BlizzardApiDocs) -> HashSet<String> {
+    docs.functions.iter().map(BlizzardFunction::qualified_name).collect()
+}
+
+
+/// The methods each mapped ScriptObject API in `docs` documents, as `(class, methods)`.
+pub(in crate::stub_gen) fn documented_widget_methods(docs: &BlizzardApiDocs) -> Vec<(&'static str, Vec<&str>)> {
+    docs.script_objects.iter()
+        .filter_map(|api| {
+            let methods = api.functions.iter().map(|f| f.name.as_str()).collect();
+            Some((scriptobject_class(&api.name)?, methods))
+        })
+        .collect()
+}
+
+
 /// Parse a single Blizzard APIDocumentation Lua file for Functions, Events, and Structures.
 ///
 /// `Type = "ScriptObject"` files define widget/frame method APIs (e.g. SimpleFontStringAPI,
@@ -414,11 +448,7 @@ pub(in crate::stub_gen) fn generate_blizzard_api_stubs(
     for func in &docs.functions {
         let ns = func.namespace.as_deref();
         // Check if this function is already covered by existing stubs
-        let qualified = match ns {
-            Some(n) => format!("{n}.{}", func.name),
-            None => func.name.clone(),
-        };
-        if existing_names.contains(&qualified) {
+        if existing_names.contains(&func.qualified_name()) {
             continue;
         }
         if let Some(n) = ns {
@@ -459,15 +489,8 @@ pub(in crate::stub_gen) fn generate_blizzard_api_stubs(
 
 pub(in crate::stub_gen) fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction, known_enums: &HashSet<String>) {
     use std::fmt::Write;
-    let qualified = match &func.namespace {
-        Some(ns) => format!("{ns}.{}", func.name),
-        None => func.name.clone(),
-    };
-    let wiki_name = match &func.namespace {
-        Some(ns) => format!("API_{ns}.{}", func.name),
-        None => format!("API_{}", func.name),
-    };
-    writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{wiki_name})").unwrap();
+    let qualified = func.qualified_name();
+    writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/API_{qualified})").unwrap();
 
     for arg in &func.arguments {
         let typ = resolve_blizzard_param_type(arg, known_enums);
@@ -544,11 +567,7 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
     let mut total = 0usize;
     let mut declared: HashSet<&str> = HashSet::default();
     for script_obj in &docs.script_objects {
-        let Some(class_name) = SCRIPTOBJECT_CLASS_MAP
-            .iter()
-            .find(|(api, _)| *api == script_obj.name)
-            .map(|(_, cls)| *cls)
-        else {
+        let Some(class_name) = scriptobject_class(&script_obj.name) else {
             log::debug!("Unmapped ScriptObject API: {}", script_obj.name);
             continue;
         };

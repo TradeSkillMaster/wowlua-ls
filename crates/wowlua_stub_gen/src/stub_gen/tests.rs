@@ -1756,6 +1756,132 @@ fn test_compute_flavor_map_from_branch_sets() {
 }
 
 #[test]
+fn test_retail_presence_adds_documented_names_a_branch_lists() {
+    use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
+
+    let set = |names: &[&str]| -> HashSet<String> { names.iter().map(|s| s.to_string()).collect() };
+    // Retail's dump predates `C_Intl.GetCurrentLocale`; Forever's lists it.
+    let retail = set(&["GetItemInfo"]);
+    let classic = set(&["GetItemInfo"]);
+    let classic_era = set(&["GetItemInfo"]);
+    let forever = set(&["GetItemInfo", "C_Intl.GetCurrentLocale", "ForeverOnly"]);
+    let documented = set(&["GetItemInfo", "C_Intl.GetCurrentLocale", "UnlistedEverywhere"]);
+
+    let retail_present = retail_presence(&retail, &documented, &[&classic, &classic_era, &forever]);
+    let map = compute_flavor_map(&[
+        (FLAVOR_RETAIL, &retail_present),
+        (FLAVOR_CLASSIC, &classic),
+        (FLAVOR_CLASSIC_ERA, &classic_era),
+        (FLAVOR_FOREVER, &forever),
+    ], &HashSet::default());
+
+    assert_eq!(map["C_Intl.GetCurrentLocale"], FLAVOR_RETAIL | FLAVOR_FOREVER);
+    assert_eq!(map["ForeverOnly"], FLAVOR_FOREVER);
+    // No dump lists it, so it stays unrestricted instead of becoming retail-only.
+    assert!(!map.contains_key("UnlistedEverywhere"));
+}
+
+#[test]
+fn test_documented_functions_and_widget_methods() {
+    let resizing = r#"
+local SimpleScriptRegionResizingAPI =
+{
+	Name = "SimpleScriptRegionResizingAPI",
+	Type = "ScriptObject",
+
+	Functions =
+	{
+		{
+			Name = "SetPoint",
+			Type = "Function",
+		},
+		{
+			Name = "SetPointNew",
+			Type = "Function",
+		},
+	},
+};
+"#;
+    let unmapped = r#"
+local UnmappedObjectAPI =
+{
+	Name = "UnmappedObjectAPI",
+	Type = "ScriptObject",
+
+	Functions =
+	{
+		{
+			Name = "Get",
+			Type = "Function",
+		},
+	},
+};
+"#;
+    let intl = r#"
+local Intl =
+{
+	Name = "Intl",
+	Type = "System",
+	Namespace = "C_Intl",
+
+	Functions =
+	{
+		{
+			Name = "GetCurrentLocale",
+			Type = "Function",
+
+			Returns =
+			{
+				{ Name = "result", Type = "cstring", Nilable = false },
+			},
+		},
+	},
+};
+"#;
+    let mut docs = BlizzardApiDocs {
+        functions: Vec::new(),
+        events: Vec::new(),
+        structures: Vec::new(),
+        predicates: Vec::new(),
+        script_objects: Vec::new(),
+    };
+    let re = BlizzardDocRegexes::new();
+    for content in [resizing, unmapped, intl] {
+        parse_blizzard_api_doc_file(content, &mut docs, &re);
+    }
+    assert_eq!(documented_functions(&docs), HashSet::from_iter(["C_Intl.GetCurrentLocale".to_string()]));
+    // Grouped under the API's class; unmapped objects are skipped.
+    assert_eq!(documented_widget_methods(&docs), [("ScriptRegionResizing", vec!["SetPoint", "SetPointNew"])]);
+}
+
+#[test]
+fn test_documented_widget_method_keys() {
+    let set = |names: &[&str]| -> HashSet<String> { names.iter().map(|s| s.to_string()).collect() };
+    // Retail's dump lists ScriptRegionResizing's `SetPoint` under ScriptRegion alone, and
+    // `SetAlpha` under two types; neither lists the `*New` methods yet.
+    let live: HashMap<String, HashSet<String>> = HashMap::from_iter([
+        ("ScriptRegion".to_string(), set(&["SetPoint", "SetAlpha"])),
+        ("ModelSceneActor".to_string(), set(&["SetAlpha"])),
+    ]);
+    let documented = [
+        ("ScriptRegionResizing", vec!["SetPoint", "SetPointNew"]),
+        ("Region", vec!["SetAlpha", "SetRegionNew"]),
+    ];
+    let mut keys: Vec<String> = documented_widget_method_keys(&documented, &live).into_iter().collect();
+    keys.sort();
+    // ScriptRegionResizing's methods are also keyed under ScriptRegion, where WidgetAPI.lua
+    // lists them; `SetAlpha` places Region's API on neither type that lists it.
+    assert_eq!(keys, [
+        "Region:SetAlpha",
+        "Region:SetRegionNew",
+        "ScriptRegion:SetPoint",
+        "ScriptRegion:SetPointNew",
+        "ScriptRegionResizing:SetPoint",
+        "ScriptRegionResizing:SetPointNew",
+    ]);
+}
+
+#[test]
 fn test_parse_widget_api_methods() {
     let text = r#"local WidgetAPI = {
 	GameTooltip = {

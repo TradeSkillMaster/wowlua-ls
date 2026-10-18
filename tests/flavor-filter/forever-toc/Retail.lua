@@ -7,3 +7,9 @@ C_PvP.HasRandomTrainingGroundWinToday()
 
 C_GameRules.GetForeverExperiencePreset()
 -- ^ diag: wrong-flavor-api
+
+-- 12.1.5 additions on both clients that only Forever's API dump listed.
+C_Intl.GetCurrentLocale()
+--      ^ doc: Flavors: Retail, Forever
+local frame = CreateFrame("Frame")
+frame:SetRoundLayoutToNearestPixel(true)

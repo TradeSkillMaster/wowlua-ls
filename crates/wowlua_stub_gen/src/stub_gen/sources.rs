@@ -776,10 +776,15 @@ pub(in crate::stub_gen) fn parse_lua_enum_le_values(content: &str) -> HashMap<St
 
 /// Fetch BlizzardInterfaceResources lists, compute the classic-only (absent from
 /// retail) API diff, derive the retail global name universe, and compute flavor
-/// bitmasks from branch presence. `lua_widget_methods` are `Type:Method` keys
+/// bitmasks from branch presence. Retail's lists can trail the client, so what its docs
+/// document counts as retail too: `documented_functions` by qualified name and
+/// `documented_methods` as `(class, methods)` per ScriptObject API (see
+/// [`documented_widget_method_keys`]). So do the `lua_widget_methods` (`Type:Method`)
 /// retail defines in Lua, which its WidgetAPI.lua doesn't list.
 pub(in crate::stub_gen) fn fetch_branch_resources(
     stubs_dir: &Path,
+    documented_functions: &HashSet<String>,
+    documented_methods: &[(&str, Vec<&str>)],
     lua_widget_methods: &HashSet<String>,
     resources: &ResourceCommits,
 ) -> BranchResourceData {
@@ -810,9 +815,11 @@ pub(in crate::stub_gen) fn fetch_branch_resources(
     let retail_all_names: HashSet<String> = retail.union(&retail_fxml).cloned().collect();
     log::info!("  Retail globals from BlizzardInterfaceResources: {} names", retail_all_names.len());
 
+    let retail_present = retail_presence(&retail, documented_functions, &[&classic, &classic_era, &forever]);
+
     // Flavor map from GlobalAPI.lua branch presence (not FrameXML — see doc comment)
     let flavor_map = compute_flavor_map(&[
-        (FLAVOR_RETAIL, &retail),
+        (FLAVOR_RETAIL, &retail_present),
         (FLAVOR_CLASSIC, &classic),
         (FLAVOR_CLASSIC_ERA, &classic_era),
         (FLAVOR_FOREVER, &forever),
@@ -821,7 +828,7 @@ pub(in crate::stub_gen) fn fetch_branch_resources(
 
     // Classic-only API diff
     let mut all_classic_only: Vec<_> = classic_era.iter().chain(&classic).chain(&forever)
-        .filter(|name| !retail.contains(*name))
+        .filter(|name| !retail_present.contains(*name))
         .cloned().collect::<HashSet<_>>().into_iter().collect();
     all_classic_only.sort();
     log::info!("  Found {} classic-only APIs", all_classic_only.len());
@@ -884,6 +891,7 @@ pub(in crate::stub_gen) fn fetch_branch_resources(
     let mut missing_widget_methods: Vec<(String, String)> = Vec::new();
     let mut flavor_map = flavor_map;
     if !widget_live.is_empty() {
+        let documented_method_keys = documented_widget_method_keys(documented_methods, &widget_live);
         let all_widget_types: HashSet<String> = widget_classic_era.keys()
             .chain(widget_classic.keys())
             .chain(widget_forever.keys())
@@ -917,10 +925,14 @@ pub(in crate::stub_gen) fn fetch_branch_resources(
                     continue;
                 }
                 let stub_key = format!("{type_name}:{method}");
-                if existing_widget_methods.contains(&stub_key) || lua_widget_methods.contains(&stub_key) {
+                if existing_widget_methods.contains(&stub_key)
+                    || lua_widget_methods.contains(&stub_key)
+                    || documented_method_keys.contains(&stub_key)
+                {
                     // Vendor stubs cover retail APIs not listed in retail's WidgetAPI.lua
                     // (e.g. GameTooltip:SetHyperlink), as do the methods retail defines in
-                    // Lua (e.g. GameTooltip:SetOutfit). Don't restrict these to classic-only.
+                    // Lua (e.g. GameTooltip:SetOutfit) and the ones its docs list before the
+                    // dump does. Don't restrict these to classic-only.
                     continue;
                 }
                 // Not in vendor stubs and not in retail WidgetAPI — genuinely classic-only.
@@ -939,6 +951,48 @@ pub(in crate::stub_gen) fn fetch_branch_resources(
         flavor_map,
         empty_resources,
     }
+}
+
+
+/// Retail's GlobalAPI.lua names plus the `documented` ones another branch lists.
+/// BlizzardInterfaceResources dumps each client separately, and its retail dump can trail
+/// the client by a patch while retail's docs don't: Forever's dump listed 12.1.5's
+/// `C_Intl` before retail's did, which made it Forever-only. A documented name no branch
+/// lists isn't added, so it stays unrestricted rather than becoming retail-only.
+pub(in crate::stub_gen) fn retail_presence(
+    retail: &HashSet<String>,
+    documented: &HashSet<String>,
+    other_branches: &[&HashSet<String>],
+) -> HashSet<String> {
+    let listed = |name: &&String| other_branches.iter().any(|branch| branch.contains(*name));
+    retail.iter().chain(documented.iter().filter(listed)).cloned().collect()
+}
+
+
+/// `Type:Method` keys for the methods retail's docs document, given as `(class, methods)`
+/// per ScriptObject API. WidgetAPI.lua lists a method under the type whose metatable holds
+/// it, which isn't always the documenting API's class: ScriptRegionResizing's methods and
+/// some of Region's and Frame's are on ScriptRegion, CharacterModelBase's on PlayerModel.
+/// So an API's methods are keyed under its class and under each type `live` alone lists
+/// one of them under. A method several types list (`SetAlpha`) places no API.
+pub(in crate::stub_gen) fn documented_widget_method_keys(
+    documented: &[(&str, Vec<&str>)],
+    live: &HashMap<String, HashSet<String>>,
+) -> HashSet<String> {
+    let mut keys = HashSet::default();
+    for (class, methods) in documented {
+        let mut types: HashSet<&str> = HashSet::from_iter([*class]);
+        for method in methods {
+            let mut listing = live.iter().filter(|(_, listed)| listed.contains(*method));
+            if let (Some((only, _)), None) = (listing.next(), listing.next()) {
+                types.insert(only);
+            }
+        }
+        for type_name in types {
+            keys.extend(methods.iter().map(|method| format!("{type_name}:{method}")));
+        }
+    }
+    keys
 }
 
 

@@ -674,10 +674,7 @@ pub(in crate::stub_gen) fn build_secret_index(
 
     for func in &docs.functions {
         let mut s = entry_secrecy(&func.secrecy, &func.arguments, &func.returns, "SecretReturns", true);
-        let key = match &func.namespace {
-            Some(ns) => format!("{ns}.{}", func.name),
-            None => func.name.clone(),
-        };
+        let key = func.qualified_name();
         if let Some((_, policy)) = DOCUMENTED_ARGS_OVERRIDES.iter().find(|(name, _)| *name == key) {
             s.args = *policy;
         }
@@ -686,7 +683,7 @@ pub(in crate::stub_gen) fn build_secret_index(
         }
     }
     for api in &docs.script_objects {
-        let Some(class) = SCRIPTOBJECT_CLASS_MAP.iter().find(|(name, _)| *name == api.name).map(|(_, c)| *c) else {
+        let Some(class) = scriptobject_class(&api.name) else {
             continue;
         };
         for func in &api.functions {

@@ -211,7 +211,13 @@ pub fn regenerate_stubs() {
     // Step 2c: Fetch BlizzardInterfaceResources lists (all 4 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
     log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
-    let mut branch_data = fetch_branch_resources(&combined_stubs, &tooltip_accessor_keys(&tooltip_accessors), &resource_commits);
+    let mut branch_data = fetch_branch_resources(
+        &combined_stubs,
+        &documented_functions(&blizzard_docs),
+        &documented_widget_methods(&blizzard_docs),
+        &tooltip_accessor_keys(&tooltip_accessors),
+        &resource_commits,
+    );
     for resource in &branch_data.empty_resources {
         source_errors.push(format!("BlizzardInterfaceResources {resource}: empty (fetch failed)"));
     }
