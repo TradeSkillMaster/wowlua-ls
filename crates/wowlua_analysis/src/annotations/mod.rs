@@ -725,6 +725,73 @@ pub struct AliasDecl {
     pub is_opaque: bool,
 }
 
+/// An `@alias` as registered; see [`AliasDecl::registered_type`].
+pub struct RegisteredAlias {
+    pub typ: ValueType,
+    /// Open string-enum completion literals; empty when it has none.
+    pub literals: Vec<String>,
+    /// Whether it extended the previously registered alias rather than replacing it.
+    pub extends: bool,
+}
+
+impl AliasDecl {
+    /// What to register for this alias, from its resolved type and the alias
+    /// already registered under its name (a stub's, another file's, or an earlier
+    /// one in the same file) with that alias's literals.
+    ///
+    /// A redeclaration whose members are all literals (`---@alias Name` plus
+    /// `---|"value"` lines) adds them to the previous alias, as LuaLS does: it is
+    /// how a library's enum alias is extended with an addon's own values. Any
+    /// other redeclaration replaces the previous alias.
+    pub fn registered_type(
+        &self,
+        resolved: ValueType,
+        previous: Option<&ValueType>,
+        previous_literals: Option<&Vec<String>>,
+    ) -> RegisteredAlias {
+        let is_literal = |t: &ValueType| matches!(t,
+            ValueType::String(Some(_)) | ValueType::NumberLiteral(_) | ValueType::Boolean(Some(_)));
+        let all_literals = match &resolved {
+            ValueType::Union(members) => members.iter().all(is_literal),
+            other => is_literal(other),
+        };
+        let (typ, mut literals, extends) = match previous {
+            Some(previous) if all_literals && !self.is_opaque => {
+                let merged = match previous {
+                    ValueType::OpaqueAlias(name, inner) => ValueType::OpaqueAlias(
+                        name.clone(), Box::new(ValueType::union((**inner).clone(), resolved))),
+                    other => ValueType::union(other.clone(), resolved),
+                };
+                (merged, previous_literals.cloned().unwrap_or_default(), true)
+            }
+            _ => (resolved, Vec::new(), false),
+        };
+        // Open string-enum alias (`@alias UnitToken string` + `---|"player"`
+        // lines): the resolved type is bare `string`, but the raw annotation
+        // carries literal completion values that `make_union` collapsed away.
+        // Keep them for string-argument completion.
+        let base = match &typ {
+            ValueType::OpaqueAlias(_, inner) => inner.as_ref(),
+            other => other,
+        };
+        if matches!(base, ValueType::String(None)) {
+            let mut declared = Vec::new();
+            collect_annotation_string_literals(&self.typ, &mut declared);
+            for literal in declared {
+                if !literals.contains(&literal) {
+                    literals.push(literal);
+                }
+            }
+        }
+        let typ = if self.is_opaque {
+            ValueType::OpaqueAlias(self.name.clone(), Box::new(typ))
+        } else {
+            typ
+        };
+        RegisteredAlias { typ, literals, extends }
+    }
+}
+
 /// Recursive field entry from a defclass table literal.
 /// Leaves have empty `children`; nested table constructors have children.
 #[derive(Debug, Clone)]
@@ -1040,14 +1107,23 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     block
 }
 
+/// A Lua line comment past its `---` opener and any spaces or tabs, so it starts
+/// at an annotation line's `@` / `|` sigil. Any amount of whitespace is accepted
+/// so that indented continuation lines (`---      | (...)`) are recognized.
+fn doc_comment_sigil(text: &str) -> Option<&str> {
+    text.strip_prefix("---").map(|rest| rest.trim_start_matches([' ', '\t']))
+}
+
 /// Classify a Lua line comment as an annotation comment (`---@tag`) or a
-/// tuple-union continuation (`---|`). Accepts any amount of whitespace between
-/// the `---` prefix and the `@` / `|` sigil so that indented continuation lines
-/// (`---      | (...)`) are recognized.
+/// tuple-union continuation (`---|`).
 fn is_annotation_comment(text: &str) -> bool {
-    let Some(rest) = text.strip_prefix("---") else { return false; };
-    let rest = rest.trim_start_matches([' ', '\t']);
-    rest.starts_with('@') || rest.starts_with('|')
+    doc_comment_sigil(text).is_some_and(|rest| rest.starts_with('@')) || is_union_continuation(text)
+}
+
+/// Whether a Lua line comment is a `---|` union continuation line (an `@alias`
+/// member or a tuple `@return` case), spaced (`--- | "value"`) or not.
+pub fn is_union_continuation(text: &str) -> bool {
+    doc_comment_sigil(text).is_some_and(|rest| rest.starts_with('|'))
 }
 
 /// True if `text` contains `@<tag>` immediately followed by whitespace, e.g.

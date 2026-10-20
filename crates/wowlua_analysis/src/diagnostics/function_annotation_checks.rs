@@ -85,7 +85,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                 let is_tuple_form = any_tuple && all_tuple && annotations.returns.len() == 1;
                 if any_tuple && !is_tuple_form {
                     let return_ranges: Vec<(usize, usize)> = comment_ranges.iter()
-                        .filter(|(text, _, _)| Analysis::comment_is_tag(text, "---@return") || text.starts_with("---|"))
+                        .filter(|(text, _, _)| Analysis::comment_is_tag(text, "---@return") || crate::annotations::is_union_continuation(text))
                         .map(|(_, s, e)| (*s, *e))
                         .collect();
                     let (s, e) = if let (Some(first), Some(last)) = (return_ranges.first(), return_ranges.last()) {

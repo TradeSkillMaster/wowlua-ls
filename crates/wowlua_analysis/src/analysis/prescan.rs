@@ -175,12 +175,14 @@ impl<'a> Analysis<'a> {
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
         for alias in &scan.aliases {
-            // A file-local alias shadows any imported/stub alias of the same name.
+            // A file-local alias shadows any imported/stub alias of the same name
+            // (unless it extends it, see `AliasDecl::registered_type`).
             // Hide the ext entry's string-enum completion literals up front (the
             // `remove` writes a tombstone into the layered map); only a genuine open
             // string-enum redefinition re-inserts them below. Doing this
             // unconditionally handles every redefinition form (non-string,
             // parameterized, tuple, function).
+            let previous_literals = self.ir.alias_string_literals.get(&alias.name).cloned();
             self.ir.alias_string_literals.remove(&alias.name);
             if !alias.type_params.is_empty() {
                 // Parameterized alias: store raw template for later instantiation
@@ -206,23 +208,12 @@ impl<'a> Analysis<'a> {
                 if matches!(&vt, ValueType::Function(None)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
-                // Open string-enum alias: `string | "literal"` collapses to bare
-                // `string`, dropping the `---|"literal"` completion values. Keep
-                // them for string-argument completion (the stale entry, if any,
-                // was already cleared at the top of the loop).
-                if matches!(&vt, ValueType::String(None)) {
-                    let mut literals = Vec::new();
-                    crate::annotations::collect_annotation_string_literals(&alias.typ, &mut literals);
-                    if !literals.is_empty() {
-                        self.ir.alias_string_literals.insert(alias.name.clone(), literals);
-                    }
+                let registered = alias.registered_type(
+                    vt, self.ir.aliases.get(&alias.name), previous_literals.as_ref());
+                if !registered.literals.is_empty() {
+                    self.ir.alias_string_literals.insert(alias.name.clone(), registered.literals);
                 }
-                let vt = if alias.is_opaque {
-                    ValueType::OpaqueAlias(alias.name.clone(), Box::new(vt))
-                } else {
-                    vt
-                };
-                self.ir.aliases.insert(alias.name.clone(), vt);
+                self.ir.aliases.insert(alias.name.clone(), registered.typ);
             }
             if let Some((start, end)) = alias.def_range {
                 self.ir.alias_def_ranges.insert(alias.name.clone(), (start, end));

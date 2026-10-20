@@ -3901,7 +3901,7 @@ impl<'a> Analysis<'a> {
             }
             if kind == SyntaxKind::Comment {
                 let text = token.text().to_string();
-                if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
+                if text.starts_with("---@") || text.starts_with("--- @") || crate::annotations::is_union_continuation(&text) {
                     let r = token.text_range();
                     results.push((text, u32::from(r.start()) as usize, u32::from(r.end()) as usize));
                     tok = token.prev_token();

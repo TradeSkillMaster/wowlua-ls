@@ -21,7 +21,7 @@ fn next_token_is_continuation(tok: &SyntaxToken<'_>) -> bool {
         }
         if k == SyntaxKind::Comment {
             let text = t.text();
-            if text.starts_with("---|") {
+            if crate::annotations::is_union_continuation(text) {
                 return true;
             }
             // Skip regular comments (not doc annotations) between the tag and ---|

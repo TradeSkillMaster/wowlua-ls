@@ -373,7 +373,9 @@ impl<'a> BuildOnStubsContext<'a> {
         }
     }
 
-    fn register_classes_and_aliases(&mut self, ws_classes: &[ClassDecl], ws_aliases: &[AliasDecl]) {
+    /// Returns the stub aliases the workspace only extended; see
+    /// [`Self::retype_stub_params_for_extended_aliases`].
+    fn register_classes_and_aliases(&mut self, ws_classes: &[ClassDecl], ws_aliases: &[AliasDecl]) -> HashSet<String> {
         // Register new class names with `skip_existing = true`, leaving any
         // collision with a *stub* class name ADDITIVE: its fields merge onto the
         // existing slot via `populate_class_fields`, exactly as a
@@ -408,7 +410,49 @@ impl<'a> BuildOnStubsContext<'a> {
                 alias_locations: &mut self.alias_locations,
             },
             true,
-        );
+            true,
+        )
+    }
+
+    /// Re-resolve the parameters of stub functions declared with a stub alias the
+    /// workspace extended (`---@alias AceGUIWidgetType` + `---|"MyWidget"`): the
+    /// blob resolved them against the stub's alias. An alias the workspace
+    /// replaces leaves them as the blob has them — that is usually an addon type
+    /// that merely shares a stub alias's name (`ItemInfo`).
+    fn retype_stub_params_for_extended_aliases(&mut self, extended: &HashSet<String>) {
+        fn names_alias(at: &AnnotationType, names: &HashSet<String>) -> bool {
+            match at {
+                AnnotationType::Simple(name) => names.contains(name.as_str()),
+                AnnotationType::Union(parts) | AnnotationType::Intersection(parts) => {
+                    parts.iter().any(|p| names_alias(p, names))
+                }
+                AnnotationType::NonNil(inner) => names_alias(inner, names),
+                _ => false,
+            }
+        }
+        if extended.is_empty() { return; }
+        for f in 0..self.stubs_base.functions_len() {
+            let func = &self.functions[f];
+            if !func.param_annotations.iter().any(|at| names_alias(at, extended)) { continue; }
+            let params: Vec<(SymbolIndex, AnnotationType, bool)> = func.param_annotations.iter()
+                .zip(&func.args)
+                .zip(&func.param_optional)
+                .filter(|((at, _), _)| names_alias(at, extended))
+                .map(|((at, &sym), &optional)| (sym, at.clone(), optional))
+                .collect();
+            let generics = func.generic_constraints_raw.clone();
+            for (sym, at, optional) in params {
+                let vt = PreResolvedGlobals::resolve_annotation_gen(
+                    &at, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    &generics, &mut self.tables, &mut self.exprs,
+                ).map(|vt| if optional { ValueType::union(vt, ValueType::Nil) } else { vt });
+                if let Some(version) = self.symbols[sym.ext_offset()].versions.first()
+                    && version.resolved_type != vt
+                {
+                    self.symbols[sym.ext_offset()].versions[0].resolved_type = vt;
+                }
+            }
+        }
     }
 
     fn populate_class_fields(&mut self, ws_classes: &[ClassDecl]) {
@@ -1807,7 +1851,8 @@ impl PreResolvedGlobals {
         let ws_globals = &*crate::annotations::apply_enum_call_globals(ws_globals, &returns_enum_paths);
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
         let mut class_field_paths = ClassFieldPaths::new(ws_globals, ws_classes);
-        ctx.register_classes_and_aliases(ws_classes, ws_aliases);
+        let extended_aliases = ctx.register_classes_and_aliases(ws_classes, ws_aliases);
+        ctx.retype_stub_params_for_extended_aliases(&extended_aliases);
         ctx.populate_class_fields(ws_classes);
         ctx.build_methods_and_table_fields(ws_globals, ws_classes, &mut class_field_paths);
         ctx.resolve_inheritance(ws_classes);

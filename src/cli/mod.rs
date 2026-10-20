@@ -232,7 +232,8 @@ pub(crate) fn load_workspace(
     };
     annotations::register_event_type_aliases(&mut scan.aliases, &scan.events);
 
-    let ws_empty = scan.classes.is_empty() && scan.globals.is_empty() && scan.events.is_empty();
+    let ws_empty = scan.classes.is_empty() && scan.globals.is_empty() && scan.events.is_empty()
+        && scan.aliases.is_empty();
     let pre_globals = match stubs {
         Some(s) if ws_empty => Arc::new(s.pre_globals),
         Some(s) => {

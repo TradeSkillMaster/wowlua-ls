@@ -2843,7 +2843,21 @@ impl<'a> Analysis<'a> {
                         }
                     })
                 }).collect();
-                if filtered.is_empty() { range_matched } else { filtered }
+                if filtered.is_empty() {
+                    // No overload names the call's literals. Still drop those a bare
+                    // literal parameter rules out (`fun(type: "Button")` called with
+                    // `"MyWidget"`), so a value only the base signature accepts gets
+                    // its return instead of the union of every overload's.
+                    range_matched.into_iter().filter(|o| {
+                        let off = ovl_self_off(o);
+                        !o.params.iter().skip(off).zip(args).any(|(p, id)| {
+                            matches!((&p.typ, self.ir.string_literals.get(id)),
+                                (Some(ValueType::String(Some(expected))), Some(actual)) if actual != expected)
+                        })
+                    }).collect()
+                } else {
+                    filtered
+                }
             } else {
                 range_matched
             };

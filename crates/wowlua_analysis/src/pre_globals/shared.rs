@@ -66,15 +66,23 @@ pub struct ClassAliasRegistry<'x> {
 
 /// Register `@class` table entries and `@alias` declarations into the IR
 /// registries. `skip_existing` skips classes already registered (the warm path
-/// must not re-register stub classes; the cold path registers all). The alias
-/// loop — parameterized/constrained, tuple-form, opaque, and `fun(...)` alias
-/// detection — is identical across both paths.
+/// must not re-register stub classes; the cold path registers all).
+/// `extend_aliases` lets a literal-only alias redeclaration extend the alias
+/// registered before it (`AliasDecl::registered_type`); only the stub blob's
+/// build turns it off, so the stubs' own duplicates stay last-wins as the blob
+/// was built. The alias loop — parameterized/constrained, tuple-form, opaque,
+/// and `fun(...)` alias detection — is identical across both paths.
+///
+/// Returns the names of the aliases registered before this call that every one
+/// of `alias_decls`' declarations of them extended: the stub aliases a
+/// workspace only added literals to.
 pub fn register_classes_and_aliases(
     class_decls: &[ClassDecl],
     alias_decls: &[AliasDecl],
     reg: &mut ClassAliasRegistry,
     skip_existing: bool,
-) {
+    extend_aliases: bool,
+) -> HashSet<String> {
     // Register class names (table indices use EXT_BASE)
     for class in class_decls {
         if skip_existing && reg.classes.contains_key(&class.name) { continue; }
@@ -107,6 +115,7 @@ pub fn register_classes_and_aliases(
 
     // Register aliases before populating fields so alias types (e.g. fileID)
     // are available during field type resolution.
+    let mut extended: HashMap<&str, bool> = HashMap::default();
     for alias in alias_decls {
         // Shadowing: this alias may redefine one already present in
         // `alias_string_literals` — a no-op in the cold build (map starts empty),
@@ -114,7 +123,8 @@ pub fn register_classes_and_aliases(
         // base, so a workspace alias reusing a stub open-string-enum name must clear
         // the stub's literals up front. Only a genuine open string-enum re-inserts
         // them below; every other redefinition form leaves the entry cleared.
-        reg.alias_string_literals.remove(&alias.name);
+        let previous_literals = reg.alias_string_literals.remove(&alias.name);
+        let mut extends = false;
         if !alias.type_params.is_empty() {
             reg.parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
             if alias.type_param_constraints.iter().any(Option::is_some) {
@@ -129,24 +139,15 @@ pub fn register_classes_and_aliases(
             if matches!(&vt, ValueType::Function(None)) {
                 reg.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
             }
-            // Open string-enum alias (`@alias UnitToken string` + `---|"player"`
-            // lines): the resolved type is bare `string`, but the raw annotation
-            // carries literal completion values that `make_union` collapsed away.
-            // Keep them for string-argument completion.
-            if matches!(&vt, ValueType::String(None)) {
-                let mut literals = Vec::new();
-                crate::annotations::collect_annotation_string_literals(&alias.typ, &mut literals);
-                if !literals.is_empty() {
-                    reg.alias_string_literals.insert(alias.name.clone(), literals);
-                }
+            let previous = if extend_aliases { reg.aliases.get(&alias.name) } else { None };
+            let registered = alias.registered_type(vt, previous, previous_literals.as_ref());
+            extends = registered.extends;
+            if !registered.literals.is_empty() {
+                reg.alias_string_literals.insert(alias.name.clone(), registered.literals);
             }
-            let vt = if alias.is_opaque {
-                ValueType::OpaqueAlias(alias.name.clone(), Box::new(vt))
-            } else {
-                vt
-            };
-            reg.aliases.insert(alias.name.clone(), vt);
+            reg.aliases.insert(alias.name.clone(), registered.typ);
         }
+        *extended.entry(alias.name.as_str()).or_insert(true) &= extends;
         if let Some((start, end)) = alias.def_range
             && let Some(ref path) = alias.def_path {
                 reg.alias_locations.insert(alias.name.clone(), ExternalLocation {
@@ -156,6 +157,7 @@ pub fn register_classes_and_aliases(
                 });
             }
     }
+    extended.into_iter().filter(|&(_, all)| all).map(|(name, _)| name.to_string()).collect()
 }
 
 /// Build a scan-discovered table field with the common defaults: no

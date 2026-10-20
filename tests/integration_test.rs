@@ -107,7 +107,7 @@ fn run_annotation_tests(config: &TestConfig) {
         let scan = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
         let (sc, mut sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
-        if sc.is_empty() && sg.is_empty() && se.is_empty() {
+        if sc.is_empty() && sg.is_empty() && se.is_empty() && sa.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
         } else {
             let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
@@ -8531,5 +8531,43 @@ fn secrets_toc_forever() {
         lua_file: "tests/secrets/toc-forever/test.lua",
         with_stubs: true,
         scan_dir: None,
+    });
+}
+
+// A literal-only `@alias` redeclaration (`--- | "value"` lines) extends the stub's
+// or another file's alias of that name rather than replacing it.
+#[test]
+fn alias_redeclaration_extends_literals() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/alias-extend/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/alias-extend"),
+    });
+}
+
+#[test]
+fn alias_redeclaration_extends_literals_in_declaring_file() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/alias-extend/widgets.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/alias-extend"),
+    });
+}
+
+#[test]
+fn alias_redeclaration_extends_workspace_aliases() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/alias-extend/literals.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/alias-extend"),
+    });
+}
+
+#[test]
+fn alias_redeclaration_extends_workspace_aliases_without_stubs() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/alias-extend/literals.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/alias-extend"),
     });
 }

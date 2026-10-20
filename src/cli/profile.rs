@@ -43,7 +43,7 @@ pub fn run(dir: PathBuf) -> CliResult {
     // Phase 3: Build PreResolvedGlobals (merge precomputed stubs with workspace)
     let t = std::time::Instant::now();
     let stubs_pre_globals = Arc::new(stubs.pre_globals);
-    let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
+    let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() && ws_aliases.is_empty() {
         Arc::clone(&stubs_pre_globals)
     } else {
         let mut pg = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_files, &ws_callable_classes);

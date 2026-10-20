@@ -2026,6 +2026,8 @@ struct BuildContext {
 
     // Config
     implicit_protected_prefix: bool,
+    /// See `shared::register_classes_and_aliases`.
+    extend_aliases: bool,
 }
 
 impl BuildContext {
@@ -2074,6 +2076,7 @@ impl BuildContext {
             conflicting_arity_funcs: HashSet::default(),
             deferred_call_globals: HashMap::default(),
             implicit_protected_prefix: false,
+            extend_aliases: true,
         }
     }
 
@@ -2201,6 +2204,7 @@ impl BuildContext {
                 alias_locations: &mut self.alias_locations,
             },
             false,
+            self.extend_aliases,
         );
         // The cold path additionally records per-class source locations and
         // constructor method names. The warm path derives both from stubs_base
@@ -3721,11 +3725,34 @@ impl PreResolvedGlobals {
         addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
+        Self::build_cold(globals, external_classes, external_aliases, implicit_protected_prefix, addon_ns_class_files, callable_classes, true)
+    }
+
+    /// [`Self::build`] for the stub blob, whose own duplicate aliases stay
+    /// last-wins, as the shipped blob was built, instead of extending each other.
+    pub fn build_stub_blob(
+        globals: &[crate::annotations::ExternalGlobal],
+        classes: &[ClassDecl],
+        aliases: &[AliasDecl],
+    ) -> PreResolvedGlobals {
+        Self::build_cold(globals, classes, aliases, false, &HashMap::default(), &HashSet::default(), false)
+    }
+
+    fn build_cold(
+        globals: &[crate::annotations::ExternalGlobal],
+        external_classes: &[ClassDecl],
+        external_aliases: &[AliasDecl],
+        implicit_protected_prefix: bool,
+        addon_ns_class_files: &HashMap<PathBuf, String>,
+        callable_classes: &HashSet<String>,
+        extend_aliases: bool,
+    ) -> PreResolvedGlobals {
         let returns_enum_paths = crate::annotations::build_returns_enum_paths(globals);
         let external_classes = &*crate::annotations::apply_enum_calls(external_classes, &returns_enum_paths);
         let globals = &*crate::annotations::apply_enum_call_globals(globals, &returns_enum_paths);
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
+        ctx.extend_aliases = extend_aliases;
         let mut class_field_paths = ClassFieldPaths::new(globals, external_classes);
         ctx.register_classes_and_aliases(external_classes, external_aliases);
         ctx.populate_class_fields(external_classes);
