@@ -42,6 +42,14 @@ impl DiagnosticPass for AccessCheck {
             let Some(ver) = analysis.sym(root_sym).versions.last() else { continue };
             let Some(ValueType::Table(Some(start_table_idx))) = ver.resolved_type.as_ref() else { continue };
             let mut table_idx = *start_table_idx;
+            // Fields read directly on the root are also judged from inside the class
+            // whose own table it is (see `variable_own_class`): a module's
+            // `LibFoo.x = LibFoo.x or {}`, a widget constructor's `widget.frame`.
+            // Judged against the table the root holds, so a `@class` local
+            // reassigned another class's instance stays strict; cleared past the
+            // root, so a class reached through a field (`LibFoo.inner.secret`) is
+            // judged as itself.
+            let mut root_own_class = analysis.variable_own_class(root_sym, root_token.text());
 
             for i in 1..name_tokens.len() {
                 let field_name = name_tokens[i].text().to_string();
@@ -56,42 +64,17 @@ impl DiagnosticPass for AccessCheck {
                     && analysis.table(table_idx).class_name.is_some()
                 {
                     let enclosing_class = analysis.find_enclosing_class(&ident_node);
-                    let mut same_class = enclosing_class.is_some_and(|ec| analysis.same_class(ec, table_idx));
-                    let mut is_subclass = enclosing_class.is_some_and(|ec| analysis.is_subclass_of(ec, table_idx));
-                    // A class's own table counts as inside the class throughout the
-                    // file that declares that class, so a library/module can initialize
-                    // and use its own private/protected fields at file scope (e.g.
-                    // `LibFoo.x = LibFoo.x or {}`). The exemption applies only when the
-                    // field is accessed directly on the class's OWN table — the root
-                    // variable is named after the class it resolves to: a namespace global
-                    // (`LibFoo` carrying `---@class LibFoo`) or a local module table
-                    // (`local Foo = {}` under `---@class Foo`). A `---@type Foo` handle
-                    // (root name != class name), a *different* class reached through a
-                    // field (here `class_name` is the inner class, not the root), and
-                    // consumers in other files (where the class isn't declared) stay strict.
-                    if !same_class {
-                        let class_name = analysis.table(table_idx).class_name.as_deref();
-                        let root_is_class_own_table = class_name == Some(root_token.text());
-                        let class_declared_here = class_name
-                            .is_some_and(|cn| analysis.ir.class_def_ranges.contains_key(cn));
-                        if root_is_class_own_table && class_declared_here {
-                            same_class = true;
-                            is_subclass = true;
-                        }
-                    }
                     // If the root variable is a defclass-created instance in this file,
                     // allow protected access at file scope. Private still requires colon-method context.
-                    if !is_subclass && vis == Visibility::Protected {
-                        let root_name = root_token.text().to_string();
-                        if let Some(&dc_table) = analysis.defclass_vars.get(&root_name) {
-                            is_subclass = analysis.is_subclass_of(dc_table, table_idx);
-                        }
-                    }
+                    let visible = analysis.visible_from(vis, table_idx, &[enclosing_class, root_own_class])
+                        || (vis == Visibility::Protected
+                            && analysis.defclass_vars.get(root_token.text())
+                                .is_some_and(|&dc_table| analysis.is_subclass_of(dc_table, table_idx)));
                     let range = name_tokens[i].text_range();
                     let start = u32::from(range.start()) as usize;
                     let end = u32::from(range.end()) as usize;
                     match vis {
-                        Visibility::Private if !same_class => {
+                        Visibility::Private if !visible => {
                             let related = visibility_declared_here(table_idx, analysis, &field_name);
                             super::ACCESS_PRIVATE.emit_with_related(
                                 diags,
@@ -100,7 +83,7 @@ impl DiagnosticPass for AccessCheck {
                                 related,
                             );
                         }
-                        Visibility::Protected if !is_subclass => {
+                        Visibility::Protected if !visible => {
                             let related = visibility_declared_here(table_idx, analysis, &field_name);
                             super::ACCESS_PROTECTED.emit_with_related(
                                 diags,
@@ -118,6 +101,7 @@ impl DiagnosticPass for AccessCheck {
                     let Some(field_expr_id) = analysis.get_field(table_idx, &field_name).map(|f| f.expr) else { break };
                     let Some(ValueType::Table(Some(next_idx))) = analysis.resolve_expr_type(field_expr_id) else { break };
                     table_idx = next_idx;
+                    root_own_class = None;
                 }
             }
         }

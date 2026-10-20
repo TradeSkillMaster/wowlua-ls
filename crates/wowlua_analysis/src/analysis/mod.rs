@@ -708,9 +708,10 @@ pub struct Ir {
     /// Maps @class annotation byte offset → TableIndex for positional disambiguation
     /// when multiple `@class` declarations share the same name in one file.
     pub class_table_by_offset: HashMap<u32, TableIndex>,
-    /// Symbols annotated with `@class` (class definitions). Field assignments on these
-    /// symbols define class fields, not inject foreign fields — `inject-field` skips them.
-    pub class_def_symbols: HashSet<SymbolIndex>,
+    /// Symbols annotated with `@class` (class definitions) → the class each declares.
+    /// Field assignments on these symbols define class fields, not inject foreign
+    /// fields — `inject-field` skips them.
+    pub class_def_symbols: HashMap<SymbolIndex, TableIndex>,
     /// Symbols that are function parameters (from `Function.args`). Used by
     /// `is_open_literal_union_symbol` to restrict open-contract semantics to
     /// `@param` annotations (an open contract: caller can pass unlisted values),
@@ -2810,6 +2811,35 @@ impl Ir {
         false
     }
 
+    /// The class whose own table the variable `sym` (named `name`) is: the class a
+    /// `---@class` declares on it, whatever its name (a widget constructor's
+    /// `---@class MyWidget : AceGUIFrame` / `local widget = ...`), else a class this
+    /// file declares that it is named after (`LibFoo` for `---@class LibFoo`). Fields
+    /// read directly on the variable are judged as from inside that class; a
+    /// differently named `---@type` handle is neither.
+    pub fn variable_own_class(&self, sym: SymbolIndex, name: &str) -> Option<TableIndex> {
+        if let Some(&class_idx) = self.class_def_symbols.get(&sym) {
+            return Some(class_idx);
+        }
+        if self.class_def_ranges.contains_key(name) {
+            return self.classes.get(name).copied();
+        }
+        None
+    }
+
+    /// Whether a field of visibility `vis` on `table_idx` is visible from inside any
+    /// of the `viewers` classes: private from the class itself, protected also from
+    /// its subclasses.
+    pub fn visible_from(&self, vis: crate::annotations::Visibility, table_idx: TableIndex, viewers: &[Option<TableIndex>]) -> bool {
+        use crate::annotations::Visibility;
+        let mut viewers = viewers.iter().flatten();
+        match vis {
+            Visibility::Public => true,
+            Visibility::Private => viewers.any(|&v| self.same_class(v, table_idx)),
+            Visibility::Protected => viewers.any(|&v| self.is_subclass_of(v, table_idx)),
+        }
+    }
+
     /// Find the class table index of the nearest enclosing method.
     /// Walks up the AST from `node` to find `function Foo:Bar()` or
     /// `function Foo.bar()` / `function Foo.__accessor.bar()` and resolves `Foo`.
@@ -3254,6 +3284,8 @@ impl AnalysisResult {
     #[inline] pub fn same_class(&self, a: TableIndex, b: TableIndex) -> bool { self.ir.same_class(a, b) }
     #[inline] pub fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
     #[inline] pub fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
+    #[inline] pub fn variable_own_class(&self, sym: SymbolIndex, name: &str) -> Option<TableIndex> { self.ir.variable_own_class(sym, name) }
+    #[inline] pub fn visible_from(&self, vis: crate::annotations::Visibility, table_idx: TableIndex, viewers: &[Option<TableIndex>]) -> bool { self.ir.visible_from(vis, table_idx, viewers) }
     #[inline] pub fn function_name(&self, func_idx: FunctionIndex) -> Option<String> { self.ir.function_name(func_idx) }
     #[inline] pub fn resolved_expr_cache_get(&self, id: ExprId) -> Option<&ValueType> { self.resolved_expr_cache.get(id.val()).and_then(|v| v.as_ref()) }
 
@@ -3782,7 +3814,7 @@ impl<'a> Analysis<'a> {
                 unknown_cast_vars: Vec::new(),
                 class_def_ranges: HashMap::default(),
                 class_table_by_offset: HashMap::default(),
-                class_def_symbols: HashSet::default(),
+                class_def_symbols: HashMap::default(),
                 param_symbols: HashSet::default(),
                 repeated_param_versions: HashMap::default(),
                 local_decl_symbols: HashSet::default(),

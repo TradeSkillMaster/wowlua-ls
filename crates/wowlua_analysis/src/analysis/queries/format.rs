@@ -1145,12 +1145,13 @@ impl AnalysisResult {
         formatted.to_string()
     }
 
-    /// Collect accessible fields from one or more tables, deduplicating by name.
+    /// Collect the fields of one or more tables visible from inside the `viewers`
+    /// classes (see [`Ir::visible_from`]), deduplicating by name.
     /// Returns sorted, formatted field lines (e.g. `"  name: type"`).
     pub(super) fn collect_accessible_fields(
         &self,
         table_indices: &[TableIndex],
-        enclosing_class: Option<TableIndex>,
+        viewers: &[Option<TableIndex>],
     ) -> Vec<String> {
         let indent = "  ";
         let mut seen: HashSet<&str> = HashSet::default();
@@ -1159,17 +1160,7 @@ impl AnalysisResult {
             let table = self.table(table_idx);
             let overlay = self.ir.overlay_fields.get(&table_idx);
             let is_enum = table.enum_kind.is_enum();
-            let is_accessible = |fi: &FieldInfo| -> bool {
-                match fi.visibility {
-                    crate::annotations::Visibility::Public => true,
-                    crate::annotations::Visibility::Private => {
-                        enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
-                    }
-                    crate::annotations::Visibility::Protected => {
-                        enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
-                    }
-                }
-            };
+            let is_accessible = |fi: &FieldInfo| self.visible_from(fi.visibility, table_idx, viewers);
             for (name, field_info) in &table.fields {
                 if seen.insert(name.as_str()) && is_accessible(field_info) {
                     fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
@@ -1195,8 +1186,9 @@ impl AnalysisResult {
         fields
     }
 
-    /// Format a type for hover display, filtering out inaccessible private/protected fields.
-    pub(super) fn format_type_accessible(&self, vt: &ValueType, enclosing_class: Option<TableIndex>) -> String {
+    /// Format a type for hover display, filtering out the private/protected fields
+    /// not visible from inside the `viewers` classes.
+    pub(super) fn format_type_accessible(&self, vt: &ValueType, viewers: &[Option<TableIndex>]) -> String {
         if let ValueType::Table(Some(table_idx)) = vt {
             let table = self.table(*table_idx);
             let overlay = self.ir.overlay_fields.get(table_idx);
@@ -1206,7 +1198,7 @@ impl AnalysisResult {
                 if !has_fields && !has_parents {
                     return class_name.clone();
                 }
-                let fields = self.collect_accessible_fields(&[*table_idx], enclosing_class);
+                let fields = self.collect_accessible_fields(&[*table_idx], viewers);
                 if fields.is_empty() {
                     return class_name.clone();
                 }
@@ -1256,7 +1248,7 @@ impl AnalysisResult {
                     return self.format_type(vt);
                 }
 
-                let fields = self.collect_accessible_fields(&table_indices, enclosing_class);
+                let fields = self.collect_accessible_fields(&table_indices, viewers);
                 if fields.is_empty() {
                     return header;
                 }

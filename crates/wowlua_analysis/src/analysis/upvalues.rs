@@ -265,7 +265,7 @@ impl<'a> Analysis<'a> {
             && self.ir.local_decl_symbols.contains(&sym)
             && !self.ir.param_symbols.contains(&sym)
             && !self.ir.symbol_type_annotations.contains_key(&sym)
-            && !self.ir.class_def_symbols.contains(&sym)
+            && !self.ir.class_def_symbols.contains_key(&sym)
     }
 
     /// Give the function whose body starts here an entry version of each local

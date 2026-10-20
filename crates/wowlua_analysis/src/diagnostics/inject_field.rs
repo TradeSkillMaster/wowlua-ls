@@ -14,7 +14,7 @@ impl DiagnosticPass for InjectField {
             if fa.field_existed_at_build { continue; }
             // @class-annotated variables are class definitions — field assignments
             // on them define new class fields, not inject foreign fields.
-            if fa.root_symbol.is_some_and(|s| analysis.ir.class_def_symbols.contains(&s)) { continue; }
+            if fa.root_symbol.is_some_and(|s| analysis.ir.class_def_symbols.contains_key(&s)) { continue; }
             // A field write on a multi-type union receiver (`---@type A|B|C` /
             // `---@param x A|B`) carries only a single `table_idx` — the *first*
             // union member (the deferred resolver picks the first `Table` in the

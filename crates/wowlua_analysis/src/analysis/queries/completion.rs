@@ -384,6 +384,14 @@ impl AnalysisResult {
         // raw defclass table so visibility below can test it against the specific
         // intersection member a field came from, not just the primary receiver.
         let receiver_defclass: Option<TableIndex> = self.defclass_vars.get(token.text()).copied();
+        // Mirror access.rs: fields read directly on a variable (a bare-name
+        // receiver, not a chain's last link) are also judged from inside the class
+        // whose own table it is (`variable_own_class`).
+        let receiver_own_class = token.parent()
+            .filter(|p| p.kind() == SyntaxKind::NameRef)
+            .and_then(|_| self.scope_at_offset(token.text_range().start()))
+            .and_then(|s| self.get_symbol(&SymbolIdentifier::Name(token.text().to_string()), s))
+            .and_then(|sym| self.variable_own_class(sym, token.text()));
         // _G global-environment redirect: show all globals as completions
         if self.ir.is_global_env(table_idx) {
             return Some(self.complete_global_env_members(offset, member_prefix_lower, is_colon, call_snippets));
@@ -440,19 +448,10 @@ impl AnalysisResult {
                 // Filter out inaccessible private/protected fields, judged against
                 // the member table the field came from.
                 let vis = field_info.visibility;
-                if vis != crate::annotations::Visibility::Public {
-                    let accessible = match vis {
-                        crate::annotations::Visibility::Private => {
-                            enclosing_class.is_some_and(|ec| self.same_class(ec, owning_idx))
-                        }
-                        crate::annotations::Visibility::Protected => {
-                            receiver_defclass.is_some_and(|dc| self.is_subclass_of(dc, owning_idx))
-                                || enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, owning_idx))
-                        }
-                        crate::annotations::Visibility::Public => true,
-                    };
-                    if !accessible { return None; }
-                }
+                let accessible = self.visible_from(vis, owning_idx, &[enclosing_class, receiver_own_class])
+                    || (vis == crate::annotations::Visibility::Protected
+                        && receiver_defclass.is_some_and(|dc| self.is_subclass_of(dc, owning_idx)));
+                if !accessible { return None; }
                 // Filter by typed prefix (e.g. "Regis" in `frame:Regis`)
                 if !member_prefix_lower.is_empty()
                     && !name.to_ascii_lowercase().starts_with(member_prefix_lower)

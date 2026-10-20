@@ -104,14 +104,27 @@ LibFoo.callbackMap = LibFoo.callbackMap or {}   -- ok: initialized in its own fi
 for _, cb in pairs(LibFoo.callbackMap) do end   -- ok: used in its own file
 ```
 
-Inside the file that declares `---@class LibFoo`, the class's own table can freely read and write its private/protected fields at file scope — including the reload-safe `LibFoo.x = LibFoo.x or {}` idiom. This applies when the table is **named after the class it declares** — a namespace global (`LibFoo` for `---@class LibFoo`) or a local module table (`local Foo = {}` for `---@class Foo`). In **any other file** those fields are hidden from autocomplete and hover, and touching them raises `access-private` / `access-protected`:
+Inside the file that declares `---@class LibFoo`, the class's own table can freely read and write its private/protected fields — including the reload-safe `LibFoo.x = LibFoo.x or {}` idiom — and autocomplete and hover list them. The class's own table is **the variable the `---@class` is declared on**, whatever its name; other references in that file count too when they are named after the class (`LibFoo` for `---@class LibFoo`, `Foo` for `---@class Foo`). In **any other file** those fields are hidden from autocomplete and hover, and touching them raises `access-private` / `access-protected`:
 
 ```lua
 -- SomeConsumer.lua
 LibFoo.callbackMap[1] = fn   -- access-private: 'callbackMap' is private
 ```
 
-The leniency is only for the class's own table accessed directly. A handle typed as the class (`local h = {} ---@type LibFoo`, or a global under a different name) counts as a consumer even in the declaring file, and a *different* class reached through a field (`LibFoo.inner.secret`) is judged as itself — both still warn. Reach a private field through the class's own table (`LibFoo.callbackMap`) or a method.
+Because the name doesn't matter, a widget constructor can use its class's private fields and the protected fields it inherits:
+
+```lua
+local function Constructor()
+    ---@class MyWidget : AceGUIFrame
+    local widget = AceGUI:Create("Frame")
+    widget.frame:SetScript("OnShow", OnShow)   -- ok: protected in AceGUIFrame
+    --- @private
+    widget.BaseOnWidthSet = widget.OnWidthSet  -- ok: MyWidget's own private field
+    return AceGUI:RegisterAsContainer(widget)
+end
+```
+
+The leniency is only for the class's own table accessed directly. A handle *typed* as the class (`local h = {} ---@type LibFoo`) counts as a consumer even in the declaring file, and a *different* class reached through a field (`LibFoo.inner.secret`) is judged as itself — both still warn. Reach a private field through the class's own table (`LibFoo.callbackMap`) or a method.
 
 Field visibility can be declared either in the `@class` block (`@field private`) or **inline on the assignment**, next to the code — handy when a field is initialized where it lives rather than up top:
 

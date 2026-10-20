@@ -103,15 +103,15 @@ impl AnalysisResult {
                         if matches!(ann, ValueType::Any)
                             && let Some(refined) = self.refine_any_field_type(field_info)
                         {
-                            (self.format_type_accessible(&refined, enclosing_class), Some(refined), false)
+                            (self.format_type_accessible(&refined, &[enclosing_class]), Some(refined), false)
                         } else if let Some(enriched) = self.enrich_class_field(field_info, ann) {
                             // A class annotation the cross-file funcall scanner gave a
                             // `self.field = Lib("X"):New(...)` idiom field; in the
                             // defining file, enrich to the generic's bound intersection
                             // (typed default-section shapes) — see `enrich_class_field`.
-                            (self.format_type_accessible(&enriched, enclosing_class), Some(enriched), false)
+                            (self.format_type_accessible(&enriched, &[enclosing_class]), Some(enriched), false)
                         } else {
-                            (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
+                            (self.format_type_accessible(ann, &[enclosing_class]), Some(ann.clone()), true)
                         }
                     } else {
                         let has_extras = !field_info.extra_exprs.is_empty();
@@ -145,7 +145,7 @@ impl AnalysisResult {
                             ("?".to_string(), None, false)
                         } else {
                             let unified = ValueType::make_union(self.ir.collapse_subset_tables(types));
-                            let s = self.format_type_accessible(&unified, enclosing_class);
+                            let s = self.format_type_accessible(&unified, &[enclosing_class]);
                             (s, Some(unified), false)
                         }
                     }
@@ -357,7 +357,10 @@ impl AnalysisResult {
                 // initial element type rather than the post-mutation type.
                 let formatted = self.initial_array_display(type_to_format)
                     .unwrap_or_else(|| {
-                        let f = self.format_type_accessible(type_to_format, enclosing_class);
+                        // Also viewed from inside the variable's own class, as
+                        // access.rs and `x.` completion judge it.
+                        let own_class = self.variable_own_class(symbol_idx, &name);
+                        let f = self.format_type_accessible(type_to_format, &[enclosing_class, own_class]);
                         let type_args = self.get_symbol_type_args(symbol_idx, token_start);
                         self.append_type_args_to_class(&f, type_to_format, &type_args)
                     });
@@ -399,7 +402,7 @@ impl AnalysisResult {
             let has_fields = !table.fields.is_empty() || !table.parent_classes.is_empty();
             let prefix = if table.is_key_enum { "(enum key)" } else if table.enum_kind.is_enum() { "(enum)" } else { "(class)" };
             let type_str = if has_fields {
-                format!("{} {}", prefix, self.format_type_accessible(&ValueType::Table(Some(table_idx)), None))
+                format!("{} {}", prefix, self.format_type_accessible(&ValueType::Table(Some(table_idx)), &[]))
             } else {
                 format!("{} {}", prefix, word)
             };
@@ -516,7 +519,7 @@ impl AnalysisResult {
         };
         // Format the class type the same way as hovering on the base class variable
         let table_type = ValueType::Table(Some(table_idx));
-        let formatted = self.format_type_accessible(&table_type, enclosing_class);
+        let formatted = self.format_type_accessible(&table_type, &[enclosing_class]);
         let mut type_str = format!("({}) {}: {}", kind, token.text(), formatted);
         let doc = self.doc_for_type(&table_type);
         let doc = self.append_call_hover(table_idx, &mut type_str, doc);

@@ -205,11 +205,70 @@ local InlineMod = {}
 ---@private
 InlineMod.secret = InlineMod.secret or 1
 
--- the module's own file-scope use of its inline-private field: clean
+-- the module's own file-scope use of its inline-private field: clean (and offered)
 local _im = InlineMod.secret
+--                    ^ comp: secret
 
 -- a ---@type handle is a consumer-style reference → the private field is denied
 ---@type InlineMod
 local imh = {}
 _consume(imh.secret)
 --           ^ diag: access-private
+
+-- ── A `---@class` local is its class's own table, whatever its name ─────
+-- A widget-style constructor declares its class on the local it builds from a
+-- base factory: through that local it may use the class's private fields and
+-- the protected fields it inherits, and completion and hover offer them. A
+-- `---@type` handle, a different class reached through a field, or a `@class`
+-- local holding another class's instance stays strict.
+
+---@class CtorPeer
+---@field private hidden number
+
+---@class CtorBase
+---@field protected frame table
+---@field peer CtorPeer
+local CtorBase = {}
+
+---@return CtorBase
+local function CreateBase() return CtorBase end
+
+local function Constructor()
+    ---@class CtorWidget : CtorBase
+    local widget = CreateBase()
+    _consume(widget.frame)
+--           ^ hover: (local) widget: CtorWidget {\nbaseHelper: number,\nframe: table,\npeer: CtorPeer\n}
+--                  ^ comp: baseHelper, frame, peer
+    ---@private
+    widget.baseHelper = 1
+    _consume(widget.baseHelper)
+    _consume(widget.peer.hidden)
+--                       ^ diag: access-private
+    return widget
+end
+
+---@type CtorWidget
+local cw = Constructor()
+_consume(cw.frame)
+--          ^ diag: access-protected
+--       ^ hover: (local) cw: CtorWidget {\npeer: CtorPeer\n}
+--          ^ comp: peer
+_consume(cw.baseHelper)
+--          ^ diag: access-private
+
+---@class CtorStranger
+---@field private strangerSecret number
+---@type CtorStranger
+local stranger = {}
+
+---@class CtorHolder
+local holder = {}
+holder = stranger
+_consume(holder.strangerSecret)
+--              ^ diag: access-private
+
+---@class CtorGlobalClass
+---@field private globalSecret number
+CtorGlobalAlias = {}
+-- ^ diag: create-global
+_consume(CtorGlobalAlias.globalSecret)

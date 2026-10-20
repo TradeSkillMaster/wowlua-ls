@@ -488,7 +488,7 @@ impl<'a> Analysis<'a> {
                                 if expression.is_none_or(|e|
                                     Self::extract_inline_type(e.syntax()).is_none())
                                 {
-                                    self.ir.class_def_symbols.insert(symbol_idx);
+                                    self.ir.class_def_symbols.insert(symbol_idx, class_table_idx);
                                 }
                             }
                         }
@@ -2663,7 +2663,7 @@ impl<'a> Analysis<'a> {
                         || expression.is_some_and(|e|
                             Self::extract_inline_type(e.syntax()).is_some());
                     if !has_type_ann {
-                        self.ir.class_def_symbols.insert(symbol_idx);
+                        self.ir.class_def_symbols.insert(symbol_idx, class_table_idx);
                     }
             }
 
