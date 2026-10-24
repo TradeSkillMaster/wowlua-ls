@@ -1052,7 +1052,8 @@ impl<'a> BuildOnStubsContext<'a> {
 
     fn resolve_inheritance(&mut self, ws_classes: &[ClassDecl]) {
         super::shared::resolve_inheritance(
-            ws_classes, &self.classes, &self.aliases, &mut self.tables, &mut self.exprs,
+            ws_classes, &self.classes, &self.aliases, &self.parameterized_aliases,
+            &mut self.tables, &mut self.exprs,
         );
     }
 

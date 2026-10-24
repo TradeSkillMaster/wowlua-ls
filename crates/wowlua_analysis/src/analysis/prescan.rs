@@ -1673,8 +1673,9 @@ impl<'a> Analysis<'a> {
             }
         }
         // Container fields whose element/value type is a function-typed alias
-        // (e.g. `@field cbs F[]` or `@field m table<string, F>`): the field's
-        // annotation is a Table whose `value_type` stayed `Function(None)`.
+        // (e.g. `@field cbs F[]`, `@field m table<string, F>`, or nested as in
+        // `@field m table<string, F[]>`): the innermost container's `value_type`
+        // stayed `Function(None)`.
         // The inline calls in resolve_annotation_type_mut_gen (Array/Map paths)
         // handle direct single-hop aliases eagerly; this fixup catches what they
         // miss — primarily @field annotations, which go through the non-gen
@@ -1685,19 +1686,25 @@ impl<'a> Analysis<'a> {
         let mut containers_to_materialize: Vec<(TableIndex, AnnotationType)> = Vec::new();
         for table in self.ir.tables.iter() {
             for fi in table.fields.values() {
-                if let Some(ValueType::Table(Some(arr_idx))) = &fi.annotation
-                    && !arr_idx.is_external()
-                    && matches!(self.ir.tables[arr_idx.val()].value_type, Some(ValueType::Function(None)))
-                    && let Some(raw) = &fi.annotation_type_raw
-                {
+                let (Some(ValueType::Table(Some(top))), Some(top_raw)) = (&fi.annotation, &fi.annotation_type_raw)
+                else { continue };
+                // Step through the nested containers and the annotation's
+                // element/value positions together.
+                let (mut idx, mut raw) = (*top, top_raw);
+                while !idx.is_external() {
                     let inner = match raw {
-                        AnnotationType::Array(inner) => Some(inner.as_ref().clone()),
+                        AnnotationType::Array(inner) => inner.as_ref(),
                         AnnotationType::Parameterized(base, args)
-                            if base == "table" && args.len() == 2 => Some(args[1].clone()),
-                        _ => None,
+                            if base == "table" && args.len() == 2 => &args[1],
+                        _ => break,
                     };
-                    if let Some(inner) = inner {
-                        containers_to_materialize.push((*arr_idx, inner));
+                    match &self.ir.tables[idx.val()].value_type {
+                        Some(ValueType::Function(None)) => {
+                            containers_to_materialize.push((idx, inner.clone()));
+                            break;
+                        }
+                        Some(ValueType::Table(Some(child))) => (idx, raw) = (*child, inner),
+                        _ => break,
                     }
                 }
             }
@@ -1933,13 +1940,13 @@ impl<'a> Analysis<'a> {
         // Nothing to inject per-file.
     }
 
-    fn resolve_table_parent_types(&self, parent_name: &str) -> Option<(ValueType, ValueType)> {
+    fn resolve_table_parent_types(&mut self, parent_name: &str) -> Option<(ValueType, ValueType)> {
         if !parent_name.contains('<') { return None; }
         let at = crate::annotations::parse_type(parent_name);
         if let AnnotationType::Parameterized(base, args) = &at
             && base == "table" && args.len() == 2 {
-                let key_vt = self.resolve_annotation_type(&args[0])?;
-                let value_vt = self.resolve_annotation_type(&args[1])?;
+                let key_vt = self.resolve_annotation_type_mut(&args[0])?;
+                let value_vt = self.resolve_annotation_type_mut(&args[1])?;
                 return Some((key_vt, value_vt));
             }
         None
@@ -1982,8 +1989,8 @@ impl<'a> Analysis<'a> {
                 return self.resolve_annotation_type_mut(&substituted);
             }
             if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
-                let key_vt = self.resolve_annotation_type(&args[0]);
-                let value_vt = self.resolve_annotation_type(&args[1]);
+                let key_vt = self.resolve_annotation_type_mut(&args[0]);
+                let value_vt = self.resolve_annotation_type_mut(&args[1]);
                 let base_vt = crate::annotations::resolve_annotation_type(&AnnotationType::Simple(base.clone()), &[], &self.ir.classes, &self.ir.aliases);
                 if let Some(vt) = value_vt {
                     // Create a new TableInfo with the key and value types

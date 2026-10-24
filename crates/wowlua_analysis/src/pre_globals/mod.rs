@@ -2725,7 +2725,8 @@ impl BuildContext {
 
     fn resolve_inheritance(&mut self, external_classes: &[ClassDecl]) {
         shared::resolve_inheritance(
-            external_classes, &self.classes, &self.aliases, &mut self.tables, &mut self.exprs,
+            external_classes, &self.classes, &self.aliases, &self.parameterized_aliases,
+            &mut self.tables, &mut self.exprs,
         );
     }
 

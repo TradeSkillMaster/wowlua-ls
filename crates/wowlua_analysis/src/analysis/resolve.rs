@@ -1934,13 +1934,10 @@ impl<'a> Analysis<'a> {
     ///
     /// This mirrors the container materialization in `prescan::resolve_annotation_type_mut`
     /// (down to returning a bare `Table(None)` when the element/value type fails to
-    /// resolve, rather than a half-populated table), but differs deliberately in two
-    /// ways that a shared prescan helper can't provide here:
-    /// - leaf class/alias names resolve **external-first-then-local** (event payloads
-    ///   usually reference cross-file/stub classes; prescan is local-only), and
-    /// - it recurses through the key/value/element positions (and unions/intersections)
-    ///   with the same ext-first leaf order, so a nested container or cross-file value
-    ///   type survives instead of decaying via the immutable local-only leaf resolver.
+    /// resolve, rather than a half-populated table), but differs deliberately in one
+    /// way that a shared prescan helper can't provide here: leaf class/alias names
+    /// resolve **external-first-then-local** at every nesting level (event payloads
+    /// usually reference cross-file/stub classes; prescan resolves local-first).
     ///
     /// Keep the two in sync when changing container materialization.
     fn resolve_event_annotation_mut(&mut self, at: &crate::annotations::AnnotationType) -> Option<ValueType> {

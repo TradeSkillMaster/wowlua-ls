@@ -3701,12 +3701,15 @@ fn crossfile_global_class() {
 
 #[test]
 fn crossfile_table_kv() {
-    // Cross-file @field table<K,V> bracket access and method calls
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/crossfile/table_kv_user.lua",
-        with_stubs: false,
-        scan_dir: Some("tests/crossfile"),
-    });
+    // Cross-file @field table<K,V> and `table<K,V>` class parents: bracket access
+    // and method calls, on both the cold `build` and `build_on_stubs`
+    for with_stubs in [false, true] {
+        run_annotation_tests(&TestConfig {
+            lua_file: "tests/crossfile/table_kv_user.lua",
+            with_stubs,
+            scan_dir: Some("tests/crossfile"),
+        });
+    }
 }
 
 #[test]

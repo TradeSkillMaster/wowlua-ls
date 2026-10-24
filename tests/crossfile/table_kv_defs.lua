@@ -11,3 +11,9 @@ end
 ---@class XWidgetPool
 ---@field index number
 ---@field pool table<number, XWidget>
+
+---@alias XIdList<T> T[]
+
+---@class XNestedMap : table<string, integer[]>
+
+---@class XAliasedMap : table<string, XIdList<integer>>

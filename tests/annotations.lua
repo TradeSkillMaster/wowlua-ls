@@ -1713,3 +1713,33 @@ local ctorNext = CtorMethods:Next()
 --    ^ hover: (local) ctorNext: number
 local ctorLabel = CtorMethods:Label()
 --    ^ hover: (local) ctorLabel: string
+
+-- ── A `table<K, V>` field or class parent keeps a structured value type ───
+---@alias NestedMapHandler fun(x: number): string
+---@class NestedMapFields
+---@field byId table<integer, integer[]>
+---@field byName table<string, table<string, number>>
+---@field handlers table<string, NestedMapHandler[]>
+---@field checks table<string, (fun(y: string): boolean)[]>
+---@type NestedMapFields
+local nestedMapFields = {}
+local nestedById = nestedMapFields.byId
+--    ^ hover: (local) nestedById: table<number, number[]>
+local nestedIdList = nestedMapFields.byId[1]
+--    ^ hover: (local) nestedIdList: number[]
+local nestedId = nestedMapFields.byId[1][1]
+--    ^ hover: (local) nestedId: number
+local nestedByName = nestedMapFields.byName
+--    ^ hover: (local) nestedByName: table<string, table<string, number>>
+local nestedHandled = nestedMapFields.handlers["a"][1](1)
+--    ^ hover: (local) nestedHandled: string
+local nestedChecked = nestedMapFields.checks["a"][1]("s")
+--    ^ hover: (local) nestedChecked: boolean
+
+---@class NestedMapParent : table<string, integer[]>
+---@type NestedMapParent
+local nestedMapParent = {}
+local nestedParentList = nestedMapParent["a"]
+--    ^ hover: (local) nestedParentList: number[]
+local nestedParentId = nestedMapParent["a"][1]
+--    ^ hover: (local) nestedParentId: number

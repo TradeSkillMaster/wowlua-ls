@@ -593,8 +593,9 @@ fn class_ancestors(
 /// `@built-name` overrides). Operates directly on the IR arenas so both build
 /// paths share one implementation.
 ///
-/// `classes`/`aliases` are read-only registries; `tables`/`exprs` are the arenas
-/// it mutates. `class_decls` is the workspace/stub class declaration list.
+/// `classes`/`aliases`/`param_aliases` are read-only registries; `tables`/`exprs`
+/// are the arenas it mutates. `class_decls` is the workspace/stub class
+/// declaration list.
 ///
 /// Parameterized parents (`Child<T> : Parent<T>`, including renamed/reordered
 /// args like `FramePool<T,Tp> : ObjectPool<T & Tp>`) are linked via
@@ -607,6 +608,7 @@ pub fn resolve_inheritance(
     class_decls: &[ClassDecl],
     classes: &HashMap<String, TableIndex>,
     aliases: &HashMap<String, ValueType>,
+    param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     tables: &mut LayeredVec<TableInfo>,
     exprs: &mut LayeredVec<Expr>,
 ) {
@@ -620,8 +622,10 @@ pub fn resolve_inheritance(
             let at = crate::annotations::parse_type(parent_name);
             if let AnnotationType::Parameterized(base, args) = &at
                 && base == "table" && args.len() == 2
-                && let Some(key_vt) = crate::annotations::resolve_annotation_type(&args[0], &[], classes, aliases)
-                && let Some(value_vt) = crate::annotations::resolve_annotation_type(&args[1], &[], classes, aliases) {
+                && let Some(key_vt) = PreResolvedGlobals::resolve_annotation_gen(
+                    &args[0], classes, aliases, param_aliases, &[], tables, exprs)
+                && let Some(value_vt) = PreResolvedGlobals::resolve_annotation_gen(
+                    &args[1], classes, aliases, param_aliases, &[], tables, exprs) {
                     tables[child_local].key_type = Some(key_vt);
                     tables[child_local].value_type = Some(value_vt);
                 }

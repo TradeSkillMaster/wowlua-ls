@@ -28,3 +28,16 @@ local function releaseAll(p)
         --                ^ hover: (field) visible: boolean  def: external
     end
 end
+
+-- Bracket access on a cross-file `table<K,V>` class parent with a structured value type
+---@type XNestedMap
+local nestedMap = {}
+local nestedList = nestedMap["a"]
+--    ^ hover: (local) nestedList: number[]
+local nestedId = nestedMap["a"][1]
+--    ^ hover: (local) nestedId: number
+
+---@type XAliasedMap
+local aliasedMap = {}
+local aliasedList = aliasedMap["a"]
+--    ^ hover: (local) aliasedList: number[]
