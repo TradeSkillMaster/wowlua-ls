@@ -13,7 +13,7 @@ use super::{
     populate_table_fields, merge_table_fields, merge_ctor_fields, CtorFieldsCtx,
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance,
-    call_field_writes, call_field_method_table, keep_call_field_methods,
+    call_field_writes, call_field_method_table, keep_call_field_methods, settle_instance_tables, shadows_instance_member, lookup_field_with_parents,
     ctor_function_fields, method_replaces_placeholder, merge_walked_fields,
 };
 
@@ -1241,6 +1241,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
+                // Not onto a member the instance's classes type.
+                if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
                 let ctor_entry = (table_idx, field_name.clone());
                 let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
@@ -1371,6 +1373,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
+                // Not onto a member the instance's classes type.
+                if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
                 let ctor_entry = (table_idx, field_name.clone());
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
@@ -1415,7 +1419,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     let mut resolved = None;
                     for (i, name) in ref_chain[1..].iter().enumerate() {
                         let src_local = current.ext_offset();
-                        if let Some(fi) = self.tables[src_local].fields.get(name) {
+                        if let Some(fi) = lookup_field_with_parents(&self.tables, src_local, name) {
                             if i == ref_chain.len() - 2 {
                                 if let Some(ref ann) = fi.annotation {
                                     resolved = Some(ann.clone());
@@ -1469,6 +1473,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
+                // Not onto a member the instance's classes type.
+                if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
                 // Even when skipping, record the source location for go-to-definition.
@@ -1858,11 +1864,13 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(ws_globals, ws_classes, &mut class_field_paths);
         ctx.resolve_inheritance(ws_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, ws_globals);
+        ctx.settle_instance_tables();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals, &class_field_paths);
         // Every callee is registered by now (workspace functions land in
         // `build_global_entries`).
         ctx.resolve_nested_ctor_calls();
+        ctx.settle_instance_tables();
         // Take the stub-override list out before `finish` consumes the context; its
         // alternate go-to-definition sites are recorded onto `pg` below.
         let method_stub_overrides = std::mem::take(&mut ctx.method_stub_overrides);
@@ -1991,6 +1999,17 @@ impl BuildOnStubsContext<'_> {
             let Some(vt) = self.call_type(&call.callee, &call.arg_refs) else { continue };
             call.resolve_to(vt, &mut self.tables, &mut self.exprs);
         }
+    }
+
+    /// See [`settle_instance_tables`]; the stub tables were settled when the stub
+    /// database was built.
+    fn settle_instance_tables(&mut self) {
+        let first = self.stubs_base.tables.len();
+        settle_instance_tables(&mut self.tables, &self.exprs, &self.declared_class_fields, &mut self.field_locations, first);
+    }
+
+    fn shadows_instance_member(&self, table_idx: TableIndex, field: &str) -> bool {
+        shadows_instance_member(&self.tables, &self.declared_class_fields, table_idx, field)
     }
 
     /// Log the call-valued entries of a constructor the scan carried as a

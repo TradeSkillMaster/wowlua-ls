@@ -2463,6 +2463,51 @@ fn class_deep_field_replaced_entry_gotodef() {
     assert!(loc.path.ends_with("integration_a_module.lua"), "wrong file: {:?}", loc.path);
 }
 
+// Writes through a field typed as a class (`---@type Foo` on `ns.state`, or on a
+// local `@class`'s field) don't retype the members `Foo` declares, in the
+// defining file and others, on both the cold and the stub-based workspace build:
+// a member `Foo` declares as a class keeps what is written through it, and a
+// reference to a member (`ns.stepsAlias = ns.state.steps`) takes its declared type.
+#[test]
+fn typed_field_instance_crossfile() {
+    for with_stubs in [false, true] {
+        for lua_file in ["defs.lua", "user.lua"] {
+            run_annotation_tests(&TestConfig {
+                lua_file: &format!("tests/typed-field-instance-crossfile/{lua_file}"),
+                with_stubs,
+                scan_dir: Some("tests/typed-field-instance-crossfile"),
+            });
+        }
+    }
+}
+
+// Go-to-definition on such a member reaches the class's `@field`, not a write,
+// including a member that holds what was written through it (`inner`); a member
+// only written (`inner.extra`) reaches its write.
+#[test]
+fn typed_field_instance_gotodef() {
+    let dir = "tests/typed-field-instance-crossfile";
+    let user_text = std::fs::read_to_string(format!("{dir}/user.lua")).unwrap();
+    let defs_text = std::fs::read_to_string(format!("{dir}/defs.lua")).unwrap();
+    let pre_globals = crossfile_pre_globals_with_stubs(dir);
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    for (read, prefix, site) in [
+        ("ns.state.steps", "ns.state.", "---@field steps"),
+        ("ns.state.inner.extra", "ns.state.", "---@field inner"),
+        ("ns.state.inner.extra", "ns.state.inner.", "ns.state.inner.extra = true"),
+    ] {
+        let offset = (user_text.find(read).unwrap() + prefix.len()) as u32;
+        let Some(DefinitionResult::External(loc)) = result.definition_at(&tree, offset) else {
+            panic!("expected an external definition at `{prefix}` in `{read}`");
+        };
+        assert!(loc.path.ends_with("defs.lua"), "wrong file: {:?}", loc.path);
+        assert!(defs_text[loc.start as usize..].starts_with(site), "wrong site for `{read}`: {:?}", &defs_text[loc.start as usize..]);
+    }
+}
+
 #[test]
 fn crossfile_include() {
     // Test :Include("ClassName") resolves to the class type

@@ -1209,6 +1209,175 @@ fn instance_parents(tables: &LayeredVec<TableInfo>, class_idx: TableIndex) -> Ve
     parents
 }
 
+/// The classes of an instance table of its own (see [`instance_parents`]): its
+/// `parent_classes`, led by the class whose name it carries. `None` for any
+/// other table.
+fn instance_classes(tables: &LayeredVec<TableInfo>, table_idx: TableIndex) -> Option<&[TableIndex]> {
+    let t = &tables[table_idx.ext_offset()];
+    let &class = t.parent_classes.first()?;
+    (t.class_name.is_some() && tables[class.ext_offset()].class_name == t.class_name).then_some(&t.parent_classes[..])
+}
+
+/// The declaration of `field` on the first of `classes` that has it, when it types
+/// the field: a concrete annotation, or an `@field` (a bare `table` too). Unlike
+/// the field-write passes' guard for a table's own field, a field stored with no
+/// annotation doesn't count: a class's untyped field (`self.x = param`) shouldn't
+/// win over what one instance is written.
+fn class_member_decl<'t>(
+    tables: &'t LayeredVec<TableInfo>,
+    declared_class_fields: &HashMap<String, HashSet<String>>,
+    classes: &[TableIndex],
+    field: &str,
+) -> Option<&'t FieldInfo> {
+    let (class, fi) = classes.iter().find_map(|&class| {
+        let class = &tables[class.ext_offset()];
+        Some((class, class.fields.get(field)?))
+    })?;
+    let declared = class.class_name.as_ref()
+        .and_then(|name| declared_class_fields.get(name))
+        .is_some_and(|declared| declared.contains(field));
+    (declared || !matches!(fi.annotation, None | Some(ValueType::Any) | Some(ValueType::Table(None)))).then_some(fi)
+}
+
+/// Whether writing `field` onto `table_idx`, an instance table of its own that
+/// doesn't hold the member, would shadow what one of its classes types it as (see
+/// [`settle_instance_tables`]). The passes after inheritance is linked skip such a
+/// write, so a reference to the member (`ns.alias = ns.foo.items`) they resolve
+/// sees the declaration.
+fn shadows_instance_member(
+    tables: &LayeredVec<TableInfo>,
+    declared_class_fields: &HashMap<String, HashSet<String>>,
+    table_idx: TableIndex,
+    field: &str,
+) -> bool {
+    !tables[table_idx.ext_offset()].fields.contains_key(field)
+        && instance_classes(tables, table_idx)
+            .is_some_and(|classes| class_member_decl(tables, declared_class_fields, classes, field).is_some())
+}
+
+/// How many fields hold each anonymous table from `first` on, as their value or
+/// annotation (with or without `nil`).
+fn table_holders(tables: &LayeredVec<TableInfo>, exprs: &LayeredVec<Expr>, first: usize) -> HashMap<TableIndex, usize> {
+    let held = |vt: &ValueType| match vt.strip_nil() {
+        ValueType::Table(Some(t)) if t.ext_offset() >= first && tables[t.ext_offset()].class_name.is_none() => Some(t),
+        _ => None,
+    };
+    let mut holders: HashMap<TableIndex, usize> = HashMap::default();
+    for t in tables.iter() {
+        for fi in t.fields.values() {
+            let value = match fi.expr.is_external().then(|| &exprs[fi.expr.ext_offset()]) {
+                Some(Expr::Literal(vt)) => held(vt),
+                _ => None,
+            };
+            let annotation = fi.annotation.as_ref().and_then(held).filter(|&t| Some(t) != value);
+            for t in value.into_iter().chain(annotation) {
+                *holders.entry(t).or_default() += 1;
+            }
+        }
+    }
+    holders
+}
+
+/// Settle the instance tables of their own (see [`instance_parents`]), once
+/// inheritance is linked and again at the end of the build. One made before
+/// linking holds only the ancestors its classes had then; it takes the rest,
+/// which the per-file lookups (a flat walk of `parent_classes`) need to find an
+/// inherited member. And a member one of its classes types (see
+/// [`class_member_decl`]) has the declaration's type, not the write's:
+/// `---@type Foo` on `ns.foo` makes `Foo` the authority, so a write through the
+/// field (`ns.foo.items = {}`, or one in a function body that only registers the
+/// field exists) mustn't shadow `Foo`'s `items` with its coarser type. Such a
+/// member is dropped, unless `Foo` declares it as a class and it holds a table the
+/// walk or a table constructor made for it, which no other field holds: that table
+/// becomes an instance of the class, settled in turn, so what was written through
+/// it stays beside the class's members (`ns.foo.inner.extra = true`). The member's
+/// annotation is left alone, but for keeping a `nil` the declaration allows:
+/// pointing it at the instance would make the member required of `ns.foo`'s
+/// constructor (`missing-fields`). Methods defined on an instance stay.
+/// Go-to-definition on a member a class types reaches the declaration. Tables
+/// before `first` are left alone.
+fn settle_instance_tables(
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &LayeredVec<Expr>,
+    declared_class_fields: &HashMap<String, HashSet<String>>,
+    field_locations: &mut SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
+    first: usize,
+) {
+    let mut queue: Vec<TableIndex> = (first..tables.len())
+        .map(|local| TableIndex(EXT_BASE + local))
+        .filter(|&idx| instance_classes(tables, idx).is_some())
+        .collect();
+    // How many fields hold each table, counted when a member's table is first
+    // up for conversion.
+    let mut holders: Option<HashMap<TableIndex, usize>> = None;
+    let mut next = 0;
+    while let Some(&idx) = queue.get(next) {
+        next += 1;
+        let local = idx.ext_offset();
+        let t = &tables[local];
+        let mut parents = t.parent_classes.clone();
+        for &class in &t.parent_classes {
+            for &ancestor in &tables[class.ext_offset()].parent_classes {
+                if !parents.contains(&ancestor) {
+                    parents.push(ancestor);
+                }
+            }
+        }
+        // Each member a class types loses its write's location, and is dropped or
+        // keeps its table as an instance of the class.
+        let mut typed: Vec<String> = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
+        let mut instances: Vec<(String, TableIndex, TableIndex, bool)> = Vec::new();
+        for (name, fi) in &t.fields {
+            let value = fi.expr.is_external().then(|| &exprs[fi.expr.ext_offset()]);
+            if matches!(value, Some(Expr::FunctionDef(_))) { continue; }
+            let Some(decl) = class_member_decl(tables, declared_class_fields, &parents, name) else { continue };
+            let class = match decl.annotation.as_ref().map(ValueType::strip_nil) {
+                Some(ValueType::Table(Some(class))) if tables[class.ext_offset()].class_name.is_some() => Some(class),
+                _ => None,
+            };
+            let own = match value {
+                Some(Expr::Literal(ValueType::Table(Some(own)))) if own.ext_offset() >= first => Some(*own),
+                _ => None,
+            };
+            typed.push(name.clone());
+            match (class, own) {
+                // Settled already (the end of the build sees what linking did).
+                (Some(class), Some(own)) if instance_classes(tables, own).is_some_and(|c| c[0] == class) => {}
+                (Some(class), Some(own)) if tables[own.ext_offset()].class_name.is_none()
+                    && holders.get_or_insert_with(|| table_holders(tables, exprs, first)).get(&own) == Some(&1) =>
+                {
+                    let nilable = decl.annotation.as_ref().is_some_and(ValueType::contains_nil);
+                    instances.push((name.clone(), own, class, nilable));
+                }
+                _ => dropped.push(name.clone()),
+            }
+        }
+        if parents.len() > t.parent_classes.len() {
+            tables[local].parent_classes = parents;
+        }
+        for name in &dropped {
+            tables[local].fields.remove(name);
+        }
+        for name in &typed {
+            if field_locations.get(&idx).is_some_and(|locs| locs.contains_key(name)) {
+                field_locations.entry_or_default(idx).remove(name);
+            }
+        }
+        for (name, own, class, nilable) in instances {
+            let class_name = tables[class.ext_offset()].class_name.clone();
+            let parents = instance_parents(tables, class);
+            let t = &mut tables[own.ext_offset()];
+            t.class_name = class_name;
+            t.parent_classes = parents;
+            if nilable && let Some(fi) = tables[local].fields.get_mut(&name) {
+                fi.annotation = Some(ValueType::make_union(vec![ValueType::Table(Some(own)), ValueType::Nil]));
+            }
+            queue.push(own);
+        }
+    }
+}
+
 /// How deep paths rooted at a `@class` table walk into the class's fields,
 /// gathered once per build.
 ///
@@ -2189,6 +2358,14 @@ impl BuildContext {
         }
     }
 
+    fn settle_instance_tables(&mut self) {
+        settle_instance_tables(&mut self.tables, &self.exprs, &self.declared_class_fields, &mut self.field_locations, 0);
+    }
+
+    fn shadows_instance_member(&self, table_idx: TableIndex, field: &str) -> bool {
+        shadows_instance_member(&self.tables, &self.declared_class_fields, table_idx, field)
+    }
+
     fn register_classes_and_aliases(&mut self, external_classes: &[ClassDecl], external_aliases: &[AliasDecl]) {
         shared::register_classes_and_aliases(
             external_classes, external_aliases,
@@ -3005,6 +3182,8 @@ impl BuildContext {
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
+                // Not onto a member the instance's classes type.
+                if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
                 let ctor_entry = (table_idx, field_name.clone());
                 let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
@@ -3103,6 +3282,8 @@ impl BuildContext {
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
+                // Not onto a member the instance's classes type.
+                if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
                 let ctor_entry = (table_idx, field_name.clone());
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -3117,7 +3298,7 @@ impl BuildContext {
                     let mut resolved = None;
                     for (i, name) in ref_chain[1..].iter().enumerate() {
                         let src_local = current.ext_offset();
-                        if let Some(fi) = self.tables[src_local].fields.get(name) {
+                        if let Some(fi) = lookup_field_with_parents(&self.tables, src_local, name) {
                             if i == ref_chain.len() - 2 {
                                 // Last field — grab its type
                                 if let Some(ref ann) = fi.annotation {
@@ -3174,6 +3355,8 @@ impl BuildContext {
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
+                // Not onto a member the instance's classes type.
+                if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 if self.tables[local_idx].fields.get(field_name)
@@ -3760,12 +3943,14 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(globals, external_classes, &mut class_field_paths);
         ctx.resolve_inheritance(external_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, globals);
+        ctx.settle_instance_tables();
         ctx.propagate_override_overloads();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(globals, &class_field_paths);
         // Every callee is registered by now (global functions land in
         // `build_global_entries`).
         ctx.resolve_nested_ctor_calls();
+        ctx.settle_instance_tables();
         let mut pg = ctx.finish();
         pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
         pg.returns_enum_paths = returns_enum_paths;
