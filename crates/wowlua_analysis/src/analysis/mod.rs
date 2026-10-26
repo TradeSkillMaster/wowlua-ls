@@ -631,8 +631,9 @@ pub struct Ir {
     /// `PreResolvedGlobals`); they are kept here keyed by alias name for
     /// string-argument completion. Layered over `ext.alias_string_literals`.
     pub alias_string_literals: layered_map::LayeredMap<Vec<String>>,
-    /// Raw annotation types for local aliases that resolve to Function(None).
-    /// Used by materialize_fun_annotations() to recover function signatures from alias fields.
+    /// The raw `fun(...)` of each function alias this file declares, for the
+    /// consumers that read a signature from an annotation (`extract_fun_sig`);
+    /// `ext.alias_fun_types` holds the workspace's and stubs'.
     pub alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
     /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
     pub parameterized_aliases: HashMap<String, (Vec<String>, crate::annotations::AnnotationType)>,
@@ -1116,6 +1117,15 @@ impl Ir {
         self.functions.iter().enumerate().map(|(i, f)| (FunctionIndex::from(i), f))
     }
 
+    /// The function this file defines whose definition starts at `start` — not
+    /// one an annotation's `fun(...)` made (`DefNode::DUMMY`), which starts at 0
+    /// like a definition at the top of the file.
+    pub fn function_defined_at(&self, start: u32) -> Option<FunctionIndex> {
+        self.local_functions()
+            .find(|(_, f)| f.def_node.start == start && f.def_node != DefNode::DUMMY)
+            .map(|(idx, _)| idx)
+    }
+
     /// Iterate the per-file table arena, pairing each table with its local `TableIndex`.
     #[inline]
     pub fn local_tables(&self) -> impl Iterator<Item = (TableIndex, &TableInfo)> {
@@ -1292,36 +1302,46 @@ impl Ir {
     /// param-return type) still contains an unresolved generic type variable.
     pub fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool {
         let mut visited: HashSet<TableIndex> = HashSet::default();
-        self.type_contains_type_variable_deep_inner(vt, &mut visited)
+        self.type_contains_type_variable_deep_inner(vt, &mut visited, &[])
     }
 
-    fn type_contains_type_variable_deep_inner(&self, vt: &ValueType, visited: &mut HashSet<TableIndex>) -> bool {
+    /// `bound`: the type params of the classes on the way to `vt`. A class's own
+    /// type params in its members are bound by the type args a reference to it
+    /// carries, not free generics.
+    fn type_contains_type_variable_deep_inner(&self, vt: &ValueType, visited: &mut HashSet<TableIndex>, bound: &[String]) -> bool {
         match vt {
-            ValueType::TypeVariable(_) => true,
-            ValueType::Union(types) | ValueType::Intersection(types) => types.iter().any(|t| self.type_contains_type_variable_deep_inner(t, visited)),
+            ValueType::TypeVariable(name) => !bound.contains(name),
+            ValueType::Union(types) | ValueType::Intersection(types) => types.iter().any(|t| self.type_contains_type_variable_deep_inner(t, visited, bound)),
             ValueType::Table(Some(idx)) => {
                 if !visited.insert(*idx) { return false; }
                 let t = self.table(*idx);
-                if let Some(v) = &t.value_type && self.type_contains_type_variable_deep_inner(v, visited) { return true; }
-                if let Some(k) = &t.key_type && self.type_contains_type_variable_deep_inner(k, visited) { return true; }
-                t.fields.values().any(|fi| fi.annotation.as_ref().is_some_and(|a| self.type_contains_type_variable_deep_inner(a, visited)))
+                let with_own: Vec<String>;
+                let bound = if t.class_type_params.is_empty() {
+                    bound
+                } else {
+                    with_own = bound.iter().chain(&t.class_type_params).cloned().collect();
+                    &with_own
+                };
+                if let Some(v) = &t.value_type && self.type_contains_type_variable_deep_inner(v, visited, bound) { return true; }
+                if let Some(k) = &t.key_type && self.type_contains_type_variable_deep_inner(k, visited, bound) { return true; }
+                t.fields.values().any(|fi| fi.annotation.as_ref().is_some_and(|a| self.type_contains_type_variable_deep_inner(a, visited, bound)))
             }
             ValueType::Function(Some(idx)) => {
                 let idx = *idx;
                 (0..self.func(idx).args.len()).any(|i| {
                     self.param_decl_type(self.func(idx), i)
-                        .is_some_and(|t| self.type_contains_type_variable_deep_inner(t, visited))
+                        .is_some_and(|t| self.type_contains_type_variable_deep_inner(t, visited, bound))
                 })
                 || (0..self.func(idx).return_annotations.len()).any(|i| {
                     let ret = &self.func(idx).return_annotations[i];
-                    self.type_contains_type_variable_deep_inner(ret, visited)
+                    self.type_contains_type_variable_deep_inner(ret, visited, bound)
                 })
             }
             ValueType::FunctionSig(shape) => {
-                shape.params.iter().any(|p| self.type_contains_type_variable_deep_inner(&p.ty, visited))
-                || shape.returns.iter().any(|r| self.type_contains_type_variable_deep_inner(r, visited))
+                shape.params.iter().any(|p| self.type_contains_type_variable_deep_inner(&p.ty, visited, bound))
+                || shape.returns.iter().any(|r| self.type_contains_type_variable_deep_inner(r, visited, bound))
             }
-            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => self.type_contains_type_variable_deep_inner(inner, visited),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => self.type_contains_type_variable_deep_inner(inner, visited, bound),
             _ => false,
         }
     }
@@ -3714,6 +3734,13 @@ pub struct Analysis<'a> {
     /// `claim_event_handler_method` idempotency check doesn't mistake a re-resolved
     /// payload for a conflicting one (and avoids per-iteration arena bloat).
     pub event_payload_type_cache: HashMap<(String, String), Vec<ValueType>>,
+    /// While resolving an annotation declared in another file (an event payload's
+    /// types), its names resolve against the workspace and stubs before this
+    /// file's own classes and aliases.
+    pub annotation_names_ext_first: bool,
+    /// The parameterized aliases and map classes being instantiated, so a
+    /// recursive one terminates.
+    pub instantiations: crate::annotations::Instantiations,
 }
 
 /// Per-file analysis configuration bundling project-level settings.
@@ -3947,7 +3974,12 @@ impl<'a> Analysis<'a> {
             event_handler_method_conflicts: HashSet::default(),
             event_handler_typed_params: HashMap::default(),
             event_payload_type_cache: HashMap::default(),
+            annotation_names_ext_first: false,
+            instantiations: Default::default(),
         };
+        // The file's root scope is scope 0. Create it before prescan, which
+        // materializes annotation `fun(...)` types into functions with scopes.
+        analysis.ir.insert_scope(None);
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();
@@ -3955,7 +3987,6 @@ impl<'a> Analysis<'a> {
         analysis.share_duplicate_class_fields();
         analysis.ir.index_function_body_scopes();
         analysis.mark_external_mixins_open();
-        analysis.materialize_fun_annotations();
         analysis.inject_preresolved();
         analysis
     }

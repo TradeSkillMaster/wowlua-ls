@@ -170,6 +170,7 @@ cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs
 ### Type-system & annotation features
 These annotation-syntax and `ValueType` features are conventions — load-bearing typing rules — but their mechanism detail lives in [ARCHITECTURE.md — Annotation & type-system feature reference](.claude/ARCHITECTURE.md#annotation--type-system-feature-reference) to keep this file's always-loaded footprint small. One-line index (each links to the full note):
 
+- One annotation resolver per IR — `Analysis::resolve_annotation_type_mut_gen` (per file) and `PreResolvedGlobals::resolve_annotation_gen` (workspace/stub builds) type every annotation position, `@alias` bodies included; route a position that resolves differently through them, never a position-specific resolver or fixup. [→](.claude/ARCHITECTURE.md#annotation-type-resolution-one-resolver-per-ir)
 - `@field name? type` — optional field; `?` stripped from the name, type wrapped in `Union(T, nil)`. [→](.claude/ARCHITECTURE.md#field-name-type-optional-fields)
 - `@alias (opaque) Name type` — nominally distinct alias (`ValueType::OpaqueAlias`); different opaque aliases aren't mutually assignable. [→](.claude/ARCHITECTURE.md#alias-opaque-name-type-nominal-aliases)
 - `@class (partial) Foo` / `(exact)` — parse-only class modifiers (accepted, no diagnostic effect). [→](.claude/ARCHITECTURE.md#class-partial-foo--exact)

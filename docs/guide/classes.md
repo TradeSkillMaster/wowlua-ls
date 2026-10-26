@@ -283,6 +283,18 @@ You can combine this with regular class inheritance:
 
 `TaggedScores` inherits `id` from `Base` and has typed `string` keys / `number` values.
 
+A generic class can take its key and value types as type parameters, with a `table<K, V>` parent or a `---@field [K] V` index field. Each use of the class gives them:
+
+```lua
+---@class Registry<K, V> : table<K, V>
+
+---@type Registry<string, Frame>
+local frames = {}
+local main = frames["Main"]  -- Frame
+```
+
+The same holds in a field, an alias (`---@alias FrameRegistry Registry<string, Frame>`), inside another type (`Registry<string, Frame>[]`), and in a class parent (`---@class Scores : Registry<string, number>`).
+
 ### Deep inheritance
 
 Inheritance chains work to arbitrary depth:

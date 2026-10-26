@@ -132,4 +132,4 @@ local currentNormal = CurrentPreset.normal
 local stale = ns.Rebound.stale
 --    ^ hover: (local) stale: ?
 local clicked = ns.Handlers.OnClick("x")
---    ^ hover: (local) clicked: ?
+--    ^ hover: (local) clicked: boolean?

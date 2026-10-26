@@ -642,17 +642,12 @@ impl AnalysisResult {
                 if n.kind() == SyntaxKind::FunctionDefinition {
                     let r = n.text_range();
                     let fn_start = u32::from(r.start());
-                    // Find the function in ir.functions by def_node.start
-                    for func in self.ir.functions.iter() {
-                        if func.def_node.start == fn_start {
-                            // Find matching param symbol
-                            for &sym_idx in &func.args {
-                                if let SymbolIdentifier::Name(ref sym_name) = self.sym(sym_idx).id
-                                    && sym_name == name {
-                                        return Some((sym_idx, name.to_string(), name_range));
-                                }
-                            }
-                            return None;
+                    let func = self.func(self.ir.function_defined_at(fn_start)?);
+                    // Find matching param symbol
+                    for &sym_idx in &func.args {
+                        if let SymbolIdentifier::Name(ref sym_name) = self.sym(sym_idx).id
+                            && sym_name == name {
+                                return Some((sym_idx, name.to_string(), name_range));
                         }
                     }
                     return None;

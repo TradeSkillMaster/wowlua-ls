@@ -229,3 +229,19 @@ local s4 = mySelect(4, multiRet())
 local noWarn = mySelect(1, multiRet())
 
 _G.useProjections = { frameReg, argReg, multiReg, tupleReg, BadPosClass, BadRetClass, peek, truncated, tupleOut, usingUnbound, wrapString, wrapped, wrapKeyed, keyed, keyedResult, wrapIdentity, identity, idResult, wrapWithCtx, ctxWrapped, add, mySelect, multiRet, s1, s2, s3, s4, noWarn }
+
+-- ── A projection beside other union members keeps them ───────────────────────
+-- `(true, returns<F>) | (false, string)`: the second slot is F's return or
+-- `string`, in this file as for `pcall` in the stubs.
+---@generic F
+---@param f F
+---@param ... params<F>
+---@return (true, returns<F>) | (false, string)
+---@diagnostic disable-next-line: missing-return
+local function protect(f, ...) end
+
+---@return number
+local function protected() return 1 end
+
+local protectOk, protectVal = protect(protected)
+--               ^ hover: (local) protectVal: number | string

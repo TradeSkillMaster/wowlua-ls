@@ -170,7 +170,7 @@ fn substitute_annotation_type_inner(
 /// or any serialized type changes shape — or when serialized data changes
 /// meaning, like a new flavor bit in the `flavors` masks.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 44;
+pub const BLOB_VERSION: u32 = 45;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -266,8 +266,8 @@ pub struct PreResolvedGlobals {
     /// keyed by alias name. Consumed by string-argument completion.
     #[serde(default)]
     pub alias_string_literals: HashMap<String, Vec<String>>,
-    /// Raw annotation types for external aliases that resolve to Function(None).
-    /// Used by materialize_fun_annotations() to recover function signatures.
+    /// The raw `fun(...)` of each function alias, for the consumers that read a
+    /// signature from an annotation (`extract_fun_sig`).
     pub alias_fun_types: HashMap<String, AnnotationType>,
     /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
     pub parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
@@ -1636,7 +1636,9 @@ pub struct FnBuildCtx<'a> {
     pub classes: &'a HashMap<String, TableIndex>,
     pub aliases: &'a HashMap<String, ValueType>,
     pub parameterized_aliases: &'a HashMap<String, (Vec<String>, AnnotationType)>,
-    pub alias_fun_types: &'a HashMap<String, AnnotationType>,
+    /// The parameterized aliases and map classes being instantiated, so a
+    /// recursive one terminates.
+    pub instantiations: crate::annotations::Instantiations,
 }
 
 /// Annotation-derived metadata describing the function `build_function` should
@@ -2054,7 +2056,7 @@ fn overload_from_duplicate_def(
     params: &[crate::annotations::ParamInfo],
     returns: &[AnnotationType],
     is_colon: bool,
-    resolve: impl Fn(&AnnotationType) -> Option<ValueType>,
+    mut resolve: impl FnMut(&AnnotationType) -> Option<ValueType>,
 ) -> ResolvedOverload {
     let mut ovl_params: Vec<ResolvedOverloadParam> = Vec::new();
     if is_colon {
@@ -2162,6 +2164,9 @@ struct BuildContext {
 
     // Intermediate build state (not in final PreResolvedGlobals)
     non_class_tables: HashMap<String, TableIndex>,
+    /// The `---@type` of each non-class table global that has one (`---@type
+    /// string[]` on `arg = {}`); see `annotated_table_global_type`.
+    table_global_types: HashMap<String, ValueType>,
     table_source_locations: HashMap<String, ExternalLocation>,
     class_globals: HashSet<String>,
     sub_tables: HashMap<(String, String), TableIndex>,
@@ -2232,6 +2237,7 @@ impl BuildContext {
             alias_locations: HashMap::default(),
             field_locations: SharedMap::default(),
             non_class_tables: HashMap::default(),
+            table_global_types: HashMap::default(),
             table_source_locations: HashMap::default(),
             class_globals: HashSet::default(),
             sub_tables: HashMap::default(),
@@ -2262,8 +2268,17 @@ impl BuildContext {
         shared::register_global(&mut self.symbols, &mut self.scope0_symbols, name, resolved_type)
     }
 
-    fn resolve_annotation(&self, at: &AnnotationType) -> Option<ValueType> {
-        PreResolvedGlobals::resolve_annotation(at, &self.classes, &self.aliases, &self.parameterized_aliases)
+    /// A declaration's `---@type`, with a structured type (`table<K,V>`, `T[]`,
+    /// `{field: type}`, `fun(...)`) materialized (mirrors `BuildOnStubsContext`'s).
+    fn resolve_write_annotation(&mut self, at: &AnnotationType) -> Option<ValueType> {
+        PreResolvedGlobals::resolve_annotation_gen(at, &[], &mut self.fn_build_ctx())
+    }
+
+    /// The type of the table global `name` whose own table is `own`
+    /// ([`shared::annotated_table_global_type`]); `None` without a resolved
+    /// `---@type` (mirrors `BuildOnStubsContext`'s).
+    fn annotated_table_global_type(&self, name: &str, own: TableIndex) -> Option<ValueType> {
+        shared::annotated_table_global_type(self.table_global_types.get(name)?, own, &self.tables)
     }
 
     /// Bundle the IR arenas and class/alias registries into a [`FnBuildCtx`] for
@@ -2279,7 +2294,7 @@ impl BuildContext {
             classes: &self.classes,
             aliases: &self.aliases,
             parameterized_aliases: &self.parameterized_aliases,
-            alias_fun_types: &self.alias_fun_types,
+            instantiations: Default::default(),
         }
     }
 
@@ -2380,7 +2395,11 @@ impl BuildContext {
             external_classes, external_aliases,
             &mut shared::ClassAliasRegistry {
                 classes: &mut self.classes,
+                scopes: &mut self.scopes,
+                symbols: &mut self.symbols,
+                functions: &mut self.functions,
                 tables: &mut self.tables,
+                exprs: &mut self.exprs,
                 aliases: &mut self.aliases,
                 alias_string_literals: &mut self.alias_string_literals,
                 alias_fun_types: &mut self.alias_fun_types,
@@ -2422,7 +2441,7 @@ impl BuildContext {
                 classes: &self.classes,
                 aliases: &self.aliases,
                 parameterized_aliases: &self.parameterized_aliases,
-                alias_fun_types: &self.alias_fun_types,
+                instantiations: Default::default(),
             },
             &mut self.declared_class_fields,
             &mut self.field_locations,
@@ -2465,6 +2484,11 @@ impl BuildContext {
                     let table_idx = TableIndex(EXT_BASE + self.tables.len());
                     self.tables.push(TableInfo::default());
                     self.non_class_tables.insert(g.name.clone(), table_idx);
+                    if !g.declares_class && let Some(at) = g.returns.first()
+                        && let Some(vt) = self.resolve_write_annotation(at)
+                    {
+                        self.table_global_types.insert(g.name.clone(), vt);
+                    }
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
                             path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
@@ -2638,7 +2662,7 @@ impl BuildContext {
                     if let Some(existing_func_idx) = existing_func_idx {
                         let ovl = overload_from_duplicate_def(
                             &g.params, &g.returns, *is_colon,
-                            |at| self.resolve_annotation(at),
+                            |at| self.resolve_write_annotation(at),
                         );
                         self.functions[existing_func_idx.ext_offset()].overloads.push(ovl);
                     }
@@ -2808,7 +2832,8 @@ impl BuildContext {
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 // so that globals with better type info can upgrade them.
                 if let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
-                    .filter(|fi| !is_ctor_entry && !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
+                    .filter(|fi| !is_ctor_entry && !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))
+                        && !shared::shape_yields_to_class(fi.annotation.as_ref(), &g.returns, &self.classes, &self.tables)) {
                         // Field already has a typed annotation (from @field), but the
                         // constructor may carry a literal value — copy it so hover can
                         // show enum values like `= 0` or `= "value"`.
@@ -2824,7 +2849,7 @@ impl BuildContext {
                         continue;
                     }
                 let value_type = if !g.returns.is_empty() {
-                    self.resolve_annotation(&g.returns[0])
+                    self.resolve_write_annotation(&g.returns[0])
                 } else {
                     match value_kind {
                         FieldValueKind::String(_) => Some(ValueType::String(None)),
@@ -2911,8 +2936,7 @@ impl BuildContext {
 
     fn resolve_inheritance(&mut self, external_classes: &[ClassDecl]) {
         shared::resolve_inheritance(
-            external_classes, &self.classes, &self.aliases, &self.parameterized_aliases,
-            &mut self.tables, &mut self.exprs,
+            external_classes, &mut self.fn_build_ctx(),
         );
     }
 
@@ -3029,7 +3053,7 @@ impl BuildContext {
                 // Use @type annotation if present (e.g. `---@type Button\nCraftCreateButton = nil`),
                 // otherwise fall back to literal value kind.
                 let resolved_type = if let Some(at) = g.returns.first() {
-                    crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)
+                    self.resolve_write_annotation(at)
                 } else {
                     match vk {
                         FieldValueKind::Number(_) => Some(ValueType::Number),
@@ -3074,8 +3098,13 @@ impl BuildContext {
         // immutably, but register_global() needs &mut self.
         let nct_entries: Vec<(String, TableIndex)> = self.non_class_tables.iter()
             .map(|(name, &idx)| (name.clone(), idx)).collect();
+        let mut annotated_table_syms: Vec<(String, TableIndex, SymbolIndex)> = Vec::new();
         for (name, table_idx) in nct_entries {
-            let sym_idx = self.register_global(&name, Some(ValueType::Table(Some(table_idx))));
+            let annotated = self.annotated_table_global_type(&name, table_idx);
+            let sym_idx = self.register_global(&name, Some(annotated.clone().unwrap_or(ValueType::Table(Some(table_idx)))));
+            if annotated.is_some() {
+                annotated_table_syms.push((name.clone(), table_idx, sym_idx));
+            }
             if let Some(loc) = self.table_source_locations.get(&name) {
                 self.symbol_locations.insert(sym_idx, loc.clone());
             }
@@ -3210,7 +3239,7 @@ impl BuildContext {
                     let call_type = if g.returns.is_empty() {
                         self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name)
                     } else {
-                        self.resolve_annotation(&g.returns[0])
+                        self.resolve_write_annotation(&g.returns[0])
                     };
                     keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -3223,7 +3252,7 @@ impl BuildContext {
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
-                    if let Some(vt) = self.resolve_annotation(&g.returns[0]) {
+                    if let Some(vt) = self.resolve_write_annotation(&g.returns[0]) {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
@@ -3371,7 +3400,7 @@ impl BuildContext {
                 if self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    self.resolve_annotation(&g.returns[0])
+                    self.resolve_write_annotation(&g.returns[0])
                 } else {
                     match value_kind {
                         FieldValueKind::String(_) => Some(ValueType::String(None)),
@@ -3404,6 +3433,16 @@ impl BuildContext {
             }
         }
         class_field_paths.type_opened_ctor_tables(&self.classes, &mut self.tables, &self.exprs);
+
+        // The field passes above may have given a `---@type` table global members
+        // its class lacks; retype it with the final set.
+        for (name, own, sym_idx) in &annotated_table_syms {
+            if let Some(ty) = self.annotated_table_global_type(name, *own)
+                && let Some(ver) = self.symbols[sym_idx.ext_offset()].versions.last_mut()
+            {
+                ver.resolved_type = Some(ty);
+            }
+        }
 
         // Register _G (the global environment table) as a built-in global.
         // Create a real TableInfo so that field access on _G (or locals aliasing _G)
@@ -4558,90 +4597,115 @@ impl PreResolvedGlobals {
         aliases: &HashMap<String, ValueType>,
         param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> Option<ValueType> {
+        Self::resolve_annotation_expanding(at, classes, aliases, param_aliases, &mut Default::default())
+    }
+
+    fn resolve_annotation_expanding(
+        at: &AnnotationType,
+        classes: &HashMap<String, TableIndex>,
+        aliases: &HashMap<String, ValueType>,
+        param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
+        instantiations: &mut crate::annotations::Instantiations,
+    ) -> Option<ValueType> {
         // Handle NonNil by recursing on inner type (so Parameterized etc. get proper handling)
         if let AnnotationType::NonNil(inner) = at {
-            return Self::resolve_annotation(inner, classes, aliases, param_aliases);
+            return Self::resolve_annotation_expanding(inner, classes, aliases, param_aliases, instantiations);
         }
         if let Some(inner) = at.secret_arg() {
-            return Self::resolve_annotation(inner, classes, aliases, param_aliases).map(ValueType::secret_of);
+            return Self::resolve_annotation_expanding(inner, classes, aliases, param_aliases, instantiations)
+                .map(ValueType::secret_of);
         }
         // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
         if let AnnotationType::Parameterized(base, args) = at
             && let Some((type_params, body)) = param_aliases.get(base)
                 && type_params.len() == args.len() {
                     let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
-                    return Self::resolve_annotation(&substituted, classes, aliases, param_aliases);
+                    if !instantiations.enter(base, args) {
+                        return crate::annotations::resolve_annotation_type(&substituted, &[], classes, aliases);
+                    }
+                    let vt = Self::resolve_annotation_expanding(&substituted, classes, aliases, param_aliases, instantiations);
+                    instantiations.exit();
+                    return vt;
                 }
         crate::annotations::resolve_annotation_type(at, &[], classes, aliases)
     }
 
+    /// The type an annotation gives a workspace or stub declaration, wherever it
+    /// is written (`@field`, a `table<K, V>` class parent, `@param`, `@return`,
+    /// `@type`, an `@alias` body, …): creates the `TableInfo`/`Function` entries the
+    /// structure needs (`T[]`, `table<K, V>`, `{a: T}`, `fun(...)`) at any depth. A
+    /// name resolves to its class or to the alias's registered type, which is its
+    /// body resolved here (`register_classes_and_aliases`). The ext counterpart of
+    /// the per-file `Analysis::resolve_annotation_type_mut_gen`.
     fn resolve_annotation_gen(
         at: &AnnotationType,
-        classes: &HashMap<String, TableIndex>,
-        aliases: &HashMap<String, ValueType>,
-        param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
         generics: &[(String, Option<String>)],
-        tables: &mut LayeredVec<TableInfo>,
-        exprs: &mut LayeredVec<Expr>,
+        ctx: &mut FnBuildCtx,
     ) -> Option<ValueType> {
-        // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
-        if let AnnotationType::Parameterized(base, args) = at {
-            if let Some((type_params, body)) = param_aliases.get(base)
-                && type_params.len() == args.len() {
-                    let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
-                    return Self::resolve_annotation_gen(&substituted, classes, aliases, param_aliases, generics, tables, exprs);
+        match at {
+            AnnotationType::Fun(params, returns, is_vararg) => {
+                return Some(Self::materialize_fun_type(params, returns, *is_vararg, generics, DefNode::DUMMY, ctx));
+            }
+            AnnotationType::Parameterized(base, args) => {
+                // Parameterized alias instantiation (e.g. MyAlias<string, number>)
+                if let Some((type_params, body)) = ctx.parameterized_aliases.get(base)
+                    && type_params.len() == args.len() {
+                        let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
+                        if !ctx.instantiations.enter(base, args) {
+                            return crate::annotations::resolve_annotation_type(&substituted, generics, ctx.classes, ctx.aliases);
+                        }
+                        let vt = Self::resolve_annotation_gen(&substituted, generics, ctx);
+                        ctx.instantiations.exit();
+                        return vt;
+                    }
+                if let Some(inner) = at.secret_arg() {
+                    return Self::resolve_annotation_gen(inner, generics, ctx).map(ValueType::secret_of);
                 }
-            if let Some(inner) = at.secret_arg() {
-                return Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs)
-                    .map(ValueType::secret_of);
-            }
-            if (base == "params" || base == "returns")
-                && args.len() == 1
-                && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n))
-            {
-                return Some(ValueType::Any);
-            }
-            if base == "table" && args.len() == 2 {
-                let key_vt = Self::resolve_annotation_gen(&args[0], classes, aliases, param_aliases, generics, tables, exprs);
-                let val_vt = Self::resolve_annotation_gen(&args[1], classes, aliases, param_aliases, generics, tables, exprs);
-                if key_vt.is_some() || val_vt.is_some() {
-                    let table_idx = TableIndex(EXT_BASE + tables.len());
-                    tables.push(TableInfo {
-                        key_type: key_vt,
-                        value_type: val_vt,
-                        is_explicit_map: true,
-                        ..Default::default()
-                    });
-                    return Some(ValueType::Table(Some(table_idx)));
+                if crate::annotations::is_generic_projection(at, generics) {
+                    return Some(ValueType::Any);
+                }
+                if let Some(vt) = Self::instantiate_map_class(base, args, generics, ctx) {
+                    return Some(vt);
+                }
+                if base == "table" && args.len() == 2 {
+                    let key_vt = Self::resolve_annotation_gen(&args[0], generics, ctx);
+                    let val_vt = Self::resolve_annotation_gen(&args[1], generics, ctx);
+                    if key_vt.is_some() || val_vt.is_some() {
+                        let table_idx = TableIndex(EXT_BASE + ctx.tables.len());
+                        ctx.tables.push(TableInfo {
+                            key_type: key_vt,
+                            value_type: val_vt,
+                            is_explicit_map: true,
+                            ..Default::default()
+                        });
+                        return Some(ValueType::Table(Some(table_idx)));
+                    }
                 }
             }
-        }
-        // Handle Array types (e.g. T[], string[]) by materializing a TableInfo
-        if let AnnotationType::Array(inner) = at {
-            if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs) {
-                let table_idx = TableIndex(EXT_BASE + tables.len());
-                tables.push(TableInfo {
+            AnnotationType::Array(inner) => {
+                let Some(elem_vt) = Self::resolve_annotation_gen(inner, generics, ctx) else {
+                    return Some(ValueType::Table(None));
+                };
+                let table_idx = TableIndex(EXT_BASE + ctx.tables.len());
+                ctx.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
                     ..Default::default()
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
-            return Some(ValueType::Table(None));
-        }
-        // Handle anonymous table literals: {field: type, ...}
-        if let AnnotationType::TableLiteral(fields) = at {
-            let table_idx = TableIndex(EXT_BASE + tables.len());
-            tables.push(TableInfo::default());
-            for (name, field_ann) in fields {
-                if let Some(vt) = Self::resolve_annotation_gen(field_ann, classes, aliases, param_aliases, generics, tables, exprs) {
+            AnnotationType::TableLiteral(fields) => {
+                let table_idx = TableIndex(EXT_BASE + ctx.tables.len());
+                ctx.tables.push(TableInfo::default());
+                for (name, field_ann) in fields {
+                    let Some(vt) = Self::resolve_annotation_gen(field_ann, generics, ctx) else { continue };
                     if crate::annotations::is_index_entry(name) {
-                        crate::annotations::apply_index_entry(&mut tables[table_idx.ext_offset()], name, vt);
+                        crate::annotations::apply_index_entry(&mut ctx.tables[table_idx.ext_offset()], name, vt);
                         continue;
                     }
-                    let expr_id = ExprId(EXT_BASE + exprs.len());
-                    exprs.push(Expr::Literal(vt.clone()));
-                    tables[table_idx.ext_offset()].fields.insert(name.clone(), FieldInfo {
+                    let expr_id = ExprId(EXT_BASE + ctx.exprs.len());
+                    ctx.exprs.push(Expr::Literal(vt.clone()));
+                    ctx.tables[table_idx.ext_offset()].fields.insert(name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: crate::annotations::Visibility::Public,
                         annotation: Some(vt),
@@ -4655,23 +4719,107 @@ impl PreResolvedGlobals {
                         from_scan: false,
                     });
                 }
+                return Some(ValueType::Table(Some(table_idx)));
             }
-            return Some(ValueType::Table(Some(table_idx)));
+            AnnotationType::NonNil(inner) => return Self::resolve_annotation_gen(inner, generics, ctx),
+            AnnotationType::Union(parts) => {
+                let drop_projections = crate::annotations::union_drops_projections(parts, generics);
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter(|p| !drop_projections || !crate::annotations::is_generic_projection(p, generics))
+                    .filter_map(|p| Self::resolve_annotation_gen(p, generics, ctx)).collect();
+                return match converted.len() {
+                    0 => None,
+                    1 => converted.into_iter().next(),
+                    _ => Some(ValueType::make_union(converted)),
+                };
+            }
+            AnnotationType::Intersection(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| Self::resolve_annotation_gen(p, generics, ctx)).collect();
+                return match converted.len() {
+                    0 => None,
+                    1 => converted.into_iter().next(),
+                    _ => Some(ValueType::Intersection(converted)),
+                };
+            }
+            _ => {}
         }
-        // Handle NonNil by recursing on inner type (so Parameterized etc. get proper handling)
-        if let AnnotationType::NonNil(inner) = at {
-            return Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs);
+        crate::annotations::resolve_annotation_type(at, generics, ctx.classes, ctx.aliases)
+    }
+
+    /// The key and value types a class with the type params `generics` gets from
+    /// its parent `parent_name`: a `table<K, V>`'s, or an instantiated map
+    /// class's (`---@class Scores : Dict<string, number>`).
+    pub fn resolve_parent_map_types(
+        parent_name: &str,
+        generics: &[(String, Option<String>)],
+        ctx: &mut FnBuildCtx,
+    ) -> Option<(ValueType, ValueType)> {
+        if !parent_name.contains('<') { return None; }
+        let AnnotationType::Parameterized(base, args) = crate::annotations::parse_type(parent_name) else { return None };
+        if base == "table" && args.len() == 2 {
+            let key_vt = Self::resolve_annotation_gen(&args[0], generics, ctx)?;
+            let value_vt = Self::resolve_annotation_gen(&args[1], generics, ctx)?;
+            return Some((key_vt, value_vt));
         }
-        // Handle intersections to recurse into TableLiteral members
-        if let AnnotationType::Intersection(parts) = at {
-            let converted: Vec<ValueType> = parts.iter()
-                .filter_map(|p| Self::resolve_annotation_gen(p, classes, aliases, param_aliases, generics, tables, exprs)).collect();
-            return match converted.len() {
-                0 => None, 1 => converted.into_iter().next(),
-                _ => Some(ValueType::Intersection(converted)),
-            };
+        let (_, key_vt, value_vt) = Self::instantiate_map_signature(&base, &args, generics, ctx)?;
+        Some((key_vt?, value_vt?))
+    }
+
+    /// For a generic class with a map signature (`TableInfo::map_signature`),
+    /// the class and the key and value types of its instantiation `base<args>`.
+    fn instantiate_map_signature(
+        base: &str,
+        args: &[AnnotationType],
+        generics: &[(String, Option<String>)],
+        ctx: &mut FnBuildCtx,
+    ) -> Option<(TableIndex, Option<ValueType>, Option<ValueType>)> {
+        let &class_idx = ctx.classes.get(base)?;
+        let class = &ctx.tables[class_idx.ext_offset()];
+        let (key, value) = class.map_signature.as_deref()?;
+        if class.class_type_params.len() != args.len() { return None; }
+        let key = crate::annotations::substitute_alias_type_params(key, &class.class_type_params, args);
+        let value = crate::annotations::substitute_alias_type_params(value, &class.class_type_params, args);
+        if !ctx.instantiations.enter(base, args) {
+            return Some((class_idx, None, None));
         }
-        crate::annotations::resolve_annotation_type(at, generics, classes, aliases)
+        let key_vt = Self::resolve_annotation_gen(&key, generics, ctx);
+        let value_vt = Self::resolve_annotation_gen(&value, generics, ctx);
+        ctx.instantiations.exit();
+        Some((class_idx, key_vt, value_vt))
+    }
+
+    /// `base<args>` for a generic class with a map signature: a table of the
+    /// class (its members are the class's) keyed and valued by the signature
+    /// with `args` substituted. The ext counterpart of
+    /// `Analysis::instantiate_map_class`.
+    fn instantiate_map_class(
+        base: &str,
+        args: &[AnnotationType],
+        generics: &[(String, Option<String>)],
+        ctx: &mut FnBuildCtx,
+    ) -> Option<ValueType> {
+        let (class_idx, key_type, value_type) = Self::instantiate_map_signature(base, args, generics, ctx)?;
+        if key_type.is_none() && value_type.is_none() {
+            return Some(ValueType::Table(Some(class_idx)));
+        }
+        let class = &ctx.tables[class_idx.ext_offset()];
+        let mut parent_classes = vec![class_idx];
+        parent_classes.extend(class.parent_classes.iter().copied());
+        let instance = TableInfo {
+            class_name: class.class_name.clone(),
+            class_type_params: class.class_type_params.clone(),
+            accessors: class.accessors.clone(),
+            parent_classes,
+            metatable_index: Some(class_idx),
+            value_type_annotated: value_type.is_some(),
+            key_type,
+            value_type,
+            ..Default::default()
+        };
+        let table_idx = TableIndex(EXT_BASE + ctx.tables.len());
+        ctx.tables.push(instance);
+        Some(ValueType::Table(Some(table_idx)))
     }
 
     /// Create a Function entry from an inline fun() annotation type.
@@ -4705,7 +4853,7 @@ impl PreResolvedGlobals {
                 }
                 continue;
             }
-            let resolved = Self::resolve_annotation_gen(&p.typ, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generics, ctx.tables, ctx.exprs)
+            let resolved = Self::resolve_annotation_gen(&p.typ, generics, ctx)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
             ctx.symbols.push(Symbol {
@@ -4721,7 +4869,6 @@ impl PreResolvedGlobals {
             param_optional.push(p.optional);
         }
 
-        let func_idx = FunctionIndex(EXT_BASE + ctx.functions.len());
         let mut has_vararg_return = returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)));
 
         // Handle tuple-union / single-tuple returns in `fun(): (A, B) | (C, D)`.
@@ -4735,11 +4882,13 @@ impl PreResolvedGlobals {
                 has_vararg_return = true;
             }
             crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generics, ctx.tables, ctx.exprs)
+                Self::resolve_annotation_gen(at, generics, ctx)
             })
         } else {
+            // An unresolvable slot stays an `any` one (see the per-file
+            // `Analysis::materialize_fun_type`).
             let vts: Vec<ValueType> = returns.iter()
-                .filter_map(|rt| Self::resolve_annotation_gen(rt, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generics, ctx.tables, ctx.exprs))
+                .map(|rt| Self::resolve_annotation_gen(rt, generics, ctx).unwrap_or(ValueType::Any))
                 .collect();
             (vts, returns.to_vec(), Vec::new(), Vec::new())
         };
@@ -4761,6 +4910,9 @@ impl PreResolvedGlobals {
         // If we have a vararg projection, the fun() is effectively vararg
         let effective_is_vararg = is_vararg || vararg_proj.is_some();
 
+        // Taken after the params and returns resolve: a `fun(...)` among them is
+        // pushed first.
+        let func_idx = FunctionIndex(EXT_BASE + ctx.functions.len());
         ctx.functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
@@ -4906,31 +5058,14 @@ impl PreResolvedGlobals {
             }
         }
         let generic_annotations = effective_generic_annotations.as_slice();
-        let empty_alias_fun_types: HashMap<String, AnnotationType> = HashMap::default();
         let mut has_vararg_param = false;
         for p in params {
             if p.name == "..." {
                 has_vararg_param = true;
                 continue;
             }
-            let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
-                Some(Self::materialize_fun_type(
-                    inner_params, inner_returns, *inner_vararg, generic_annotations,
-                    dummy_node, ctx,
-                ))
-            } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                crate::annotations::reduce_to_fun_alias(&p.typ, ctx.alias_fun_types, &empty_alias_fun_types)
-            {
-                let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
-                let func_vt = Self::materialize_fun_type(
-                    &ip, &ir_, iv, generic_annotations,
-                    dummy_node, ctx,
-                );
-                Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
-            } else {
-                Self::resolve_annotation_gen(&p.typ, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
-            }
-            .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
+            let resolved = Self::resolve_annotation_gen(&p.typ, generic_annotations, ctx)
+                .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
             ctx.symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
@@ -5003,7 +5138,7 @@ impl PreResolvedGlobals {
             });
             let (col_vts, col_raws, labels, overloads) =
                 crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                    Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
+                    Self::resolve_annotation_gen(at, generic_annotations, ctx)
                 });
             TupleFormReturnData {
                 return_annotations: col_vts, labels, overloads,
@@ -5027,35 +5162,14 @@ impl PreResolvedGlobals {
                     // Resolve self as the owner class type
                     if let Some(class_name) = owner_class_name {
                         let class_type = AnnotationType::Simple(class_name.to_string());
-                        if let Some(vt) = Self::resolve_annotation_gen(&class_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs) {
+                        if let Some(vt) = Self::resolve_annotation_gen(&class_type, generic_annotations, ctx) {
                             vts.push(vt);
                             labels.push(return_names.get(i).cloned().flatten());
                         }
                     }
                     continue;
                 }
-                let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
-                    Some(Self::materialize_fun_type(
-                        inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, ctx,
-                    ))
-                } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                    crate::annotations::reduce_to_fun_alias(rt, ctx.alias_fun_types, &empty_alias_fun_types)
-                {
-                    // A function-typed alias return (e.g. `@return F` where
-                    // `F = fun(...)`) otherwise resolves to a signature-less
-                    // `Function(None)`; materialize the alias's concrete signature
-                    // so a caller's `local cb = f()` can be type-checked.
-                    let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
-                    let func_vt = Self::materialize_fun_type(
-                        &ip, &ir_, iv, generic_annotations,
-                        dummy_node, ctx,
-                    );
-                    Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
-                } else {
-                    Self::resolve_annotation_gen(rt, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
-                };
-                if let Some(vt) = resolved {
+                if let Some(vt) = Self::resolve_annotation_gen(rt, generic_annotations, ctx) {
                     vts.push(vt);
                     labels.push(return_names.get(i).cloned().flatten());
                 }
@@ -5070,26 +5184,9 @@ impl PreResolvedGlobals {
         // may push new Function entries that would shift the index.
         let overloads: Vec<ResolvedOverload> = overload_sigs.iter().map(|sig| {
             let params = sig.params.iter().map(|p| {
-                let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
-                    Some(Self::materialize_fun_type(
-                        inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, ctx,
-                    ))
-                } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                    crate::annotations::reduce_to_fun_alias(&p.typ, ctx.alias_fun_types, &empty_alias_fun_types)
-                {
-                    let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
-                    let func_vt = Self::materialize_fun_type(
-                        &ip, &ir_, iv, generic_annotations,
-                        dummy_node, ctx,
-                    );
-                    Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
-                } else {
-                    Self::resolve_annotation_gen(&p.typ, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
-                };
                 crate::types::ResolvedOverloadParam {
                     name: p.name.clone(),
-                    typ: vt,
+                    typ: Self::resolve_annotation_gen(&p.typ, generic_annotations, ctx),
                     optional: p.optional,
                 }
             }).collect();
@@ -5101,24 +5198,7 @@ impl PreResolvedGlobals {
             // when resolution returned None, desyncing the vectors.
             let (returns, returns_raw): (Vec<ValueType>, Vec<AnnotationType>) = non_self_returns.iter()
                 .filter_map(|at| {
-                    let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
-                        Some(Self::materialize_fun_type(
-                            inner_params, inner_returns, *inner_vararg, generic_annotations,
-                            dummy_node, ctx,
-                        ))
-                    } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                        crate::annotations::reduce_to_fun_alias(at, ctx.alias_fun_types, &empty_alias_fun_types)
-                    {
-                        let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
-                        let func_vt = Self::materialize_fun_type(
-                            &ip, &ir_, iv, generic_annotations,
-                            dummy_node, ctx,
-                        );
-                        Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
-                    } else {
-                        Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
-                    };
-                    vt.map(|v| (v, (*at).clone()))
+                    Self::resolve_annotation_gen(at, generic_annotations, ctx).map(|v| (v, (*at).clone()))
                 })
                 .unzip();
             let has_vararg_tail = matches!(
@@ -5130,6 +5210,18 @@ impl PreResolvedGlobals {
         // Append synthesized return-only overloads from tuple-union @return.
         let mut overloads = overloads;
         overloads.extend(tuple_ret.overloads);
+
+        // Resolve @builds-field before taking this function's index: a `fun(...)`
+        // in it is pushed first.
+        let resolved_builds_field = builds_field_raw.and_then(|(idx, at)| {
+            let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));
+            let inner = match at {
+                crate::annotations::AnnotationType::NonNil(inner) => inner.as_ref(),
+                other => other,
+            };
+            Self::resolve_annotation_gen(inner, generic_annotations, ctx)
+                .map(|vt| (*idx, vt, is_lateinit))
+        });
 
         let func_idx = FunctionIndex(EXT_BASE + ctx.functions.len());
         let mut ret_symbols = Vec::new();
@@ -5218,24 +5310,6 @@ impl PreResolvedGlobals {
                 param_annotations_vec.insert(0, AnnotationType::Simple(String::new()));
             }
         }
-
-        // Resolve @builds-field before pushing the Function, since materialize_fun_type
-        // needs mutable access to `functions` which would conflict with the push.
-        let resolved_builds_field = builds_field_raw.and_then(|(idx, at)| {
-            let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));
-            let inner = match at {
-                crate::annotations::AnnotationType::NonNil(inner) => inner.as_ref(),
-                other => other,
-            };
-            let vt = if let AnnotationType::Fun(fun_params, fun_returns, fun_is_vararg) = inner {
-                Some(Self::materialize_fun_type(
-                    fun_params, fun_returns, *fun_is_vararg, generic_annotations, dummy_node,
-                    ctx,                ))
-            } else {
-                Self::resolve_annotation_gen(inner, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
-            };
-            vt.map(|vt| (*idx, vt, is_lateinit))
-        });
 
         ctx.functions.push(Function {
             def_node: dummy_node,

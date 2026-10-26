@@ -3800,6 +3800,21 @@ fn crossfile_table_kv() {
 }
 
 #[test]
+fn annotation_positions() {
+    // One annotation type, inline or through an alias, resolves the same in every
+    // position, in its declaring file and in another, on both workspace builds
+    for lua_file in ["tests/annotation-positions/defs.lua", "tests/annotation-positions/user.lua"] {
+        for with_stubs in [false, true] {
+            run_annotation_tests(&TestConfig {
+                lua_file,
+                with_stubs,
+                scan_dir: Some("tests/annotation-positions"),
+            });
+        }
+    }
+}
+
+#[test]
 fn crossfile_ns_bracket_comp() {
     // Cross-file bracket assignment completions on namespace table<K,V>
     run_annotation_tests(&TestConfig {
@@ -5062,11 +5077,13 @@ fn type_hierarchy() {
 
 #[test]
 fn inlay_hints() {
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/inlay-hints/inlay_hints.lua",
-        with_stubs: false,
-        scan_dir: None,
-    });
+    for lua_file in ["tests/inlay-hints/inlay_hints.lua", "tests/inlay-hints/top_of_file.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: false,
+            scan_dir: None,
+        });
+    }
 }
 
 #[test]

@@ -13,6 +13,8 @@
 ---| "KeystoneUpdate" -> unitName: string, keystoneInfo: RBKeystoneInfo, allInfo: table<string, RBKeystoneInfo>
 ---| "KeystoneAdded" -> id: string, entries: table<string, RBKeystoneInfo>
 ---| "KeystoneRemoved" -> id: string, entries: table<string, RBKeystoneInfo>
+---| "FormatterAdded" -> id: string, format?: fun(x: number): string
+---| "FormatterRemoved" -> id: string, format?: fun(x: number): string
 
 ---@class RBOpenRaidLib
 local lib = {}
@@ -33,7 +35,7 @@ local addonObject = {}
 -- argument bound to `T` (`addonObject`), and the bound event's payload maps onto
 -- the method's parameters positionally.
 function addonObject.OnKeystoneUpdate(unitName, keystoneInfo, allInfo)
---                   ^ refs: 35:22, 46:54
+--                   ^ refs: 37:22, 48:54
     local u = unitName
 --        ^ hover: (local) u: string
     local k = keystoneInfo
@@ -44,7 +46,7 @@ end
 
 -- Find-references / rename on the handler method reaches the string name too.
 lib.RegisterCallback(addonObject, "KeystoneUpdate", "OnKeystoneUpdate")
---                                                     ^ def: local 35:10
+--                                                     ^ def: local 37:10
 
 -- issue #60: the SAME named method registered for two STRUCTURALLY-IDENTICAL
 -- events (both carrying a `table<K,V>` param) must NOT be read as a payload
@@ -82,3 +84,13 @@ function addonObject.OnConflicted(_, _)
 end
 lib.RegisterCallback(addonObject, "KeystoneUpdate", "OnConflicted")
 lib.RegisterCallback(addonObject, "KeystoneAdded", "OnConflicted")
+
+-- An optional `fun(...)` payload param, materialized per event, is the same
+-- payload for both events too.
+function addonObject.OnFormatter(id, format)
+    local f = format
+--        ^ hover: (local) f: (fun(x: number): string)?
+end
+
+lib.RegisterCallback(addonObject, "FormatterAdded", "OnFormatter")
+lib.RegisterCallback(addonObject, "FormatterRemoved", "OnFormatter")

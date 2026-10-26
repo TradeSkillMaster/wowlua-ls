@@ -107,7 +107,7 @@ pub(crate) fn table_is_map(key_type: Option<&ValueType>, is_explicit_map: bool) 
 /// Render an array (`V[]`) or map (`table<K, V>`) from its element types, using
 /// `fmt` to format each element type. The array-vs-map choice goes through
 /// [`table_is_map`]; array-element parenthesization is decided *structurally*
-/// (only unions/intersections get parens), so every call site agrees byte-for-byte
+/// ([`array_element_needs_parens`]), so every call site agrees byte-for-byte
 /// rather than each re-deriving the rule.
 pub(crate) fn render_array_or_map(
     key: Option<&ValueType>,
@@ -120,11 +120,19 @@ pub(crate) fn render_array_or_map(
         // `table_is_map` returns true only for a `Some` key.
         let key_str = fmt(key.expect("table_is_map implies a key"));
         format!("table<{}, {}>", key_str, val_str)
-    } else if matches!(val, ValueType::Union(_) | ValueType::Intersection(_)) {
+    } else if array_element_needs_parens(val) {
         format!("({})[]", val_str)
     } else {
         format!("{}[]", val_str)
     }
+}
+
+/// Whether an array's element type is parenthesized before `[]`: a union or
+/// intersection, and a signature, so `(fun(): string)[]` doesn't read as a
+/// function returning `string[]`.
+fn array_element_needs_parens(val: &ValueType) -> bool {
+    matches!(val, ValueType::Union(_) | ValueType::Intersection(_)
+        | ValueType::Function(Some(_)) | ValueType::FunctionSig(_))
 }
 
 /// Deduplicate `func.rets` by return position and union the resolved types.
@@ -1358,7 +1366,7 @@ impl AnalysisResult {
         // Only use initial type when it actually differs from the resolved value_type
         if table.value_type.as_ref() == Some(ivt) { return None; }
         let val_str = self.format_value_type_depth(ivt, 1);
-        Some(if matches!(ivt, ValueType::Union(_) | ValueType::Intersection(_)) {
+        Some(if array_element_needs_parens(ivt) {
             format!("({})[]", val_str)
         } else {
             format!("{}[]", val_str)

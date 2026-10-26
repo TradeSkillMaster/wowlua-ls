@@ -1451,6 +1451,10 @@ pub struct TableInfo {
     pub array_fields: Vec<ExprId>,
     pub key_type: Option<ValueType>,
     pub value_type: Option<ValueType>,
+    /// A generic class's key and value types in terms of its type params
+    /// (`ClassDecl::map_signature`), which an instantiation `Class<A, B>`
+    /// substitutes its arguments into.
+    pub map_signature: Option<Box<(crate::annotations::AnnotationType, crate::annotations::AnnotationType)>>,
     /// Original element type from table constructor array fields, before bracket
     /// assignment mutation replaced value_type.  Used for display (hover/inlay
     /// hints) so declarations like `{strsplit(","  , s)}` show `string[]` even

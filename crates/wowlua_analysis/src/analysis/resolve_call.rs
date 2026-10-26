@@ -3814,11 +3814,11 @@ impl<'a> Analysis<'a> {
         class_gen_context: &[(String, Option<String>)],
         class_type_param_subs: &HashMap<String, ValueType>,
     ) -> Option<ValueType> {
+        let vt = self.resolve_annotation_type_mut_gen(ann, class_gen_context)?;
         if class_gen_context.is_empty() {
-            self.resolve_annotation_type(ann)
+            Some(vt)
         } else {
-            self.resolve_annotation_type_mut_gen(ann, class_gen_context)
-                .map(|vt| self.substitute_generics_deep(&vt, class_type_param_subs))
+            Some(self.substitute_generics_deep(&vt, class_type_param_subs))
         }
     }
 
@@ -3924,19 +3924,7 @@ impl<'a> Analysis<'a> {
                     if let Some((raw_ann, field_expr, extra_exprs)) = fi_info {
                         if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ann {
                             let resolved: Vec<ValueType> = type_arg_anns.iter()
-                                .filter_map(|ta| {
-                                    let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
-                                    if matches!(&vt, Some(ValueType::Function(None)))
-                                        && let crate::annotations::AnnotationType::Simple(name) = ta {
-                                            let body = self.ir.alias_fun_types.get(name)
-                                                .or_else(|| self.ir.ext.alias_fun_types.get(name))
-                                                .cloned();
-                                            if let Some(body) = body {
-                                                return self.resolve_annotation_type_mut_gen(&body, &[]);
-                                            }
-                                        }
-                                    vt
-                                })
+                                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &[]))
                                 .collect();
                             self.field_type_args_cache.insert((table_idx, field), resolved.clone());
                             return resolved;
@@ -4018,6 +4006,19 @@ impl<'a> Analysis<'a> {
     // ── Generic substitution ─────────────────────────────────────────────────
 
     pub(super) fn substitute_generics_deep(&mut self, vt: &ValueType, subs: &HashMap<String, ValueType>) -> ValueType {
+        self.substitute_generics_within(vt, subs, &mut Vec::new())
+    }
+
+    /// [`Self::substitute_generics_deep`] with the tables and functions being
+    /// substituted on the way to `vt` (`in_progress`): a type that reaches itself
+    /// (a generic class whose method takes the class, `fun(owner: Owner<T>)` on
+    /// `Owner<T>`) is kept as it is where it recurs.
+    fn substitute_generics_within(
+        &mut self,
+        vt: &ValueType,
+        subs: &HashMap<String, ValueType>,
+        in_progress: &mut Vec<ValueType>,
+    ) -> ValueType {
         match vt {
             ValueType::TypeVariable(name) => {
                 subs.get(name).cloned().unwrap_or_else(|| vt.clone())
@@ -4030,7 +4031,7 @@ impl<'a> Analysis<'a> {
                 // Downstream callers treat a union still containing a type variable
                 // as unresolved and skip the check entirely.
                 let subst: Vec<_> = types.iter()
-                    .map(|t| self.substitute_generics_deep(t, subs))
+                    .map(|t| self.substitute_generics_within(t, subs, in_progress))
                     .collect();
                 ValueType::make_union(subst)
             }
@@ -4040,7 +4041,7 @@ impl<'a> Analysis<'a> {
                 // intersection *widens* it, which is safe — `T & U` with T
                 // unbound degrades to just `U`.
                 let subst: Vec<_> = types.iter()
-                    .map(|t| self.substitute_generics_deep(t, subs))
+                    .map(|t| self.substitute_generics_within(t, subs, in_progress))
                     .filter(|t| !matches!(t, ValueType::TypeVariable(_)))
                     .collect();
                 // Flatten nested intersections (from variadic generic substitution)
@@ -4083,9 +4084,10 @@ impl<'a> Analysis<'a> {
                 }) || func.return_annotations.iter().any(|vt| vt.contains_type_variable());
                 let has_projections = !func.return_projections.is_empty()
                     || func.vararg_projection.is_some();
-                if !has_tv && !has_projections {
+                if (!has_tv && !has_projections) || in_progress.contains(vt) {
                     return vt.clone();
                 }
+                in_progress.push(vt.clone());
                 let dummy_node = func.def_node;
                 let is_vararg = func.is_vararg;
                 let has_vararg_return_clone = func.has_vararg_return;
@@ -4111,7 +4113,7 @@ impl<'a> Analysis<'a> {
 
                 // Add the original (non-projected) named args first
                 for (idx, (id, resolved)) in arg_infos.iter().enumerate() {
-                    let substituted = resolved.as_ref().map(|t| self.substitute_generics_deep(t, subs));
+                    let substituted = resolved.as_ref().map(|t| self.substitute_generics_within(t, subs, in_progress));
                     let sym_idx = SymbolIndex(self.ir.symbols.len());
                     let order = self.ir.next_order();
                     self.ir.symbols.push(Symbol {
@@ -4176,7 +4178,6 @@ impl<'a> Analysis<'a> {
                     }
 
                 // Resolve return projections: returns<F> → F's return types
-                let new_func_idx = FunctionIndex(self.ir.functions.len());
                 let subst_return_annotations: Vec<ValueType> = if !ret_projections.is_empty() {
                     let mut result = Vec::new();
                     for (i, ret_vt) in return_annotations.iter().enumerate() {
@@ -4202,18 +4203,21 @@ impl<'a> Analysis<'a> {
                                     result.extend(f_returns);
                                 }
                             } else {
-                                result.push(self.substitute_generics_deep(ret_vt, subs));
+                                result.push(self.substitute_generics_within(ret_vt, subs, in_progress));
                             }
                         } else {
-                            result.push(self.substitute_generics_deep(ret_vt, subs));
+                            result.push(self.substitute_generics_within(ret_vt, subs, in_progress));
                         }
                     }
                     result
                 } else {
                     return_annotations.iter()
-                        .map(|t| self.substitute_generics_deep(t, subs))
+                        .map(|t| self.substitute_generics_within(t, subs, in_progress))
                         .collect()
                 };
+                // Taken after the returns are substituted: a function among them is
+                // pushed first.
+                let new_func_idx = FunctionIndex(self.ir.functions.len());
                 let mut new_rets = Vec::new();
                 for (i, ret_vt) in subst_return_annotations.iter().enumerate() {
                     let sym_idx = SymbolIndex(self.ir.symbols.len());
@@ -4289,6 +4293,7 @@ impl<'a> Analysis<'a> {
                     requires_constraints: Vec::new(),
                     returns_self_type_args: None,
                 });
+                in_progress.pop();
                 ValueType::Function(Some(new_func_idx))
             }
             ValueType::Table(Some(table_idx)) => {
@@ -4296,9 +4301,10 @@ impl<'a> Analysis<'a> {
                 let has_tv = table.value_type.as_ref().is_some_and(|t| t.contains_type_variable())
                     || table.key_type.as_ref().is_some_and(|t| t.contains_type_variable())
                     || table.fields.values().any(|fi| fi.annotation.as_ref().is_some_and(|t| t.contains_type_variable()));
-                if !has_tv {
+                if !has_tv || in_progress.contains(vt) {
                     return vt.clone();
                 }
+                in_progress.push(vt.clone());
                 let old_key = table.key_type.clone();
                 let old_val = table.value_type.clone();
                 let class_name = table.class_name.clone();
@@ -4325,10 +4331,10 @@ impl<'a> Analysis<'a> {
                     })
                 }).collect();
 
-                let new_key = old_key.as_ref().map(|t| self.substitute_generics_deep(t, subs));
-                let new_val = old_val.as_ref().map(|t| self.substitute_generics_deep(t, subs));
+                let new_key = old_key.as_ref().map(|t| self.substitute_generics_within(t, subs, in_progress));
+                let new_val = old_val.as_ref().map(|t| self.substitute_generics_within(t, subs, in_progress));
                 let fields: HashMap<String, crate::types::FieldInfo> = old_fields.into_iter().map(|(name, fi)| {
-                    let new_ann = fi.annotation.as_ref().map(|t| self.substitute_generics_deep(t, subs));
+                    let new_ann = fi.annotation.as_ref().map(|t| self.substitute_generics_within(t, subs, in_progress));
                     (name, crate::types::FieldInfo {
                         expr: fi.expr,
                         extra_exprs: fi.extra_exprs,
@@ -4349,20 +4355,21 @@ impl<'a> Analysis<'a> {
                     array_fields, key_type: new_key, value_type: new_val,
                     accessors, call_func, call_func_is_metamethod, metatable_index, ..Default::default()
                 });
+                in_progress.pop();
                 ValueType::Table(Some(new_table_idx))
             }
             ValueType::OpaqueAlias(name, inner) => {
-                ValueType::OpaqueAlias(name.clone(), Box::new(self.substitute_generics_deep(inner, subs)))
+                ValueType::OpaqueAlias(name.clone(), Box::new(self.substitute_generics_within(inner, subs, in_progress)))
             }
-            ValueType::Secret(inner) => ValueType::secret_of(self.substitute_generics_deep(inner, subs)),
+            ValueType::Secret(inner) => ValueType::secret_of(self.substitute_generics_within(inner, subs, in_progress)),
             ValueType::FunctionSig(shape) => {
                 let new_params = shape.params.iter().map(|p| ShapeParam {
                     name: p.name.clone(),
-                    ty: self.substitute_generics_deep(&p.ty, subs),
+                    ty: self.substitute_generics_within(&p.ty, subs, in_progress),
                     optional: p.optional,
                 }).collect();
                 let new_returns = shape.returns.iter()
-                    .map(|r| self.substitute_generics_deep(r, subs))
+                    .map(|r| self.substitute_generics_within(r, subs, in_progress))
                     .collect();
                 ValueType::FunctionSig(Box::new(FunctionShape {
                     params: new_params,

@@ -138,7 +138,7 @@ CurrentPreset = PresetTable[ns.Keys.first]
 local Rebound = { stale = 1 }
 Rebound = { fresh = "x" }
 ns.Rebound = Rebound
----@type {OnClick: fun(button: string): boolean}
+---@type {OnClick: fun(button: string): boolean?}
 local Handlers = { OnClick = function(button) return true end }
 ns.Handlers = Handlers
 

@@ -123,6 +123,32 @@ pub fn format_annotation_type(at: &AnnotationType) -> String {
     }
 }
 
+/// The parameterized aliases and map classes (`Name<args>`) a resolver is
+/// instantiating, innermost last. An instantiation inside its own expansion
+/// (`---@alias Node<T> {next: Node<T>?}`), or nested [`Self::MAX_DEPTH`] deep
+/// (`---@alias Grow<T> fun(g: Grow<T[]>)`), is not expanded again: the resolver
+/// gives it its shallow type.
+#[derive(Default)]
+pub struct Instantiations(Vec<(String, Vec<AnnotationType>)>);
+
+impl Instantiations {
+    const MAX_DEPTH: usize = 8;
+
+    /// Records `base<args>` as being instantiated; `false` when it may not be.
+    /// Every `true` must be paired with an [`Self::exit`].
+    pub fn enter(&mut self, base: &str, args: &[AnnotationType]) -> bool {
+        if self.0.len() >= Self::MAX_DEPTH || self.0.iter().any(|(b, a)| b == base && a == args) {
+            return false;
+        }
+        self.0.push((base.to_string(), args.to_vec()));
+        true
+    }
+
+    pub fn exit(&mut self) {
+        self.0.pop();
+    }
+}
+
 pub fn substitute_alias_type_params(
     body: &AnnotationType,
     type_params: &[String],
@@ -242,6 +268,24 @@ pub fn substitute_self_type(at: &AnnotationType, class_type: &AnnotationType) ->
             description.clone(),
         ),
     }
+}
+
+/// Whether `at` is a `params<F>` / `returns<F>` projection of one of `generics`.
+/// Until a call site binds `F` it has no type: the annotation resolvers give it
+/// an `any` placeholder, except in a union, whose other members a call site keeps
+/// beside the projected types (`match_projection`).
+pub fn is_generic_projection(at: &AnnotationType, generics: &[(String, Option<String>)]) -> bool {
+    matches!(at, AnnotationType::Parameterized(base, args)
+        if (base == "params" || base == "returns")
+            && args.len() == 1
+            && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n)))
+}
+
+/// Whether the `params<F>`/`returns<F>` members of the union `parts` give way to
+/// its other members, which their `any` placeholder ([`is_generic_projection`])
+/// would swallow: they do when one of those is a type other than `nil`.
+pub fn union_drops_projections(parts: &[AnnotationType], generics: &[(String, Option<String>)]) -> bool {
+    parts.iter().any(|p| !is_generic_projection(p, generics) && !matches!(p, AnnotationType::Simple(s) if s == "nil"))
 }
 
 pub fn match_projection(

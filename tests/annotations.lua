@@ -144,7 +144,7 @@ local AliasFieldHost = {}
 
 function AliasFieldHost:UseIter()
     print(self._iter)
---             ^ hover: (field) _iter: PrepareFunc!\n  = fun(link: string, qty: number): boolean
+--             ^ hover: (field) function AliasFieldHost._iter(link: string, qty: number)\n-> boolean
 end
 
 -- Field whose type is a container of a function-typed alias: indexing the array

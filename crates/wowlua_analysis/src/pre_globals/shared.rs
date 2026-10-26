@@ -47,14 +47,18 @@ use super::{
     finalize_enum_kind_for_class, FnBuildCtx, FnMeta, PreResolvedGlobals,
 };
 
-/// The class/alias registries `register_classes_and_aliases` writes into — a
-/// split-borrow bundle off the owning build context (both paths build one
-/// inline). The class/source-location side maps that only the cold path keeps
-/// (`class_locations`, `constructor_method_names`) are written by the cold
-/// wrapper, not here.
+/// The class/alias registries `register_classes_and_aliases` writes into, and
+/// the arenas resolving an alias body allocates into — a split-borrow bundle off
+/// the owning build context (both paths build one inline). The class/source-
+/// location side maps that only the cold path keeps (`class_locations`,
+/// `constructor_method_names`) are written by the cold wrapper, not here.
 pub struct ClassAliasRegistry<'x> {
     pub classes: &'x mut HashMap<String, TableIndex>,
+    pub scopes: &'x mut LayeredVec<Scope>,
+    pub symbols: &'x mut LayeredVec<Symbol>,
+    pub functions: &'x mut LayeredVec<Function>,
     pub tables: &'x mut LayeredVec<TableInfo>,
+    pub exprs: &'x mut LayeredVec<Expr>,
     pub aliases: &'x mut HashMap<String, ValueType>,
     pub alias_string_literals: &'x mut HashMap<String, Vec<String>>,
     pub alias_fun_types: &'x mut HashMap<String, AnnotationType>,
@@ -65,7 +69,10 @@ pub struct ClassAliasRegistry<'x> {
 }
 
 /// Register `@class` table entries and `@alias` declarations into the IR
-/// registries. `skip_existing` skips classes already registered (the warm path
+/// registries, each alias as its body resolved by
+/// [`PreResolvedGlobals::resolve_annotation_gen`] after the aliases it names
+/// ([`crate::annotations::alias_registration_order`]).
+/// `skip_existing` skips classes already registered (the warm path
 /// must not re-register stub classes; the cold path registers all).
 /// `extend_aliases` lets a literal-only alias redeclaration extend the alias
 /// registered before it (`AliasDecl::registered_type`); only the stub blob's
@@ -102,6 +109,7 @@ pub fn register_classes_and_aliases(
             class_name: Some(class.name.clone()),
             class_type_params: class.type_params.clone(),
             class_type_param_constraints: class.type_param_constraints.clone(),
+            map_signature: class.map_signature().map(Box::new),
             accessors,
             constructors: class.constructor_methods.iter().cloned().collect(),
             enum_kind: class.initial_enum_kind(),
@@ -116,7 +124,8 @@ pub fn register_classes_and_aliases(
     // Register aliases before populating fields so alias types (e.g. fileID)
     // are available during field type resolution.
     let mut extended: HashMap<&str, bool> = HashMap::default();
-    for alias in alias_decls {
+    for i in crate::annotations::alias_registration_order(alias_decls) {
+        let alias = &alias_decls[i];
         // Shadowing: this alias may redefine one already present in
         // `alias_string_literals` — a no-op in the cold build (map starts empty),
         // but in the warm workspace-on-stubs build the map is cloned from the stub
@@ -135,8 +144,18 @@ pub fn register_classes_and_aliases(
             }
         } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
             reg.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
-        } else if let Some(vt) = PreResolvedGlobals::resolve_annotation(&alias.typ, reg.classes, reg.aliases, reg.parameterized_aliases) {
-            if matches!(&vt, ValueType::Function(None)) {
+        } else if let Some(vt) = PreResolvedGlobals::resolve_annotation_gen(&alias.typ, &[], &mut FnBuildCtx {
+            scopes: reg.scopes,
+            symbols: reg.symbols,
+            functions: reg.functions,
+            tables: reg.tables,
+            exprs: reg.exprs,
+            classes: reg.classes,
+            aliases: reg.aliases,
+            parameterized_aliases: reg.parameterized_aliases,
+            instantiations: Default::default(),
+        }) {
+            if matches!(&vt, ValueType::Function(_)) {
                 reg.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
             }
             let previous = if extend_aliases { reg.aliases.get(&alias.name) } else { None };
@@ -197,6 +216,21 @@ pub fn scan_literal_field(
     }
 }
 
+/// Whether a field typed by a table shape without a class (a constructor's,
+/// `X.f = { a = 1 }`) gives way to a write declaring a class for it (`---@enum
+/// X.f` on another `X.f = { ... }`): the declaration wins over the shape whichever
+/// file the scan reached first.
+pub fn shape_yields_to_class(
+    existing: Option<&ValueType>,
+    returns: &[AnnotationType],
+    classes: &HashMap<String, TableIndex>,
+    tables: &LayeredVec<TableInfo>,
+) -> bool {
+    matches!(existing, Some(ValueType::Table(Some(idx)))
+        if idx.is_external() && tables[idx.ext_offset()].class_name.is_none())
+        && matches!(returns.first(), Some(AnnotationType::Simple(name)) if classes.contains_key(name.as_str()))
+}
+
 /// The class table a `Bar = { ... }` table global aliases (the global name is
 /// added to `classes` and points at it): the differently-named class its own
 /// `---@class Foo` declares (`---@class tablelib` on `table = {}`). With
@@ -215,6 +249,27 @@ pub fn table_global_class_alias(
     }
     let Some(AnnotationType::Simple(cn)) = g.returns.first() else { return None };
     classes.get(cn.as_str()).copied()
+}
+
+/// The type of a `---@type` table global whose own table is `own`, given the
+/// annotation's resolved type: `Foo`, or `Foo & own` when it has members the
+/// class `Foo` lacks (its defining file sees them) — without adding them to
+/// `Foo`. `None` keeps `own`: a bare `table`, which its own table already
+/// satisfies.
+pub fn annotated_table_global_type(annotation: &ValueType, own: TableIndex, tables: &LayeredVec<TableInfo>) -> Option<ValueType> {
+    match annotation {
+        ValueType::Table(None) => None,
+        &ValueType::Table(Some(class)) if tables[class.ext_offset()].class_name.is_some() => {
+            let has_own_members = tables[own.ext_offset()].fields.keys()
+                .any(|k| super::lookup_field_with_parents(tables, class.ext_offset(), k).is_none());
+            Some(if has_own_members {
+                ValueType::Intersection(vec![ValueType::Table(Some(class)), ValueType::Table(Some(own))])
+            } else {
+                ValueType::Table(Some(class))
+            })
+        }
+        vt => Some(vt.clone()),
+    }
 }
 
 /// Group deferred-return function indices by their defining file path. Identical
@@ -297,80 +352,6 @@ pub fn mark_callable_classes(callable_classes: &HashSet<String>, ctx: &mut FnBui
     }
 }
 
-/// Resolve a field annotation type, materializing `Fun(...)` types into proper
-/// `Function` entries with parameter symbols. Without this, `@field name fun(...)`
-/// from scanned classes would resolve to `Function(None)`, preventing call
-/// resolution, string-literal completions, and diagnostics. Recurses through
-/// unions/intersections/non-nil/array wrappers, falling back to the plain
-/// annotation resolvers for leaf types.
-pub fn resolve_field_annotation(
-    annotation_type: &AnnotationType,
-    gen_context: &[(String, Option<String>)],
-    dummy_node: DefNode,
-    ctx: &mut FnBuildCtx,
-) -> Option<ValueType> {
-    match annotation_type {
-        AnnotationType::Fun(params, returns, is_vararg) => {
-            Some(PreResolvedGlobals::materialize_fun_type(
-                params, returns, *is_vararg, gen_context, dummy_node, ctx,
-            ))
-        }
-        AnnotationType::Union(members) => {
-            let mut converted: Vec<ValueType> = Vec::new();
-            for m in members {
-                if let Some(vt) = resolve_field_annotation(m, gen_context, dummy_node, ctx) {
-                    converted.push(vt);
-                }
-            }
-            if converted.is_empty() {
-                None
-            } else if converted.len() == 1 {
-                converted.into_iter().next()
-            } else {
-                Some(ValueType::Union(converted))
-            }
-        }
-        AnnotationType::NonNil(inner) => {
-            resolve_field_annotation(inner, gen_context, dummy_node, ctx)
-        }
-        AnnotationType::Intersection(parts) => {
-            let mut converted: Vec<ValueType> = Vec::new();
-            for p in parts {
-                if let Some(vt) = resolve_field_annotation(p, gen_context, dummy_node, ctx) {
-                    converted.push(vt);
-                }
-            }
-            match converted.len() {
-                0 => None,
-                1 => converted.into_iter().next(),
-                _ => Some(ValueType::Intersection(converted)),
-            }
-        }
-        AnnotationType::Array(inner) => {
-            if let Some(elem_vt) = resolve_field_annotation(inner, gen_context, dummy_node, ctx) {
-                let table_idx = TableIndex(EXT_BASE + ctx.tables.len());
-                ctx.tables.push(TableInfo {
-                    key_type: Some(ValueType::Number),
-                    value_type: Some(elem_vt),
-                    ..Default::default()
-                });
-                Some(ValueType::Table(Some(table_idx)))
-            } else {
-                Some(ValueType::Table(None))
-            }
-        }
-        _ => {
-            let resolved = PreResolvedGlobals::resolve_annotation_gen(
-                annotation_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases,
-                gen_context, ctx.tables, ctx.exprs,
-            );
-            resolved.or_else(|| PreResolvedGlobals::resolve_annotation(
-                annotation_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases,
-            ))
-        }
-    }
-}
-
 /// Populate `@field` entries (and `@overload` call functions) for each class
 /// declaration into the IR. Shared by both build paths; the `ctx` bundles the
 /// arenas/registries, and the four extra maps are the per-field side outputs
@@ -418,14 +399,7 @@ pub fn populate_class_fields(
                 if is_string || is_number || is_type_param {
                     let gen_context: Vec<(String, Option<String>)> = ctx.tables[local_idx].class_type_params.iter()
                         .map(|tp| (tp.clone(), None)).collect();
-                    let resolved = PreResolvedGlobals::resolve_annotation_gen(
-                        annotation_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases,
-                        &gen_context, ctx.tables, ctx.exprs,
-                    );
-                    let vt = resolved.or_else(|| PreResolvedGlobals::resolve_annotation(
-                        annotation_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases,
-                    ));
-                    if let Some(vt) = vt {
+                    if let Some(vt) = PreResolvedGlobals::resolve_annotation_gen(annotation_type, &gen_context, ctx) {
                         if is_string {
                             ctx.tables[local_idx].key_type = Some(ValueType::String(None));
                         } else if is_number {
@@ -449,16 +423,10 @@ pub fn populate_class_fields(
                     );
                     Some(ValueType::Function(Some(func_idx)))
                 } else {
-                    let resolved = PreResolvedGlobals::resolve_annotation_gen(
-                        annotation_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases,
-                        &gen_context, ctx.tables, ctx.exprs,
-                    );
-                    resolved.or_else(|| PreResolvedGlobals::resolve_annotation(
-                        annotation_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases,
-                    ))
+                    PreResolvedGlobals::resolve_annotation_gen(annotation_type, &gen_context, ctx)
                 }
             } else {
-                resolve_field_annotation(annotation_type, &gen_context, dummy_node, ctx)
+                PreResolvedGlobals::resolve_annotation_gen(annotation_type, &gen_context, ctx)
             };
             let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
             let bare_inferred = class.bare_inferred_field_names.contains(field_name);
@@ -593,9 +561,8 @@ fn class_ancestors(
 /// `@built-name` overrides). Operates directly on the IR arenas so both build
 /// paths share one implementation.
 ///
-/// `classes`/`aliases`/`param_aliases` are read-only registries; `tables`/`exprs`
-/// are the arenas it mutates. `class_decls` is the workspace/stub class
-/// declaration list.
+/// `ctx` holds the read-only registries and the arenas it mutates; `class_decls`
+/// is the workspace/stub class declaration list.
 ///
 /// Parameterized parents (`Child<T> : Parent<T>`, including renamed/reordered
 /// args like `FramePool<T,Tp> : ObjectPool<T & Tp>`) are linked via
@@ -604,33 +571,23 @@ fn class_ancestors(
 /// `parent_type_bindings`. The cold path historically inlined an older variant
 /// that matched raw parent strings against plain class-name keys and so silently
 /// dropped every parameterized parent; unifying here fixes that.
-pub fn resolve_inheritance(
-    class_decls: &[ClassDecl],
-    classes: &HashMap<String, TableIndex>,
-    aliases: &HashMap<String, ValueType>,
-    param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
-    tables: &mut LayeredVec<TableInfo>,
-    exprs: &mut LayeredVec<Expr>,
-) {
+pub fn resolve_inheritance(class_decls: &[ClassDecl], ctx: &mut FnBuildCtx) {
     // Resolve direct `table<K,V>` parents before linking ancestors so
     // transitive inheritance can propagate key_type/value_type to children.
     for class in class_decls.iter() {
-        let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
+        let Some(&child_table_idx) = ctx.classes.get(class.name.as_str()) else { continue };
         let child_local = child_table_idx.ext_offset();
+        let generics: Vec<(String, Option<String>)> = class.type_params.iter()
+            .map(|tp| (tp.clone(), None)).collect();
         for parent_name in &class.parents {
-            if !parent_name.contains('<') { continue; }
-            let at = crate::annotations::parse_type(parent_name);
-            if let AnnotationType::Parameterized(base, args) = &at
-                && base == "table" && args.len() == 2
-                && let Some(key_vt) = PreResolvedGlobals::resolve_annotation_gen(
-                    &args[0], classes, aliases, param_aliases, &[], tables, exprs)
-                && let Some(value_vt) = PreResolvedGlobals::resolve_annotation_gen(
-                    &args[1], classes, aliases, param_aliases, &[], tables, exprs) {
-                    tables[child_local].key_type = Some(key_vt);
-                    tables[child_local].value_type = Some(value_vt);
-                }
+            if let Some((key_vt, value_vt)) = PreResolvedGlobals::resolve_parent_map_types(parent_name, &generics, ctx) {
+                ctx.tables[child_local].key_type = Some(key_vt);
+                ctx.tables[child_local].value_type = Some(value_vt);
+            }
         }
     }
+    let (classes, aliases) = (ctx.classes, ctx.aliases);
+    let tables = &mut *ctx.tables;
 
     // Link each class to its ancestors (`class_ancestors`).
     {
@@ -706,6 +663,7 @@ pub fn resolve_inheritance(
     // For classes like `ChildSchema` with constraint `T: Class<P>` where
     // P=ParentSchemaBase, substitute the parent class's type params (S)
     // with the resolved values (ParentSchemaBase) in inherited fields.
+    let mut substituted_fields: Vec<(usize, String, FieldInfo, AnnotationType)> = Vec::new();
     for class in class_decls.iter() {
         if class.constraint_type_arg_subs.is_empty() { continue; }
         let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
@@ -739,17 +697,21 @@ pub fn resolve_inheritance(
                     if tables[child_local].fields.contains_key(&fname) { continue; }
                     let raw = fi.annotation_type_raw.as_ref().unwrap().clone();
                     let substituted = substitute_annotation_type(&raw, &subs, classes);
-                    if let Some(resolved) = crate::annotations::resolve_annotation_type(
-                        &substituted, &[], classes, aliases,
-                    ) {
-                        let mut child_fi = fi;
-                        child_fi.annotation = Some(resolved);
-                        tables[child_local].fields.insert(fname, child_fi);
-                    }
+                    substituted_fields.push((child_local, fname, fi, substituted));
                 }
             }
         }
     }
+    for (child_local, fname, mut child_fi, substituted) in substituted_fields {
+        if ctx.tables[child_local].fields.contains_key(&fname) { continue; }
+        let Some(resolved) = PreResolvedGlobals::resolve_annotation_gen(&substituted, &[], ctx) else { continue };
+        child_fi.expr = ExprId(EXT_BASE + ctx.exprs.len());
+        ctx.exprs.push(Expr::Literal(resolved.clone()));
+        child_fi.annotation = Some(resolved);
+        ctx.tables[child_local].fields.insert(fname, child_fi);
+    }
+    let tables = &mut *ctx.tables;
+    let exprs = &mut *ctx.exprs;
 
     // Pass 3c: Substitute inherited field types based on field_built_names overrides.
     // When a child class (e.g. BaseFrame) overrides a parent's @built-name for a field

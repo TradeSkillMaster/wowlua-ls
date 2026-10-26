@@ -628,6 +628,30 @@ impl ClassDecl {
         }
     }
 
+    /// The key and value types a generic class declares itself a map of, in
+    /// terms of its type params: its last `table<K, V>` parent, else its last
+    /// `[K] V` index field, as the class's own key and value types resolve. An
+    /// instantiation `Class<A, B>` substitutes its arguments into them.
+    pub fn map_signature(&self) -> Option<(AnnotationType, AnnotationType)> {
+        if self.type_params.is_empty() { return None; }
+        let from_parent = self.parents.iter().rev()
+            .filter(|p| p.contains('<'))
+            .find_map(|p| match parse_type(p) {
+                AnnotationType::Parameterized(base, mut args) if base == "table" && args.len() == 2 => {
+                    let value = args.pop()?;
+                    Some((args.pop()?, value))
+                }
+                _ => None,
+            });
+        let signature = from_parent.or_else(|| self.fields.iter().rev().find_map(|(name, typ, _)| {
+            let key = name.strip_prefix('[')?.strip_suffix(']')?;
+            (key == "string" || key == "number" || self.type_params.iter().any(|tp| tp == key))
+                .then(|| (AnnotationType::Simple(key.to_string()), typ.clone()))
+        }))?;
+        let references = |at: &AnnotationType| crate::pre_globals::annotation_type_references_type_params(at, &self.type_params);
+        (references(&signature.0) || references(&signature.1)).then_some(signature)
+    }
+
     /// Construct a minimal `ClassDecl` with only its name set and all other
     /// fields defaulted.
     pub fn empty_named(name: String) -> Self {
@@ -790,6 +814,44 @@ impl AliasDecl {
         };
         RegisteredAlias { typ, literals, extends }
     }
+}
+
+/// The order to register `aliases` in (indices into it) so that each body is
+/// resolved after the aliases it names: declaration order, except that the
+/// declarations of an alias named before it is declared come first. Declarations
+/// sharing a name keep their relative order; a cycle keeps declaration order.
+pub fn alias_registration_order(aliases: &[AliasDecl]) -> Vec<usize> {
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::default();
+    for (i, alias) in aliases.iter().enumerate() {
+        by_name.entry(alias.name.as_str()).or_default().push(i);
+    }
+    fn visit<'d>(
+        name: &'d str,
+        aliases: &'d [AliasDecl],
+        by_name: &HashMap<&'d str, Vec<usize>>,
+        visited: &mut HashSet<&'d str>,
+        order: &mut Vec<usize>,
+    ) {
+        if !visited.insert(name) { return; }
+        for &i in &by_name[name] {
+            let mut named = HashSet::default();
+            collect_referenced_type_names(&aliases[i].typ, &mut named);
+            let mut named: Vec<&str> = named.iter()
+                .filter_map(|n| by_name.get_key_value(n.as_str()).map(|(&k, _)| k))
+                .collect();
+            named.sort_unstable();
+            for dep in named {
+                visit(dep, aliases, by_name, visited, order);
+            }
+            order.push(i);
+        }
+    }
+    let mut visited = HashSet::default();
+    let mut order = Vec::with_capacity(aliases.len());
+    for alias in aliases {
+        visit(&alias.name, aliases, &by_name, &mut visited, &mut order);
+    }
+    order
 }
 
 /// Recursive field entry from a defclass table literal.
@@ -2332,7 +2394,8 @@ pub mod scan_callback;
 
 pub use annotation_types::{
     collect_annotation_string_literals,
-    format_annotation_type, substitute_alias_type_params, match_projection,
+    format_annotation_type, substitute_alias_type_params, Instantiations, match_projection, is_generic_projection,
+    union_drops_projections,
     detect_event_params, detect_event_params_from_generic, parse_type, parse_return_line,
     strip_return_description, extract_type_prefix,
 };

@@ -1,0 +1,2 @@
+-- Declared in a file scanned after the aliases that name it (`defs.lua`).
+---@alias PosLateEvent "late"

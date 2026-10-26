@@ -160,14 +160,6 @@ fn block_scope_range(block: Block<'_>) -> (u32, u32) {
 
 impl<'a> Analysis<'a> {
     pub(super) fn build_ir(&mut self) {
-        let root_order = self.ir.next_order();
-        self.ir.scopes.push(Scope {
-            parent: None,
-            symbols: HashMap::default(),
-            creation_order: root_order,
-            is_loop: false,
-        });
-
         let mut pending_branch_merges: Vec<PendingBranchMerge> = Vec::new();
         let mut pending_exit_narrowings: Vec<PendingExitNarrowing<'a>> = Vec::new();
         let mut pending_while_narrowings: Vec<PendingWhileNarrowing> = Vec::new();
@@ -509,14 +501,12 @@ impl<'a> Analysis<'a> {
                                     }
                                 })
                         }).or_else(|| trailing_types.first().cloned());
-                        if let Some(inline_at) = inline_at {
-                            let vt_opt = self.resolve_annotation_type_mut_gen(&inline_at, &[])
-                                .map(|vt| self.materialize_fun_alias(vt, &inline_at));
-                            if let Some(vt) = vt_opt {
-                                let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-                                self.ir.set_type_source(symbol_idx, expr_id);
-                                self.record_symbol_annotation(symbol_idx, &inline_at, vt);
-                            }
+                        if let Some(inline_at) = inline_at
+                            && let Some(vt) = self.resolve_annotation_type_mut_gen(&inline_at, &[])
+                        {
+                            let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                            self.ir.set_type_source(symbol_idx, expr_id);
+                            self.record_symbol_annotation(symbol_idx, &inline_at, vt);
                         }
                     }
                     if annotations.var_type.is_none() && effective_class.is_none()
@@ -3491,12 +3481,7 @@ impl<'a> Analysis<'a> {
             }
             // Positional `@param x params<F>` is rejected — `params<F>` only
             // fits in the vararg slot. `returns<F>` in positional is allowed.
-            // If the annotation reduces to a function-typed alias (e.g.
-            // `@param cb MyFuncType` where `MyFuncType = fun(...)`), materialize a
-            // real Function entry so the signature survives for arg-type checking
-            // and parameter-name inlay hints.
-            let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics)
-                .map(|vt| self.materialize_fun_alias(vt, &p.typ));
+            let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None).
             // A repeated name (`function(_, _)`) annotates its first occurrence.
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
@@ -3747,8 +3732,7 @@ impl<'a> Analysis<'a> {
                     // `any` or expand at call sites via `return_projections`) and a stray
                     // tuple-form entry (mixed tuple/legacy `@return`, already flagged
                     // `malformed-annotation`) — neither is a real return slot to count.
-                    let resolved_vt = self.resolve_annotation_type_mut_gen(ret_annotation, generics)
-                        .map(|vt| self.materialize_fun_alias(vt, ret_annotation));
+                    let resolved_vt = self.resolve_annotation_type_mut_gen(ret_annotation, generics);
                     let allow_placeholder = !is_projection && !tuple_form_flags[i];
                     if let Some(vt) = resolved_vt.or_else(|| allow_placeholder.then_some(ValueType::Any)) {
                         let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
@@ -4274,31 +4258,14 @@ impl<'a> Analysis<'a> {
 
     /// Apply a preceding `---@type` annotation to a `local` name.
     fn apply_local_var_type(&mut self, symbol_idx: SymbolIndex, at: &AnnotationType) {
-        // If the annotation reduces to a function-typed alias,
-        // materialize a real Function entry so the signature
-        // survives propagation through `local y = x`.
-        let vt_opt = self.resolve_annotation_type_mut_gen(at, &[])
-            .map(|vt| self.materialize_fun_alias(vt, at));
-        let Some(vt) = vt_opt else { return };
+        let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) else { return };
         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
         self.ir.set_type_source(symbol_idx, expr_id);
         // Store resolved type args for parameterized class annotations
         // (e.g. @type Future<number> → type_args = [Number])
         if let AnnotationType::Parameterized(_param_class_name, type_arg_annotations) = at {
             let type_args: Vec<ValueType> = type_arg_annotations.iter()
-                .filter_map(|ta| {
-                    let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
-                    if matches!(&vt, Some(ValueType::Function(None)))
-                        && let AnnotationType::Simple(name) = ta {
-                            let body = self.ir.alias_fun_types.get(name)
-                                .or_else(|| self.ir.ext.alias_fun_types.get(name))
-                                .cloned();
-                            if let Some(body) = body {
-                                return self.resolve_annotation_type_mut_gen(&body, &[]);
-                            }
-                        }
-                    vt
-                })
+                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &[]))
                 .collect();
             if !type_args.is_empty()
                 && let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut()

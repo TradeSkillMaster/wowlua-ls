@@ -117,7 +117,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
+use crate::types::{DefNode, Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
 
 /// Locates the call a global's type is harvested from — the creating call of a
 /// `@creates-global` side-effect global (e.g. the `_G.MyFrame` from
@@ -1508,7 +1508,9 @@ fn harvest_sigs(
     // text-range start).
     let mut by_start: HashMap<u32, usize> = HashMap::default();
     for (i, f) in ir.functions.iter().enumerate() {
-        by_start.insert(f.def_node.start, i);
+        if f.def_node != DefNode::DUMMY {
+            by_start.insert(f.def_node.start, i);
+        }
     }
 
     // Use the reverse-indexed path→functions map (O(1) per file) instead of

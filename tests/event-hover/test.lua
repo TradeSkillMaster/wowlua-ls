@@ -258,19 +258,19 @@ local function handleBatchFunPayload(action, ...)
     if action == "BATCH_FUN_ALIAS" then
         local prepareFunc = ...
         local pf = prepareFunc
---            ^ hover: (local) pf: fun(self: table, button: table)
+--            ^ hover: (local) function pf(self: table, button: table)
     end
     if action == "BATCH_FUN_INLINE" then
         local onDone = ...
         local cb = onDone
---            ^ hover: (local) cb: fun(ok: boolean): number
+--            ^ hover: (local) function cb(ok: boolean)\n-> number
     end
 end
 
 -- Named-param callback form keeps the alias signature too.
 RegisterFunPayload("BATCH_FUN_ALIAS", function(prepareFunc)
     local pf = prepareFunc
---        ^ hover: (local) pf: fun(self: table, button: table)
+--        ^ hover: (local) function pf(self: table, button: table)
 end)
 
 -- ── Inline params on single @event ──

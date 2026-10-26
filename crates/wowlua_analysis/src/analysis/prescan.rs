@@ -1,22 +1,13 @@
 use crate::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::annotations::{AnnotationType, parse_overload, scan_all_annotations};
+use crate::annotations::{AnnotationType, scan_all_annotations};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
 
 // ── Annotation Pre-scan (Phase 0) ─────────────────────────────────────────────
-
-#[derive(Debug)]
-struct FunReturnInfo {
-    return_annotations: Vec<ValueType>,
-    return_annotations_raw: Vec<AnnotationType>,
-    return_labels: Vec<Option<String>>,
-    ret_symbols: Vec<SymbolIndex>,
-    overloads: Vec<ResolvedOverload>,
-}
 
 /// Return type and parameter types extracted from a function argument,
 /// for generic inference in the `Fun` arm of `infer_generics_from_annotation`.
@@ -146,6 +137,7 @@ impl<'a> Analysis<'a> {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
                 class_type_param_constraints: class.type_param_constraints.clone(),
+                map_signature: class.map_signature().map(Box::new),
                 accessors: class.accessors.iter().cloned().collect(),
                 constructors,
                 enum_kind: class.initial_enum_kind(),
@@ -174,7 +166,8 @@ impl<'a> Analysis<'a> {
 
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
-        for alias in &scan.aliases {
+        for i in crate::annotations::alias_registration_order(&scan.aliases) {
+            let alias = &scan.aliases[i];
             // A file-local alias shadows any imported/stub alias of the same name
             // (unless it extends it, see `AliasDecl::registered_type`).
             // Hide the ext entry's string-enum completion literals up front (the
@@ -205,7 +198,7 @@ impl<'a> Analysis<'a> {
                 // regular aliases map because tuples don't have a single ValueType.
                 self.ir.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
             } else if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
-                if matches!(&vt, ValueType::Function(None)) {
+                if matches!(&vt, ValueType::Function(_)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
                 let registered = alias.registered_type(
@@ -220,11 +213,10 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // Build lookup for local aliases whose resolved type is a function, so that
-        // @field declarations using function aliases get proper annotation_text for
-        // later materialization into concrete Function entries.
+        // Local aliases whose resolved type is a function, so that @field
+        // declarations using function aliases display the alias's `fun(...)`.
         let fun_alias_types: HashMap<&str, &AnnotationType> = scan.aliases.iter()
-            .filter(|a| matches!(self.ir.aliases.get(&a.name), Some(ValueType::Function(None))))
+            .filter(|a| matches!(self.ir.aliases.get(&a.name), Some(ValueType::Function(_))))
             .map(|a| (a.name.as_str(), &a.typ))
             .collect();
 
@@ -257,16 +249,19 @@ impl<'a> Analysis<'a> {
                     }
                 }
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
-                if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
+                // The class's type params are type variables in its fields, as in
+                // the workspace build (`shared::populate_class_fields`).
+                let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx.val()].class_type_params.iter()
+                    .map(|tp| (tp.clone(), None)).collect();
+                if let Some(vt) = self.resolve_annotation_type_mut_gen(annotation_type, &gen_context) {
                     let annotation_text = match (&vt, annotation_type) {
-                        (ValueType::Function(None), AnnotationType::Simple(s)) if s.starts_with("fun(") => Some(s.clone()),
-                        (ValueType::Function(None), AnnotationType::Fun(..)) => Some(crate::annotations::format_annotation_type(annotation_type)),
+                        (ValueType::Function(_), AnnotationType::Simple(s)) if s.starts_with("fun(") => Some(s.clone()),
+                        (ValueType::Function(_), AnnotationType::Fun(..)) => Some(crate::annotations::format_annotation_type(annotation_type)),
                         // Preserve T! text for lateinit fields so hover shows the name, not expanded class
                         (_, AnnotationType::NonNil(_)) => Some(crate::annotations::format_annotation_type(annotation_type)),
                         _ => None,
                     };
-                    // If annotation_text is still None but the type contains Function(None),
-                    // try to resolve through aliases to find the underlying fun(...) type.
+                    // Otherwise a function alias's text is the `fun(...)` it names.
                     let annotation_text = annotation_text.or_else(|| {
                         Self::resolve_fun_text_from_alias(annotation_type, &fun_alias_types, &self.ir.ext.alias_fun_types)
                     });
@@ -488,8 +483,10 @@ impl<'a> Analysis<'a> {
         for (class_i, class) in scan.classes.iter().enumerate() {
             let child_idx = class_table_indices[class_i];
             if child_idx.is_external() { continue; }
+            let generics: Vec<(String, Option<String>)> = class.type_params.iter()
+                .map(|tp| (tp.clone(), None)).collect();
             for parent_name in &class.parents {
-                if let Some((key_type, value_type)) = self.resolve_table_parent_types(parent_name) {
+                if let Some((key_type, value_type)) = self.resolve_parent_map_types(parent_name, &generics) {
                     self.ir.tables[child_idx.val()].key_type = Some(key_type);
                     self.ir.tables[child_idx.val()].value_type = Some(value_type);
                 }
@@ -1568,369 +1565,35 @@ impl<'a> Analysis<'a> {
     }
 
     /// Recursively expand an annotation type through aliases to find a `Fun(...)` type,
-    /// then format it as text for materialization. Handles `Simple("AliasName")`,
-    /// `Union([AliasName, nil])` (optional aliases), and nested unions.
+    /// then format it as text for display. Handles `Simple("AliasName")`,
+    /// `Union([AliasName, nil])` (optional aliases), and nested unions; an alias
+    /// chain that comes back to itself (`---@alias A A`) has none.
     fn resolve_fun_text_from_alias(
         at: &AnnotationType,
         local_aliases: &HashMap<&str, &AnnotationType>,
         ext_aliases: &HashMap<String, AnnotationType>,
     ) -> Option<String> {
-        match at {
-            AnnotationType::Fun(..) => Some(crate::annotations::format_annotation_type(at)),
-            AnnotationType::Simple(name) => {
-                if let Some(alias_at) = local_aliases.get(name.as_str()) {
-                    Self::resolve_fun_text_from_alias(alias_at, local_aliases, ext_aliases)
-                } else if let Some(alias_at) = ext_aliases.get(name.as_str()) {
-                    Self::resolve_fun_text_from_alias(alias_at, local_aliases, ext_aliases)
-                } else {
-                    None
+        fn walk(
+            at: &AnnotationType,
+            local_aliases: &HashMap<&str, &AnnotationType>,
+            ext_aliases: &HashMap<String, AnnotationType>,
+            seen: &mut HashSet<String>,
+        ) -> Option<String> {
+            match at {
+                AnnotationType::Fun(..) => Some(crate::annotations::format_annotation_type(at)),
+                AnnotationType::Simple(name) => {
+                    if !seen.insert(name.clone()) { return None; }
+                    let alias_at = local_aliases.get(name.as_str()).copied()
+                        .or_else(|| ext_aliases.get(name.as_str()))?;
+                    walk(alias_at, local_aliases, ext_aliases, seen)
                 }
-            }
-            AnnotationType::Union(parts) => {
-                parts.iter().find_map(|p| Self::resolve_fun_text_from_alias(p, local_aliases, ext_aliases))
-            }
-            _ => None,
-        }
-    }
-
-    /// Convert fun(...) field annotations into real Function entries.
-    /// Runs after build_ir so that function/scope/symbol indices are stable.
-    pub(super) fn materialize_fun_annotations(&mut self) {
-        // Collect fields that need materialization (to avoid borrow conflicts)
-        // `in_union` indicates Function(None) is inside a Union rather than top-level
-        let mut to_materialize: Vec<(TableIndex, String, String, bool)> = Vec::new();
-        // Build combined alias lookup for resolving function alias types
-        let local_alias_refs: HashMap<&str, &AnnotationType> = self.ir.alias_fun_types.iter()
-            .map(|(k, v)| (k.as_str(), v)).collect();
-        for (table_idx_raw, table) in self.ir.tables.iter().enumerate() {
-            let table_idx = TableIndex(table_idx_raw);
-            for (field_name, fi) in &table.fields {
-                if matches!(&fi.annotation, Some(ValueType::Function(None))) {
-                    let text = fi.annotation_text.as_ref()
-                        .filter(|t| t.starts_with("fun("))
-                        .cloned()
-                        .or_else(|| {
-                            fi.annotation_type_raw.as_ref().and_then(|raw| {
-                                Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
-                            })
-                        });
-                    if let Some(text) = text {
-                        to_materialize.push((table_idx, field_name.clone(), text, false));
-                    }
-                } else if let Some(ValueType::Union(types)) = &fi.annotation
-                    && types.iter().any(|t| matches!(t, ValueType::Function(None))) {
-                        // Use annotation_text (set during prescan for both inline fun()
-                        // and alias types), or extract from raw annotation type
-                        let text = fi.annotation_text.as_ref().filter(|t| t.starts_with("fun(")).cloned().or_else(|| {
-                            fi.annotation_type_raw.as_ref().and_then(|raw| {
-                                let fun_part = match raw {
-                                    AnnotationType::Union(parts) => parts.iter().find(|p| matches!(p, AnnotationType::Fun(..))),
-                                    _ => None,
-                                };
-                                if let Some(fun_at) = fun_part {
-                                    Some(crate::annotations::format_annotation_type(fun_at))
-                                } else {
-                                    Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
-                                }
-                            })
-                        });
-                        if let Some(text) = text {
-                            to_materialize.push((table_idx, field_name.clone(), text, true));
-                        }
-                    }
-            }
-        }
-        // Also scan overlay fields (runtime-assigned fields on external tables)
-        for (&table_idx, fields) in &self.ir.overlay_fields {
-            for (field_name, fi) in fields {
-                if matches!(&fi.annotation, Some(ValueType::Function(None))) {
-                    let text = fi.annotation_text.clone().or_else(|| {
-                        fi.annotation_type_raw.as_ref().and_then(|raw| {
-                            Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
-                        })
-                    });
-                    if let Some(text) = text {
-                        to_materialize.push((table_idx, field_name.clone(), text, false));
-                    }
-                } else if let Some(ValueType::Union(types)) = &fi.annotation
-                    && types.iter().any(|t| matches!(t, ValueType::Function(None))) {
-                        let text = fi.annotation_text.as_ref().filter(|t| t.starts_with("fun(")).cloned().or_else(|| {
-                            fi.annotation_type_raw.as_ref().and_then(|raw| {
-                                let fun_part = match raw {
-                                    AnnotationType::Union(parts) => parts.iter().find(|p| matches!(p, AnnotationType::Fun(..))),
-                                    _ => None,
-                                };
-                                if let Some(fun_at) = fun_part {
-                                    Some(crate::annotations::format_annotation_type(fun_at))
-                                } else {
-                                    Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
-                                }
-                            })
-                        });
-                        if let Some(text) = text {
-                            to_materialize.push((table_idx, field_name.clone(), text, true));
-                        }
-                    }
-            }
-        }
-        // Container fields whose element/value type is a function-typed alias
-        // (e.g. `@field cbs F[]`, `@field m table<string, F>`, or nested as in
-        // `@field m table<string, F[]>`): the innermost container's `value_type`
-        // stayed `Function(None)`.
-        // The inline calls in resolve_annotation_type_mut_gen (Array/Map paths)
-        // handle direct single-hop aliases eagerly; this fixup catches what they
-        // miss — primarily @field annotations, which go through the non-gen
-        // resolver that defers fun() materialization to avoid prescan
-        // scope-index conflicts, plus any multi-hop alias chain that
-        // reduce_to_fun_alias couldn't resolve during initial annotation
-        // resolution.
-        let mut containers_to_materialize: Vec<(TableIndex, AnnotationType)> = Vec::new();
-        for table in self.ir.tables.iter() {
-            for fi in table.fields.values() {
-                let (Some(ValueType::Table(Some(top))), Some(top_raw)) = (&fi.annotation, &fi.annotation_type_raw)
-                else { continue };
-                // Step through the nested containers and the annotation's
-                // element/value positions together.
-                let (mut idx, mut raw) = (*top, top_raw);
-                while !idx.is_external() {
-                    let inner = match raw {
-                        AnnotationType::Array(inner) => inner.as_ref(),
-                        AnnotationType::Parameterized(base, args)
-                            if base == "table" && args.len() == 2 => &args[1],
-                        _ => break,
-                    };
-                    match &self.ir.tables[idx.val()].value_type {
-                        Some(ValueType::Function(None)) => {
-                            containers_to_materialize.push((idx, inner.clone()));
-                            break;
-                        }
-                        Some(ValueType::Table(Some(child))) => (idx, raw) = (*child, inner),
-                        _ => break,
-                    }
+                AnnotationType::Union(parts) => {
+                    parts.iter().find_map(|p| walk(p, local_aliases, ext_aliases, seen))
                 }
+                _ => None,
             }
         }
-        if to_materialize.is_empty() && containers_to_materialize.is_empty() { return; }
-
-        let dummy_node = DefNode::DUMMY;
-        for (table_idx, field_name, fun_text, in_union) in to_materialize {
-            let Some(sig) = parse_overload(&fun_text) else { continue };
-            let func_scope = self.ir.insert_scope(None);
-            let mut arg_symbols = Vec::new();
-            let mut param_annotations = Vec::new();
-            let mut param_optional = Vec::new();
-            for p in &sig.params {
-                if p.name == "..." { continue; }
-                let resolved = self.resolve_annotation_type(&p.typ);
-                let resolved = if p.optional {
-                    resolved.map(|vt| ValueType::union(vt, ValueType::Nil))
-                } else {
-                    resolved
-                };
-                let sym_idx = SymbolIndex(self.ir.symbols.len());
-                self.ir.symbols.push(Symbol {
-                    id: SymbolIdentifier::Name(p.name.clone()),
-                    scope_idx: func_scope,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type: resolved,
-                        type_args: Vec::new(),
-                        created_in_scope: func_scope,
-                        creation_order: 0,
-                        original_type_source: None,
-                    }],
-                    flavor_guard: 0,
-                    flavors: 0,
-                });
-                self.ir.scopes[func_scope.val()].symbols.insert(
-                    SymbolIdentifier::Name(p.name.clone()), sym_idx,
-                );
-                arg_symbols.push(sym_idx);
-                param_annotations.push(p.typ.clone());
-                param_optional.push(p.optional);
-            }
-
-            let func_idx = FunctionIndex(self.ir.functions.len());
-
-            // Detect tuple-form returns: fun(): (true ok, number v) | (false, string)
-            let tuple_form_flags: Vec<bool> = sig.returns.iter()
-                .map(crate::annotations::annotation_is_tuple_form).collect();
-            let is_tuple_form = sig.returns.len() == 1
-                && tuple_form_flags.iter().all(|&b| b);
-
-            let (return_annotations, return_annotations_raw, return_labels, overloads, has_vararg_return);
-            let mut ret_symbols = Vec::new();
-
-            // Helper: create a return symbol with the given resolved type
-            let push_ret_symbol = |ir: &mut super::Ir, col: usize, resolved: ValueType| {
-                let sym_idx = SymbolIndex(ir.symbols.len());
-                ir.symbols.push(Symbol {
-                    id: SymbolIdentifier::FunctionRet(func_idx, col),
-                    scope_idx: func_scope,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type: Some(resolved),
-                        type_args: Vec::new(),
-                        created_in_scope: func_scope,
-                        creation_order: 0,
-                        original_type_source: None,
-                    }],
-                    flavor_guard: 0,
-                    flavors: 0,
-                });
-                ir.scopes[func_scope.val()].symbols.insert(
-                    SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
-                );
-                sym_idx
-            };
-
-            if is_tuple_form {
-                let cases = crate::annotations::tuple_form_cases(&sig.returns[0]);
-                let any_vararg_tail = cases.iter().any(|(p, _)| {
-                    matches!(p.last().map(|tp| &tp.typ), Some(crate::annotations::AnnotationType::VarArgs(_)))
-                });
-                has_vararg_return = any_vararg_tail;
-                let (col_vts, col_raws, labels, synth) =
-                    crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                        self.resolve_annotation_type_mut(at)
-                    });
-                for (col, vt) in col_vts.iter().enumerate() {
-                    ret_symbols.push(push_ret_symbol(&mut self.ir, col, vt.clone()));
-                }
-                return_annotations = col_vts;
-                return_annotations_raw = col_raws;
-                return_labels = labels;
-                overloads = synth;
-            } else {
-                has_vararg_return = false;
-                // Resolve each return type once and reuse for both symbols and
-                // annotations. Preserve an unresolvable slot as `any` rather than
-                // dropping it, so `return_annotations`, `return_annotations_raw`, and the
-                // per-slot return symbols all stay aligned with the raw `@return` count —
-                // a dropped slot would undercount the arity and false-positive
-                // `unbalanced-assignments` on a valid destructure.
-                let resolved: Vec<ValueType> = sig.returns.iter()
-                    .map(|rt| self.resolve_annotation_type_mut(rt).unwrap_or(ValueType::Any))
-                    .collect();
-                return_annotations = resolved.clone();
-                return_annotations_raw = sig.returns.clone();
-                return_labels = Vec::new();
-                overloads = Vec::new();
-                for (i, r) in resolved.into_iter().enumerate() {
-                    ret_symbols.push(push_ret_symbol(&mut self.ir, i, r));
-                }
-            };
-
-            self.ir.functions.push(Function {
-                def_node: dummy_node,
-                scope: func_scope,
-                args: arg_symbols,
-                rets: ret_symbols,
-                return_annotations,
-                return_annotations_raw,
-                return_labels,
-                return_descriptions: Vec::new(),
-                overloads,
-                doc: None,
-                deprecated: false,
-                deprecated_message: None,
-                nodiscard: false,
-                generics: Vec::new(),
-                generic_constraints_raw: Vec::new(),
-                param_annotations,
-                param_descriptions: Vec::new(),
-                defclass: None,
-                defclass_parent: None,
-                is_vararg: sig.is_vararg,
-                vararg_annotation: None,
-
-                vararg_description: None,
-                param_optional,
-                returns_self: false,
-                explicit_void_return: false,
-                implicit_nil_return: false,
-
-                constructor: false,
-                builds_field: None,
-                built_name: None,
-                built_extends: false,
-                returns_built: false,
-                returns_built_parent: None,
-                type_narrows: None,
-                type_narrows_class: None,
-                returns_class_name: false,
-                returns_enum: false,
-                secret: None,
-                has_vararg_return,
-                see: Vec::new(),
-                flavors: 0,
-                flavor_guard: 0,
-                return_projections: crate::collections::HashMap::default(),
-                vararg_projection: None,
-                event_params: None,
-                narrows_arg: None,
-                stores_into: None,
-                requires_constraints: Vec::new(),
-                returns_self_type_args: None,
-            });
-
-            // Update the field annotation and expr.
-            // Fields may be in local tables or overlay fields (for external tables).
-            // We must create exprs before borrowing `fi` mutably to avoid borrow conflicts.
-            let func_vt = ValueType::Function(Some(func_idx));
-            if in_union {
-                // First pass: update annotation in place
-                let fi = if !table_idx.is_external() {
-                    self.ir.tables[table_idx.val()].fields.get_mut(&field_name)
-                } else {
-                    self.ir.overlay_fields.get_mut(&table_idx)
-                        .and_then(|fields| fields.get_mut(&field_name))
-                };
-                let Some(fi) = fi else { continue };
-                if let Some(ValueType::Union(ref mut types)) = fi.annotation {
-                    for t in types.iter_mut() {
-                        if matches!(t, ValueType::Function(None)) {
-                            *t = func_vt.clone();
-                            break;
-                        }
-                    }
-                }
-                // Re-borrow to get the updated annotation and create expr
-                let new_vt = if !table_idx.is_external() {
-                    self.ir.tables[table_idx.val()].fields[&field_name].annotation.clone().unwrap()
-                } else {
-                    self.ir.overlay_fields[&table_idx][&field_name].annotation.clone().unwrap()
-                };
-                let expr_id = self.ir.push_expr(Expr::Literal(new_vt));
-                let fi = if !table_idx.is_external() {
-                    self.ir.tables[table_idx.val()].fields.get_mut(&field_name).unwrap()
-                } else {
-                    self.ir.overlay_fields.get_mut(&table_idx).unwrap().get_mut(&field_name).unwrap()
-                };
-                fi.expr = expr_id;
-            } else {
-                let expr_id = self.ir.push_expr(Expr::Literal(func_vt.clone()));
-                let fi = if !table_idx.is_external() {
-                    self.ir.tables[table_idx.val()].fields.get_mut(&field_name)
-                } else {
-                    self.ir.overlay_fields.get_mut(&table_idx)
-                        .and_then(|fields| fields.get_mut(&field_name))
-                };
-                let Some(fi) = fi else { continue };
-                fi.annotation = Some(func_vt);
-                fi.expr = expr_id;
-            }
-        }
-        // Materialize each container's element/value fun-alias signature and store
-        // it back into the array/map table's `value_type`, so indexing or lookup
-        // (`h.cbs[1]`, `m.x`) yields the full signature instead of bare `function`.
-        for (arr_idx, inner) in containers_to_materialize {
-            if let Some(vt) = self.try_materialize_fun_alias(&inner) {
-                self.ir.tables[arr_idx.val()].value_type = Some(vt);
-            }
-        }
+        walk(at, local_aliases, ext_aliases, &mut HashSet::default())
     }
 
     /// Minimal per-file injection: only non-class global tables (a few dozen).
@@ -1941,127 +1604,106 @@ impl<'a> Analysis<'a> {
         // Nothing to inject per-file.
     }
 
-    fn resolve_table_parent_types(&mut self, parent_name: &str) -> Option<(ValueType, ValueType)> {
+    /// The key and value types a class with the type params `generics` gets from
+    /// its parent `parent_name`: a `table<K, V>`'s, or an instantiated map
+    /// class's (`---@class Scores : Dict<string, number>`).
+    fn resolve_parent_map_types(&mut self, parent_name: &str, generics: &[(String, Option<String>)]) -> Option<(ValueType, ValueType)> {
         if !parent_name.contains('<') { return None; }
-        let at = crate::annotations::parse_type(parent_name);
-        if let AnnotationType::Parameterized(base, args) = &at
-            && base == "table" && args.len() == 2 {
-                let key_vt = self.resolve_annotation_type_mut(&args[0])?;
-                let value_vt = self.resolve_annotation_type_mut(&args[1])?;
-                return Some((key_vt, value_vt));
-            }
-        None
+        let AnnotationType::Parameterized(base, args) = crate::annotations::parse_type(parent_name) else { return None };
+        if base == "table" && args.len() == 2 {
+            let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics)?;
+            let value_vt = self.resolve_annotation_type_mut_gen(&args[1], generics)?;
+            return Some((key_vt, value_vt));
+        }
+        let (_, key_vt, value_vt) = self.instantiate_map_signature(&base, &args, generics)?;
+        Some((key_vt?, value_vt?))
+    }
+
+    /// The class an annotation names `name`, looked up as
+    /// [`Self::resolve_annotation_type_gen`] does.
+    fn annotation_class(&self, name: &str) -> Option<TableIndex> {
+        if self.annotation_names_ext_first {
+            return self.ir.ext.classes.get(name).or_else(|| self.ir.classes.get(name)).copied();
+        }
+        self.ir.classes.get(name).copied()
+    }
+
+    /// For a generic class with a map signature (`TableInfo::map_signature`),
+    /// the class and the key and value types of its instantiation `base<args>`.
+    fn instantiate_map_signature(
+        &mut self,
+        base: &str,
+        args: &[AnnotationType],
+        generics: &[(String, Option<String>)],
+    ) -> Option<(TableIndex, Option<ValueType>, Option<ValueType>)> {
+        let class_idx = self.annotation_class(base)?;
+        let class = self.ir.table(class_idx);
+        let (key, value) = class.map_signature.as_deref()?;
+        if class.class_type_params.len() != args.len() { return None; }
+        let key = crate::annotations::substitute_alias_type_params(key, &class.class_type_params, args);
+        let value = crate::annotations::substitute_alias_type_params(value, &class.class_type_params, args);
+        if !self.instantiations.enter(base, args) {
+            return Some((class_idx, None, None));
+        }
+        let key_vt = self.resolve_annotation_type_mut_gen(&key, generics);
+        let value_vt = self.resolve_annotation_type_mut_gen(&value, generics);
+        self.instantiations.exit();
+        Some((class_idx, key_vt, value_vt))
+    }
+
+    /// `base<args>` for a generic class with a map signature: a table of the
+    /// class (its members are the class's) keyed and valued by the signature
+    /// with `args` substituted.
+    fn instantiate_map_class(&mut self, base: &str, args: &[AnnotationType], generics: &[(String, Option<String>)]) -> Option<ValueType> {
+        let (class_idx, key_type, value_type) = self.instantiate_map_signature(base, args, generics)?;
+        if key_type.is_none() && value_type.is_none() {
+            return Some(ValueType::Table(Some(class_idx)));
+        }
+        let class = self.ir.table(class_idx);
+        let mut parent_classes = vec![class_idx];
+        parent_classes.extend(class.parent_classes.iter().copied());
+        let instance = TableInfo {
+            class_name: class.class_name.clone(),
+            class_type_params: class.class_type_params.clone(),
+            accessors: class.accessors.clone(),
+            parent_classes,
+            metatable_index: Some(class_idx),
+            value_type_annotated: value_type.is_some(),
+            key_type,
+            value_type,
+            ..Default::default()
+        };
+        let table_idx = TableIndex(self.ir.tables.len());
+        self.ir.tables.push(instance);
+        Some(ValueType::Table(Some(table_idx)))
     }
 
     pub(super) fn resolve_annotation_type(&self, at: &AnnotationType) -> Option<ValueType> {
         crate::annotations::resolve_annotation_type(at, &[], &self.ir.classes, &self.ir.aliases)
     }
 
-    /// Like resolve_annotation_type but creates TableInfo/Function entries for structured types
-    /// (table<K,V>, T[], fun(x: T): R), preserving type info for display and substitution.
+    /// [`Self::resolve_annotation_type_mut_gen`] with no generics in scope.
     pub(super) fn resolve_annotation_type_mut(&mut self, at: &AnnotationType) -> Option<ValueType> {
-        if let AnnotationType::Array(inner) = at {
-            if let Some(elem_vt) = self.resolve_annotation_type_mut(inner) {
-                let table_idx = TableIndex(self.ir.tables.len());
-                self.ir.tables.push(TableInfo {
-                    key_type: Some(ValueType::Number),
-                    value_type: Some(elem_vt),
-                    value_type_annotated: true,
-                    ..Default::default()
-                });
-                return Some(ValueType::Table(Some(table_idx)));
-            }
-            return Some(ValueType::Table(None));
-        }
-        if let Some(inner) = at.secret_arg() {
-            return self.resolve_annotation_type_mut(inner).map(ValueType::secret_of);
-        }
-        if let AnnotationType::Parameterized(base, _) = at {
-            // expression<C, R> is a built-in type for inline Lua expressions;
-            // at the ValueType level it's just a string. The annotation is
-            // preserved on param_annotations for call-site expression analysis.
-            if base == "expression" {
-                return Some(ValueType::String(None));
-            }
-        }
-        if let AnnotationType::Parameterized(base, args) = at {
-            // Check parameterized aliases (local then external)
-            if let Some(substituted) = self.expand_parameterized_alias(base, args) {
-                return self.resolve_annotation_type_mut(&substituted);
-            }
-            if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
-                let key_vt = self.resolve_annotation_type_mut(&args[0]);
-                let value_vt = self.resolve_annotation_type_mut(&args[1]);
-                let base_vt = crate::annotations::resolve_annotation_type(&AnnotationType::Simple(base.clone()), &[], &self.ir.classes, &self.ir.aliases);
-                if let Some(vt) = value_vt {
-                    // Create a new TableInfo with the key and value types
-                    let table_idx = TableIndex(self.ir.tables.len());
-                    let (fields, class_name, parent_classes) = match &base_vt {
-                        Some(ValueType::Table(Some(idx))) => {
-                            let t = self.ir.table(*idx);
-                            (t.fields.clone(), t.class_name.clone(), t.parent_classes.clone())
-                        }
-                        _ => (HashMap::default(), None, Vec::new()),
-                    };
-                    let accessors = match &base_vt {
-                        Some(ValueType::Table(Some(idx))) => self.ir.table(*idx).accessors.clone(),
-                        _ => HashMap::default(),
-                    };
-                    let is_explicit_map = base == "table" && class_name.is_none();
-                    self.ir.tables.push(TableInfo {
-                        fields, class_name, parent_classes,
-                        key_type: key_vt, value_type: Some(vt),
-                        accessors, is_explicit_map, value_type_annotated: true,
-                        ..Default::default()
-                    });
-                    return Some(ValueType::Table(Some(table_idx)));
-                }
-                return base_vt;
-            }
-        }
-        if let AnnotationType::Fun(..) = at {
-            // Fun types are materialized into Function entries after build_ir
-            // (in materialize_fun_annotations) to avoid scope index conflicts.
-            return Some(ValueType::Function(None));
-        }
-        if let AnnotationType::NonNil(inner) = at {
-            return self.resolve_annotation_type_mut(inner);
-        }
-        if let AnnotationType::TableLiteral(fields) = at {
-            return Some(self.materialize_table_literal(fields, &[]));
-        }
-        if let AnnotationType::Intersection(parts) = at {
-            let converted: Vec<ValueType> = parts.iter()
-                .filter_map(|p| self.resolve_annotation_type_mut(p)).collect();
-            return match converted.len() {
-                0 => None, 1 => converted.into_iter().next(),
-                _ => Some(ValueType::Intersection(converted)),
-            };
-        }
-        if let AnnotationType::Union(parts) = at {
-            let converted: Vec<ValueType> = parts.iter()
-                .filter_map(|p| self.resolve_annotation_type_mut(p)).collect();
-            return match converted.len() {
-                0 => None, 1 => converted.into_iter().next(),
-                _ => Some(ValueType::make_union(converted)),
-            };
-        }
-        self.resolve_annotation_type(at)
+        self.resolve_annotation_type_mut_gen(at, &[])
     }
 
     pub(super) fn resolve_annotation_type_gen(&self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
+        if self.annotation_names_ext_first {
+            return crate::annotations::resolve_annotation_type(at, generics, &self.ir.ext.classes, &self.ir.ext.aliases)
+                .or_else(|| crate::annotations::resolve_annotation_type(at, generics, &self.ir.classes, &self.ir.aliases));
+        }
         crate::annotations::resolve_annotation_type(at, generics, &self.ir.classes, &self.ir.aliases)
     }
 
-    /// Like resolve_annotation_type_mut but also supports generic type parameters.
+    /// The type an annotation gives a value in this file, wherever it is written
+    /// (`@type`, `@param`, `@return`, `@field`, a `table<K, V>` class parent, an
+    /// `@alias` body, …): creates the `TableInfo`/`Function` entries the structure
+    /// needs (`T[]`, `table<K, V>`, `{a: T}`, `fun(...)`) at any depth. A name
+    /// resolves to its class or to the alias's registered type, which is its body
+    /// resolved here (`prescan_classes_and_aliases`), so an alias means its body.
     pub(super) fn resolve_annotation_type_mut_gen(&mut self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
         if let AnnotationType::Array(inner) = at {
-            // Eagerly materialize a function-typed alias element (e.g. `F[]`
-            // where `F = fun(...)`) when possible. Falls back to the post-build_ir
-            // container fixup pass (materialize_fun_annotations) for multi-hop alias
-            // chains that resolve too late for reduce_to_fun_alias here.
-            if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics)
-                .map(|vt| self.materialize_fun_alias(vt, inner)) {
+            if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics) {
                 let table_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
@@ -2089,23 +1731,24 @@ impl<'a> Analysis<'a> {
             // these have no resolvable ValueType — return Any as a placeholder
             // so the return/vararg slot exists and downstream substitution at
             // call-sites can replace it with the bound F's actual types.
-            if (base == "params" || base == "returns")
-                && args.len() == 1
-                && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n))
-            {
+            if crate::annotations::is_generic_projection(at, generics) {
                 return Some(ValueType::Any);
             }
             // Check parameterized aliases (local then external)
             if let Some(substituted) = self.expand_parameterized_alias(base, args) {
-                return self.resolve_annotation_type_mut_gen(&substituted, generics);
+                if !self.instantiations.enter(base, args) {
+                    return self.resolve_annotation_type_gen(&substituted, generics);
+                }
+                let vt = self.resolve_annotation_type_mut_gen(&substituted, generics);
+                self.instantiations.exit();
+                return vt;
+            }
+            if let Some(vt) = self.instantiate_map_class(base, args, generics) {
+                return Some(vt);
             }
             if base == "table" && args.len() == 2 {
                 let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
-                // Eagerly materialize a function-typed alias value (e.g.
-                // `table<string, F>` where `F = fun(...)`). Falls back to the
-                // post-build_ir container fixup pass for multi-hop chains.
-                let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics)
-                    .map(|vt| self.materialize_fun_alias(vt, &args[1]));
+                let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics);
                 if key_vt.is_some() || val_vt.is_some() {
                     let vt_annotated = val_vt.is_some();
                     let table_idx = TableIndex(self.ir.tables.len());
@@ -2119,7 +1762,9 @@ impl<'a> Analysis<'a> {
             }
         }
         if let AnnotationType::Union(parts) = at {
+            let drop_projections = crate::annotations::union_drops_projections(parts, generics);
             let converted: Vec<ValueType> = parts.iter()
+                .filter(|p| !drop_projections || !crate::annotations::is_generic_projection(p, generics))
                 .filter_map(|p| self.resolve_annotation_type_mut_gen(p, generics))
                 .collect();
             return match converted.len() {
@@ -2163,12 +1808,7 @@ impl<'a> Analysis<'a> {
         let table_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo::default());
         for (name, field_ann) in fields {
-            let resolved = if generics.is_empty() {
-                self.resolve_annotation_type_mut(field_ann)
-            } else {
-                self.resolve_annotation_type_mut_gen(field_ann, generics)
-            };
-            if let Some(vt) = resolved {
+            if let Some(vt) = self.resolve_annotation_type_mut_gen(field_ann, generics) {
                 if crate::annotations::is_index_entry(name) {
                     crate::annotations::apply_index_entry(&mut self.ir.tables[table_idx.val()], name, vt);
                     continue;
@@ -2225,11 +1865,7 @@ impl<'a> Analysis<'a> {
                 }
                 continue;
             }
-            let resolved = if generics.is_empty() {
-                self.resolve_annotation_type_mut(&p.typ)
-            } else {
-                self.resolve_annotation_type_mut_gen(&p.typ, generics)
-            };
+            let resolved = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             let resolved = if p.optional {
                 resolved.map(|vt| ValueType::union(vt, ValueType::Nil))
             } else {
@@ -2259,8 +1895,6 @@ impl<'a> Analysis<'a> {
             param_optional.push(p.optional);
         }
 
-        let func_idx = FunctionIndex(self.ir.functions.len());
-
         // Detect tuple-union / single-tuple return form. `fun(): (A, B) | (C, D)`
         // parses as `returns == [Union([Tuple([A,B]), Tuple([C,D])])]` (one entry,
         // a union of tuples). `fun(): (A, B)` parses as `[Tuple([A, B])]`.
@@ -2268,82 +1902,48 @@ impl<'a> Analysis<'a> {
             && crate::annotations::annotation_is_tuple_form(&returns[0]);
 
         let mut tuple_has_vararg_tail = false;
-        let ret_info = if is_tuple_form {
+        let (return_annotations, return_annotations_raw, return_labels, overloads) = if is_tuple_form {
             let cases = crate::annotations::tuple_form_cases(&returns[0]);
             tuple_has_vararg_tail = cases.iter().any(|(p, _)| {
                 matches!(p.last().map(|tp| &tp.typ), Some(AnnotationType::VarArgs(_)))
             });
-            let (col_vts, col_raws, labels, overloads) =
-                crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                    if generics.is_empty() {
-                        self.resolve_annotation_type_mut(at)
-                    } else {
-                        self.resolve_annotation_type_mut_gen(at, generics)
-                    }
-                });
-            let mut ret_syms = Vec::with_capacity(col_vts.len());
-            for (col, vt) in col_vts.iter().enumerate() {
-                let sym_idx = SymbolIndex(self.ir.symbols.len());
-                self.ir.symbols.push(Symbol {
-                    id: SymbolIdentifier::FunctionRet(func_idx, col),
-                    scope_idx: func_scope,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type: Some(vt.clone()),
-                        type_args: Vec::new(),
-                        created_in_scope: func_scope,
-                        creation_order: 0,
-                        original_type_source: None,
-                    }],
-                    flavor_guard: 0,
-                    flavors: 0,
-                });
-                self.ir.scopes[func_scope.val()].symbols.insert(
-                    SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
-                );
-                ret_syms.push(sym_idx);
-            }
-            FunReturnInfo {
-                return_annotations: col_vts, return_annotations_raw: col_raws,
-                return_labels: labels, ret_symbols: ret_syms, overloads,
-            }
+            crate::annotations::lower_tuple_form_cases(&cases, |at| {
+                self.resolve_annotation_type_mut_gen(at, generics)
+            })
         } else {
-            let mut vts = Vec::with_capacity(returns.len());
-            let mut ret_syms = Vec::with_capacity(returns.len());
-            for (i, rt) in returns.iter().enumerate() {
-                let resolved = if generics.is_empty() {
-                    self.resolve_annotation_type_mut(rt)
-                } else {
-                    self.resolve_annotation_type_mut_gen(rt, generics)
-                };
-                if let Some(vt) = resolved.clone() { vts.push(vt); }
-                let sym_idx = SymbolIndex(self.ir.symbols.len());
-                self.ir.symbols.push(Symbol {
-                    id: SymbolIdentifier::FunctionRet(func_idx, i),
-                    scope_idx: func_scope,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type: resolved,
-                        type_args: Vec::new(),
-                        created_in_scope: func_scope,
-                        creation_order: 0,
-                        original_type_source: None,
-                    }],
-                    flavor_guard: 0,
-                    flavors: 0,
-                });
-                self.ir.scopes[func_scope.val()].symbols.insert(
-                    SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
-                );
-                ret_syms.push(sym_idx);
-            }
-            FunReturnInfo {
-                return_annotations: vts, return_annotations_raw: returns.to_vec(),
-                return_labels: Vec::new(), ret_symbols: ret_syms, overloads: Vec::new(),
-            }
+            // An unresolvable slot stays an `any` one, as an `@return` does
+            // (`build_ir`): dropping it would undercount the return arity.
+            let vts = returns.iter()
+                .map(|rt| self.resolve_annotation_type_mut_gen(rt, generics).unwrap_or(ValueType::Any))
+                .collect();
+            (vts, returns.to_vec(), Vec::new(), Vec::new())
         };
+
+        // Taken after the returns resolve: a `fun(...)` among them is pushed first.
+        let func_idx = FunctionIndex(self.ir.functions.len());
+        let mut ret_symbols = Vec::with_capacity(return_annotations.len());
+        for (i, vt) in return_annotations.iter().enumerate() {
+            let sym_idx = SymbolIndex(self.ir.symbols.len());
+            self.ir.symbols.push(Symbol {
+                id: SymbolIdentifier::FunctionRet(func_idx, i),
+                scope_idx: func_scope,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type: Some(vt.clone()),
+                    type_args: Vec::new(),
+                    created_in_scope: func_scope,
+                    creation_order: 0,
+                    original_type_source: None,
+                }],
+                flavor_guard: 0,
+                flavors: 0,
+            });
+            self.ir.scopes[func_scope.val()].symbols.insert(
+                SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
+            );
+            ret_symbols.push(sym_idx);
+        }
 
         // Detect `returns<F>` projections in return annotations
         let mut ret_projections: crate::collections::HashMap<usize, crate::types::ProjectionKind> = crate::collections::HashMap::default();
@@ -2369,12 +1969,12 @@ impl<'a> Analysis<'a> {
             def_node: dummy_node,
             scope: func_scope,
             args: arg_symbols,
-            rets: ret_info.ret_symbols,
-            return_annotations: ret_info.return_annotations,
-            return_annotations_raw: ret_info.return_annotations_raw,
-            return_labels: ret_info.return_labels,
+            rets: ret_symbols,
+            return_annotations,
+            return_annotations_raw,
+            return_labels,
             return_descriptions: Vec::new(),
-            overloads: ret_info.overloads,
+            overloads,
             doc: None,
             deprecated: false,
             deprecated_message: None,
@@ -2416,52 +2016,6 @@ impl<'a> Analysis<'a> {
         ValueType::Function(Some(func_idx))
     }
 
-    /// If `at` reduces through alias chains to a `fun(...)` annotation — either
-    /// directly (`@type FunAlias`), wrapped in `NonNil` (`@type FunAlias!`), or
-    /// wrapped in `Union(T, nil)` (`@type FunAlias?`) — materialize a real
-    /// `Function(Some(idx))`. Returning a concrete function index lets the
-    /// signature survive propagation through `local copied = original`, so
-    /// downstream sites (signature help, argument type-checking, declaration
-    /// hover) see the full `fun(...)` signature instead of the collapsed
-    /// `Function(None)`.
-    ///
-    /// Returns `None` for non-alias annotations, unions with multiple non-nil
-    /// members, and aliases that don't resolve to a function type.
-    pub(super) fn try_materialize_fun_alias(&mut self, at: &AnnotationType) -> Option<ValueType> {
-        // Clone the terminal Fun annotation's pieces out before mutating IR —
-        // `reduce_to_fun_alias` borrows the alias maps through &self.ir.
-        let (params, returns, is_vararg, wraps_nil) = {
-            let (fun_ann, wraps_nil) = crate::annotations::reduce_to_fun_alias(
-                at, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
-            )?;
-            let AnnotationType::Fun(params, returns, is_vararg) = fun_ann else { return None; };
-            (params.clone(), returns.clone(), *is_vararg, wraps_nil)
-        };
-        let func_vt = self.materialize_fun_type(&params, &returns, is_vararg, &[]);
-        if wraps_nil {
-            Some(ValueType::union(func_vt, ValueType::Nil))
-        } else {
-            Some(func_vt)
-        }
-    }
-
-    /// If `vt` resolves to a bare `Function(None)` (directly, or as a member of
-    /// a union) that originated from a function-typed alias annotation `at`,
-    /// materialize the alias's concrete `fun(...)` signature so it survives for
-    /// type-checking, hover, and parameter-name inlay hints. Any other type
-    /// passes through unchanged. A direct `fun(...)` annotation is already
-    /// materialized by `resolve_annotation_type_mut_gen`, so this only rewrites
-    /// alias references that collapsed to a signature-less `Function(None)`.
-    pub(super) fn materialize_fun_alias(&mut self, vt: ValueType, at: &AnnotationType) -> ValueType {
-        match &vt {
-            ValueType::Function(None) => self.try_materialize_fun_alias(at).unwrap_or(vt),
-            ValueType::Union(parts)
-                if parts.iter().any(|t| matches!(t, ValueType::Function(None))) =>
-                self.try_materialize_fun_alias(at).unwrap_or(vt),
-            _ => vt,
-        }
-    }
-
     /// Infer generic type variables from structured param annotations.
     /// E.g. for `T[]`, extract element types from the arg's table to infer T.
     #[allow(clippy::too_many_arguments)] // mirrors the call-resolution binding state threaded from resolve_call.rs
@@ -2489,7 +2043,10 @@ impl<'a> Analysis<'a> {
                 // `Alias<K, V>` — bind through the alias body with the callee's
                 // type-variable names substituted for the alias's own.
                 if let Some(substituted) = self.expand_parameterized_alias(base, args) {
-                    self.infer_generics_from_annotation(&substituted, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
+                    if self.instantiations.enter(base, args) {
+                        self.infer_generics_from_annotation(&substituted, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
+                        self.instantiations.exit();
+                    }
                     return;
                 }
                 // table<K, V> — infer K and V from table field types
@@ -2885,11 +2442,13 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// The body of the parameterized `@alias` `base` (local first, then external)
-    /// with `args` substituted for its type params, when the arity matches.
+    /// The body of the parameterized `@alias` `base` (local first, then external,
+    /// unless `annotation_names_ext_first`) with `args` substituted for its type
+    /// params, when the arity matches.
     fn expand_parameterized_alias(&self, base: &str, args: &[AnnotationType]) -> Option<AnnotationType> {
-        let (type_params, body) = self.ir.parameterized_aliases.get(base)
-            .or_else(|| self.ir.ext.parameterized_aliases.get(base))?;
+        let (local, ext) = (&self.ir.parameterized_aliases, &self.ir.ext.parameterized_aliases);
+        let (first, second) = if self.annotation_names_ext_first { (ext, local) } else { (local, ext) };
+        let (type_params, body) = first.get(base).or_else(|| second.get(base))?;
         (type_params.len() == args.len())
             .then(|| crate::annotations::substitute_alias_type_params(body, type_params, args))
     }

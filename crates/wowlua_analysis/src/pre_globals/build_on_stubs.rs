@@ -95,9 +95,9 @@ struct BuildOnStubsContext<'a> {
     /// `(table, field)` call-assigned fields methods were defined or fields written
     /// through; see `call_field_writes`.
     call_field_methods: HashSet<(TableIndex, String)>,
-    /// `---@type` annotation of each table global that has one (`---@type Foo` on
+    /// The `---@type` of each table global that has one (`---@type Foo` on
     /// `Bar = {}`); see `annotated_table_global_type`.
-    table_global_types: HashMap<String, AnnotationType>,
+    table_global_types: HashMap<String, ValueType>,
 
     // Doc generation
     declared_class_fields: HashMap<String, HashSet<String>>,
@@ -235,18 +235,10 @@ impl<'a> BuildOnStubsContext<'a> {
         self.scope0_table_idx(name) == Some(table_idx)
     }
 
-    fn resolve_annotation(&self, at: &AnnotationType) -> Option<ValueType> {
-        PreResolvedGlobals::resolve_annotation(at, &self.classes, &self.aliases, &self.parameterized_aliases)
-    }
-
-    /// A field write's `---@type`, with a structured type (`table<K,V>`, `T[]`,
-    /// `{field: type}`) materialized into its own `TableInfo`.
+    /// A declaration's `---@type`, with a structured type (`table<K,V>`, `T[]`,
+    /// `{field: type}`, `fun(...)`) materialized.
     fn resolve_write_annotation(&mut self, at: &AnnotationType) -> Option<ValueType> {
-        PreResolvedGlobals::resolve_annotation_gen(
-            at, &self.classes, &self.aliases,
-            &self.parameterized_aliases, &[],
-            &mut self.tables, &mut self.exprs,
-        ).or_else(|| self.resolve_annotation(at))
+        PreResolvedGlobals::resolve_annotation_gen(at, &[], &mut self.fn_build_ctx())
     }
 
     /// Register the field `field_name` the write `g` typed `vt` (its literal `expr`)
@@ -354,7 +346,7 @@ impl<'a> BuildOnStubsContext<'a> {
             classes: &self.classes,
             aliases: &self.aliases,
             parameterized_aliases: &self.parameterized_aliases,
-            alias_fun_types: &self.alias_fun_types,
+            instantiations: Default::default(),
         }
     }
 
@@ -422,7 +414,11 @@ impl<'a> BuildOnStubsContext<'a> {
             ws_classes, ws_aliases,
             &mut super::shared::ClassAliasRegistry {
                 classes: &mut self.classes,
+                scopes: &mut self.scopes,
+                symbols: &mut self.symbols,
+                functions: &mut self.functions,
                 tables: &mut self.tables,
+                exprs: &mut self.exprs,
                 aliases: &mut self.aliases,
                 alias_string_literals: &mut self.alias_string_literals,
                 alias_fun_types: &mut self.alias_fun_types,
@@ -464,10 +460,8 @@ impl<'a> BuildOnStubsContext<'a> {
                 .collect();
             let generics = func.generic_constraints_raw.clone();
             for (sym, at, optional) in params {
-                let vt = PreResolvedGlobals::resolve_annotation_gen(
-                    &at, &self.classes, &self.aliases, &self.parameterized_aliases,
-                    &generics, &mut self.tables, &mut self.exprs,
-                ).map(|vt| if optional { ValueType::union(vt, ValueType::Nil) } else { vt });
+                let vt = PreResolvedGlobals::resolve_annotation_gen(&at, &generics, &mut self.fn_build_ctx())
+                    .map(|vt| if optional { ValueType::union(vt, ValueType::Nil) } else { vt });
                 if let Some(version) = self.symbols[sym.ext_offset()].versions.first()
                     && version.resolved_type != vt
                 {
@@ -489,7 +483,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 classes: &self.classes,
                 aliases: &self.aliases,
                 parameterized_aliases: &self.parameterized_aliases,
-                alias_fun_types: &self.alias_fun_types,
+                instantiations: Default::default(),
             },
             &mut self.declared_class_fields,
             &mut self.field_locations,
@@ -505,8 +499,11 @@ impl<'a> BuildOnStubsContext<'a> {
 
         for g in ws_globals {
             if let ExternalGlobalKind::Table = &g.kind {
-                if !g.declares_class && let Some(at) = g.returns.first() {
-                    self.table_global_types.entry(g.name.clone()).or_insert_with(|| at.clone());
+                if !g.declares_class && let Some(at) = g.returns.first()
+                    && !self.table_global_types.contains_key(&g.name)
+                    && let Some(vt) = self.resolve_write_annotation(at)
+                {
+                    self.table_global_types.insert(g.name.clone(), vt);
                 }
                 if self.classes.contains_key(&g.name) {
                     self.class_globals.insert(g.name.clone());
@@ -688,7 +685,8 @@ impl<'a> BuildOnStubsContext<'a> {
                 // Even when skipping, record the source location for go-to-definition.
                 if self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| fi.annotation.as_ref()
-                        .is_some_and(|a| !matches!(a, ValueType::Any | ValueType::Table(None)))) {
+                        .is_some_and(|a| !matches!(a, ValueType::Any | ValueType::Table(None))
+                            && !super::shared::shape_yields_to_class(Some(a), &g.returns, &self.classes, &self.tables))) {
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                     self.note_field_write(leaf_idx, field_name, g);
                     continue;
@@ -910,7 +908,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     if let Some(existing_func_idx) = existing_func_idx {
                         let ovl = super::overload_from_duplicate_def(
                             &g.params, &g.returns, *is_colon,
-                            |at| self.resolve_annotation(at),
+                            |at| self.resolve_write_annotation(at),
                         );
                         self.functions[existing_func_idx.ext_offset()].overloads.push(ovl);
                     }
@@ -1075,8 +1073,7 @@ impl<'a> BuildOnStubsContext<'a> {
 
     fn resolve_inheritance(&mut self, ws_classes: &[ClassDecl]) {
         super::shared::resolve_inheritance(
-            ws_classes, &self.classes, &self.aliases, &self.parameterized_aliases,
-            &mut self.tables, &mut self.exprs,
+            ws_classes, &mut self.fn_build_ctx(),
         );
     }
 
@@ -1129,7 +1126,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.class_globals.contains(&g.name) { continue; }
                 // Use @type annotation if present, otherwise fall back to literal value kind.
                 let resolved_type = if let Some(at) = g.returns.first() {
-                    crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)
+                    self.resolve_write_annotation(at)
                 } else {
                     match vk {
                         FieldValueKind::Number(_) => Some(ValueType::Number),
@@ -1595,25 +1592,11 @@ impl<'a> BuildOnStubsContext<'a> {
         self.resolve_assigned_types(&mut pending);
     }
 
-    /// The type of a `---@type Foo` table global whose own table is `own`: `Foo`,
-    /// or `Foo & own` when it has members `Foo` lacks (its defining file sees them)
-    /// — without adding them to `Foo`. `None` keeps `own`: no annotation, one that
-    /// doesn't resolve, or a bare `table`, which its own table already satisfies.
+    /// The type of the table global `name` whose own table is `own`
+    /// ([`super::shared::annotated_table_global_type`]); `None` without a
+    /// resolved `---@type`.
     fn annotated_table_global_type(&self, name: &str, own: TableIndex) -> Option<ValueType> {
-        let at = self.table_global_types.get(name)?;
-        match crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)? {
-            ValueType::Table(None) => None,
-            ValueType::Table(Some(class)) if self.tables[class.ext_offset()].class_name.is_some() => {
-                let has_own_members = self.tables[own.ext_offset()].fields.keys()
-                    .any(|k| super::lookup_field_with_parents(&self.tables, class.ext_offset(), k).is_none());
-                Some(if has_own_members {
-                    ValueType::Intersection(vec![ValueType::Table(Some(class)), ValueType::Table(Some(own))])
-                } else {
-                    ValueType::Table(Some(class))
-                })
-            }
-            vt => Some(vt),
-        }
+        super::shared::annotated_table_global_type(self.table_global_types.get(name)?, own, &self.tables)
     }
 
     /// Type each pending `(value, symbol)` global assigned a call or a reference

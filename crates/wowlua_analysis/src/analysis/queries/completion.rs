@@ -2148,9 +2148,7 @@ impl AnalysisResult {
         }
 
         let func_start = self.find_function_def_start_below(token)?;
-        let func_idx = self.ir.functions.iter().enumerate()
-            .find(|(_, f)| f.def_node.start == func_start)
-            .map(|(i, _)| FunctionIndex(i))?;
+        let func_idx = self.ir.function_defined_at(func_start)?;
         let func = self.func(func_idx);
 
         // Collect parameter info (skip self)

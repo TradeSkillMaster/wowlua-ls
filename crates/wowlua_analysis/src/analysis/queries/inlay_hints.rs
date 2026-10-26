@@ -174,10 +174,7 @@ impl AnalysisResult {
         let Some(func_def) = FunctionDefinition::cast(node) else { return };
         let node_start = u32::from(func_def.syntax().text_range().start());
 
-        let func_idx = self.ir.functions.iter().enumerate()
-            .find(|(_, f)| f.def_node.start == node_start)
-            .map(|(i, _)| FunctionIndex(i));
-        let Some(func_idx) = func_idx else { return };
+        let Some(func_idx) = self.ir.function_defined_at(node_start) else { return };
         let func = self.func(func_idx);
 
         if !func.return_annotations.is_empty() || func.returns_self || func.explicit_void_return {
@@ -208,10 +205,7 @@ impl AnalysisResult {
         let Some(func_def) = FunctionDefinition::cast(node) else { return };
         let node_start = u32::from(func_def.syntax().text_range().start());
 
-        let func_idx = self.ir.functions.iter().enumerate()
-            .find(|(_, f)| f.def_node.start == node_start)
-            .map(|(i, _)| FunctionIndex(i));
-        let Some(func_idx) = func_idx else { return };
+        let Some(func_idx) = self.ir.function_defined_at(node_start) else { return };
         let func = self.func(func_idx);
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
 

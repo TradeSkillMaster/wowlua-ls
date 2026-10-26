@@ -17,7 +17,7 @@ FFCCallbackLib.RegisterCallback({}, "O", myHandler)
 
 -- Signature help should show proper parameter types
 FFCCallbackLib:RegisterCallback("O", myHandler)
---                               ^ sig: fun(target: table, eventName: FFCEventName, handler: string | function)
+--                               ^ sig: fun(target: table, eventName: FFCEventName, handler: string | fun(eventName: FFCEventName, ...: unknown))
 
 -- UnregisterCallback also has @field fun() with eventName
 FFCCallbackLib:UnregisterCallback("O")
