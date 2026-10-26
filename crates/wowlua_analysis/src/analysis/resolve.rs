@@ -26,6 +26,9 @@ struct FetchedField {
     /// A field written a call whose resolved type may refine its class
     /// (`Ir::ensure_call_field_overlay`).
     deferred_call: bool,
+    /// A field written `{}` whose files may type it by the list they build there
+    /// (`Ir::ensure_table_field_overlay`).
+    deferred_table: bool,
     annotation: Option<ValueType>,
     primary: ExprId,
     extras: Vec<ExprId>,
@@ -39,6 +42,7 @@ impl FetchedField {
         Self {
             placeholder: crate::analysis::deferred::field_is_coarse_placeholder(fi, ext),
             deferred_call: fi.expr.is_external() && ext.deferred_call_fields.contains_key(&fi.expr),
+            deferred_table: fi.expr.is_external() && ext.deferred_table_fields.contains_key(&fi.expr),
             annotation: fi.annotation.clone(),
             primary: fi.expr,
             extras: fi.extra_exprs.clone(),
@@ -4040,6 +4044,9 @@ impl<'a> Analysis<'a> {
                 fetched = fetch(&self.ir);
             }
             if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {
+                fetched = fetch(&self.ir);
+            }
+            if fetched.as_ref().is_some_and(|f| f.deferred_table) && self.ir.ensure_table_field_overlay(idx, field) {
                 fetched = fetch(&self.ir);
             }
             // An entry the scan typed as a placeholder in the anonymous sub-table of

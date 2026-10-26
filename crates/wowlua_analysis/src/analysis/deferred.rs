@@ -93,6 +93,13 @@
 //! (`T!`) field reads non-nil. A type touching a type variable decays to `any`
 //! through the lift and is kept coarse (generics stay coarse).
 //!
+//! A field the workspace scan typed as no more than the empty table written there
+//! (`ns.list = {}`, `Global.list = {}`, filled by inserts) takes, cross-file, the type
+//! every file writing it gives it: the list each builds there, `nil` for one only
+//! clearing it ([`PreResolvedGlobals::deferred_table_fields`],
+//! `ensure_table_field_overlay`). Only top-level analyses read these, from a per-file
+//! harvest that runs outside the unit machinery below ([`file_table_fields`]).
+//!
 //! Resolution is re-entrant: when the nested analysis reads a deferred return
 //! defined in *another* file it recurses, so multi-hop chains resolve precisely.
 //! A thread-local set of in-progress files breaks cycles (the back-edge falls
@@ -302,8 +309,21 @@ pub struct DeferredHarvests {
     /// Discovery analyses running on some thread, likewise (one never waits on
     /// anything, so neither can this).
     discovering: Flights<PathBuf>,
+    /// The deferred table fields each file writes, as [`file_table_fields`] harvests
+    /// them.
+    table_fields: RwLock<HashMap<PathBuf, Arc<TableFieldHarvest>>>,
+    /// Those harvests running on some thread, likewise.
+    harvesting_table_fields: Flights<PathBuf>,
     /// File analyses run for discovery and harvests.
     analyses: AtomicUsize,
+}
+
+/// The types a file gives the deferred table fields it writes (see
+/// [`harvest_table_fields`]), and the files its analysis read.
+#[derive(Debug)]
+struct TableFieldHarvest {
+    deps: HashSet<PathBuf>,
+    fields: HashMap<ExprId, ValueType>,
 }
 
 impl DeferredHarvests {
@@ -312,6 +332,9 @@ impl DeferredHarvests {
     pub fn invalidate(&self, path: &Path) {
         if let Ok(mut reads) = self.reads.write() {
             reads.remove(path);
+        }
+        if let Ok(mut table_fields) = self.table_fields.write() {
+            table_fields.retain(|file, harvest| file != path && !harvest.deps.contains(path));
         }
         if let Ok(mut memo) = self.memo.write() {
             memo.retain(|_, entries| {
@@ -456,6 +479,12 @@ struct AnalysisFrame {
 struct Round {
     members: Vec<Unit>,
     previous: Option<Arc<HashMap<Unit, Harvest>>>,
+}
+
+/// Whether this thread is running a harvest or discovery analysis rather than a
+/// top-level one.
+fn harvesting() -> bool {
+    DISCOVERY.with(|d| d.borrow().is_some()) || ANALYSES.with(|frames| !frames.borrow().is_empty())
 }
 
 /// Whether a harvest up this thread's stack is analyzing `path`, making a read of
@@ -757,11 +786,7 @@ impl Ir {
         if self.ext.deferred_call_fields.is_empty() {
             return false;
         }
-        let Some(slot) = self.field_slot(table_idx, field_name) else { return false };
-        if slot.is_external() && self.overlay_fields.get(&slot).is_some_and(|m| m.contains_key(field_name)) {
-            return false;
-        }
-        let Some(fi) = self.table(slot).fields.get(field_name) else { return false };
+        let Some((slot, fi)) = self.unrefined_field(table_idx, field_name) else { return false };
         if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
             return false;
         }
@@ -785,6 +810,52 @@ impl Ir {
         }) else {
             return false;
         };
+        self.refine_field_type(slot, field_name, ty);
+        true
+    }
+
+    /// Ensure a read of `field_name` through `table_idx` sees the type the files
+    /// writing the field give it, when the workspace scan typed it no more than the
+    /// empty table they write there ([`PreResolvedGlobals::deferred_table_fields`]:
+    /// `ns.list = {}` filled by inserts) and this file doesn't write it. The field of
+    /// an external table is overlaid; this file's copy of it (its namespace table, or
+    /// a `@class` it declares too) is updated in place. Each field is consulted once
+    /// per analysis; returns whether the field changed.
+    pub fn ensure_table_field_overlay(&mut self, table_idx: TableIndex, field_name: &str) -> bool {
+        if self.ext.deferred_table_fields.is_empty() {
+            return false;
+        }
+        let Some((slot, fi)) = self.unrefined_field(table_idx, field_name) else { return false };
+        let scanned = fi.from_scan
+            && fi.annotation_text.is_none()
+            && fi.expr.is_external()
+            && fi.extra_exprs.iter().all(|e| e.is_external())
+            && fi.annotation.as_ref().is_some_and(|a| self.is_shapeless_scan_table(a));
+        let expr = fi.expr;
+        if !scanned || !self.table_fields_checked.insert((slot, expr)) {
+            return false;
+        }
+        let Some(paths) = self.ext.deferred_table_fields.get(&expr) else { return false };
+        self.deferred_dep_files.extend(paths.iter().cloned());
+        let Some(ty) = deferred_table_field_type(&self.ext, expr, &mut self.deferred_dep_files) else { return false };
+        self.refine_field_type(slot, field_name, ty);
+        true
+    }
+
+    /// The table holding the field a read of `field_name` through `table_idx` sees
+    /// ([`field_slot`](Self::field_slot)) and the field there, unless this file
+    /// already overlays it: the coarse field an `ensure_*_overlay` may refine.
+    fn unrefined_field(&self, table_idx: TableIndex, field_name: &str) -> Option<(TableIndex, &crate::types::FieldInfo)> {
+        let slot = self.field_slot(table_idx, field_name)?;
+        if slot.is_external() && self.overlay_fields.get(&slot).is_some_and(|m| m.contains_key(field_name)) {
+            return None;
+        }
+        Some((slot, self.table(slot).fields.get(field_name)?))
+    }
+
+    /// Give the field `field_name` of `slot` the type `ty` in this file: an overlay of
+    /// an external table's field, else this file's own copy of it updated in place.
+    fn refine_field_type(&mut self, slot: TableIndex, field_name: &str, ty: ValueType) {
         if slot.is_external() {
             let mut precise = self.table(slot).fields[field_name].clone();
             precise.annotation = Some(ty);
@@ -792,7 +863,6 @@ impl Ir {
         } else if let Some(fi) = self.tables[slot.val()].fields.get_mut(field_name) {
             fi.annotation = Some(ty);
         }
-        true
     }
 
     /// The table holding the field a read of `field_name` through `table_idx` sees
@@ -921,6 +991,54 @@ pub fn resolve_deferred_call_field_type(ext: &Arc<PreResolvedGlobals>, expr: Exp
         }
     }
     agreed
+}
+
+/// The type of a field the workspace scan typed as the empty table its writes build
+/// (by its coarse expr): the type each file writing it gives it (memoized), unioned,
+/// adding the files those types depend on to `deps`. `None` when a file doesn't type
+/// it by its own writes, or they type it no more precisely than the scan does; the
+/// reader then keeps the scan's table.
+fn deferred_table_field_type(ext: &Arc<PreResolvedGlobals>, expr: ExprId, deps: &mut HashSet<PathBuf>) -> Option<ValueType> {
+    if harvesting() {
+        return None;
+    }
+    let mut tys: Vec<ValueType> = Vec::new();
+    for path in ext.deferred_table_fields.get(&expr)? {
+        let harvest = file_table_fields(ext, path)?;
+        deps.extend(harvest.deps.iter().cloned());
+        let ty = harvest.fields.get(&expr).cloned()?;
+        if !tys.contains(&ty) {
+            tys.push(ty);
+        }
+    }
+    gate_harvested_field(tys, false)
+}
+
+/// The types `path` gives the deferred table fields it writes (memoized). Only
+/// top-level analyses read them, so `path` is analyzed as one would be, with nothing
+/// in progress, rather than as a [`Unit`] harvest: a table field adds no edge to the
+/// discovery graph, and marking the file in progress would make every component
+/// reading back into it harvest again with it cut. As in a harvest, its reads of its
+/// own units are cut, and it reads no other file's table fields ([`harvesting`]).
+/// `None` if the file can't be read.
+fn file_table_fields(ext: &Arc<PreResolvedGlobals>, path: &Path) -> Option<Arc<TableFieldHarvest>> {
+    let harvests = &ext.deferred_harvests;
+    let known = || harvests.table_fields.read().ok().and_then(|all| all.get(path).cloned());
+    if let Some(harvest) = known() {
+        return Some(harvest);
+    }
+    let Some(_claim) = harvests.harvesting_table_fields.claim(path.to_path_buf()) else { return known() };
+    let scope = DepsScope::open();
+    let fields = {
+        let _analysis = AnalysisScope::enter(vec![path.to_path_buf()], None);
+        let (tree, result) = analyze_file(ext, path)?;
+        harvest_table_fields(ext, path, &tree, &result)
+    };
+    let harvest = Arc::new(TableFieldHarvest { deps: scope.close(), fields });
+    if let Ok(mut all) = harvests.table_fields.write() {
+        all.entry(path.to_path_buf()).or_insert_with(|| Arc::clone(&harvest));
+    }
+    Some(harvest)
 }
 
 /// Resolve the precise generic type arguments for a deferred constructor
@@ -1336,13 +1454,15 @@ fn analyze_file(
 
     // Build per-file AnalysisConfig from project configs if available,
     // otherwise use defaults. The key settings are `correlated_return_overloads`
-    // and `backward_param_types` which affect what the engine infers, and the
-    // addon folder name the file's `...` holds (`NewAddon(addonName)` names it).
+    // and `backward_param_types` which affect what the engine infers, the
+    // addon folder name the file's `...` holds (`NewAddon(addonName)` names it),
+    // and the addon's own namespace table, whose fields readers key harvests by.
     let config = match &ext.project_configs {
         Some(configs) => AnalysisConfig {
             correlated_return_overloads: configs.correlated_return_overloads_for(path),
             backward_param_types: configs.backward_param_types_for(path),
             addon_folder_name: configs.addon_name_for(path),
+            addon_table_override: ext.addon_table_for_root(configs.addon_root_for(path)),
             ..AnalysisConfig::default()
         },
         None => AnalysisConfig::default(),
@@ -1582,6 +1702,102 @@ fn harvest_field_args(
         harvested.insert(key.clone(), resolved);
     }
     harvested
+}
+
+/// The type `path` (analyzed as `result`) gives every [deferred table
+/// field](PreResolvedGlobals::deferred_table_fields) it writes, lifted into ext-index
+/// space: the list or record its writes build there (`Ir::writes_unkeyed_table`) — on
+/// one of its tables taking over the scan's field (`Ir::scan_field_takeovers`), its
+/// overlay of an external table's field, or a global table it defines — or `nil`
+/// when it only clears the field. A field it writes anything else has no entry, nor
+/// one its writes type no more precisely than the scan.
+fn harvest_table_fields(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+    tree: &crate::syntax::tree::SyntaxTree,
+    result: &crate::analysis::AnalysisResult,
+) -> HashMap<ExprId, ValueType> {
+    let ir = &result.ir;
+    let pairs = global_table_pairs(result, tree, ext);
+    let globals = shared_method_tables(result, ext, &pairs);
+    let mut fields: Vec<(ExprId, OwnWrites<'_>)> = ir
+        .scan_field_takeovers
+        .iter()
+        .filter(|(expr, _)| ext.deferred_table_fields.contains_key(expr))
+        .filter_map(|(&expr, (table, name))| Some((expr, OwnWrites::Typed(ir.get_field(*table, name)?))))
+        .collect();
+    // This file's copies of a scanned field it only clears (`ns.list = nil`).
+    for (_, t) in ir.local_tables() {
+        for fi in t.fields.values() {
+            if ext.deferred_table_fields.contains_key(&fi.expr) && writes_only_nil(ir, fi) {
+                fields.push((fi.expr, OwnWrites::Nil));
+            }
+        }
+    }
+    for (&table, overlay) in &ir.overlay_fields {
+        if let Some(scanned) = ext.try_table(table) {
+            fields.extend(own_table_fields(ir, ext, table, scanned, overlay));
+        }
+    }
+    for &(local, ext_idx) in &pairs {
+        if let Some(scanned) = ext.try_table(ext_idx) {
+            fields.extend(own_table_fields(ir, ext, local, scanned, &ir.table(local).fields));
+        }
+    }
+    fields
+        .into_iter()
+        .filter_map(|(expr, writes)| {
+            let ty = match writes {
+                OwnWrites::Typed(fi) => result
+                    .resolve_field_type(fi)
+                    .map(|ty| lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals))
+                    .and_then(|lifted| gate_harvested_field(vec![lifted], false))?,
+                OwnWrites::Nil => ValueType::Nil,
+            };
+            Some((expr, ty))
+        })
+        .collect()
+}
+
+/// What a file's writes of a deferred table field make it.
+enum OwnWrites<'a> {
+    /// The field, typed by the list or record written there.
+    Typed(&'a crate::types::FieldInfo),
+    /// `nil`, the only value written.
+    Nil,
+}
+
+/// Whether the file's own writes of `fi` (its local exprs) are all `nil`, and there
+/// is one.
+fn writes_only_nil(ir: &Ir, fi: &crate::types::FieldInfo) -> bool {
+    let mut writes = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()).filter(|e| !e.is_external()).peekable();
+    writes.peek().is_some() && writes.all(|e| matches!(ir.expr(e), Expr::Literal(ValueType::Nil)))
+}
+
+/// The fields of `own`, the analyzed file's fields of `table`, that write the
+/// deferred table field of `scanned` (the table's scanned counterpart) they share a
+/// name with, by that field's expr: typed by the list or record written, or `nil`.
+fn own_table_fields<'a>(
+    ir: &'a Ir,
+    ext: &'a PreResolvedGlobals,
+    table: TableIndex,
+    scanned: &'a crate::types::TableInfo,
+    own: &'a HashMap<String, crate::types::FieldInfo>,
+) -> impl Iterator<Item = (ExprId, OwnWrites<'a>)> + 'a {
+    own.iter().filter_map(move |(name, fi)| {
+        let expr = scanned.fields.get(name)?.expr;
+        if !ext.deferred_table_fields.contains_key(&expr) {
+            return None;
+        }
+        let typed = fi.annotation.is_none()
+            && std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
+                .any(|write| ir.writes_unkeyed_table(write, table, name));
+        if typed {
+            Some((expr, OwnWrites::Typed(fi)))
+        } else {
+            writes_only_nil(ir, fi).then_some((expr, OwnWrites::Nil))
+        }
+    })
 }
 
 /// Accumulate, into `acc`, the RHS-resolved types of every field of every workspace
@@ -2040,23 +2256,55 @@ fn ext_class_declares(ext: &PreResolvedGlobals, idx: crate::types::TableIndex, f
 /// Local tables mapped to the same table in ext space. See [`global_tables`].
 type GlobalTables = HashMap<TableIndex, TableIndex>;
 
-/// Nesting bound for [`global_tables`]'s walk into a global's table fields.
+/// Nesting bound for [`global_table_pairs`]'s walk into a global's table fields.
 const GLOBAL_TABLE_MAX_DEPTH: usize = 4;
 
 /// Map each local *mixin* table that is a global defined in the analyzed file — the
 /// global's own table (`WidgetMixin = {}`) or one nested under it
-/// (`Util.WidgetMixin = {}`) — to that table in ext space. The lift references these
-/// instead of inlining them, so cross-file callers get the table every other file sees:
-/// methods keep their definitions, and `self` references stay exact rather than
-/// decaying at the cycle guard. Only tables with a method the ext table also carries
-/// qualify: ext keeps statement-defined methods exactly but not constructor-defined
-/// data (`Point = { x = 1 }`), which stays inline. A file-level `local` sharing a
-/// global's name is a different variable.
+/// (`Util.WidgetMixin = {}`, see [`global_table_pairs`]) — to that table in ext space.
+/// The lift references these instead of inlining them, so cross-file callers get the
+/// table every other file sees: methods keep their definitions, and `self` references
+/// stay exact rather than decaying at the cycle guard. Only tables with a method the
+/// ext table also carries qualify: ext keeps statement-defined methods exactly but not
+/// constructor-defined data (`Point = { x = 1 }`), which stays inline.
 fn global_tables(
     result: &crate::analysis::AnalysisResult,
     tree: &crate::syntax::tree::SyntaxTree,
     ext: &PreResolvedGlobals,
 ) -> GlobalTables {
+    shared_method_tables(result, ext, &global_table_pairs(result, tree, ext))
+}
+
+/// The [`global_tables`] among `pairs`: those with a method the ext table carries too.
+fn shared_method_tables(
+    result: &crate::analysis::AnalysisResult,
+    ext: &PreResolvedGlobals,
+    pairs: &[(TableIndex, TableIndex)],
+) -> GlobalTables {
+    let ir = &result.ir;
+    pairs
+        .iter()
+        .copied()
+        .filter(|&(local_idx, ext_idx)| {
+            let Some(ext_table) = ext.try_table(ext_idx) else { return false };
+            ir.table(local_idx).fields.iter().any(|(name, fi)| {
+                matches!(ir.expr(fi.expr), Expr::FunctionDef(_))
+                    && ext_table.fields.get(name).is_some_and(|efi| {
+                        efi.expr.is_external() && matches!(ext.expr(efi.expr), Expr::FunctionDef(_))
+                    })
+            })
+        })
+        .collect()
+}
+
+/// Each local table of the analyzed file that is a global defined in it — the
+/// global's own table or one nested under it — paired with that table in ext space.
+/// A file-level `local` sharing a global's name is a different variable.
+fn global_table_pairs(
+    result: &crate::analysis::AnalysisResult,
+    tree: &crate::syntax::tree::SyntaxTree,
+    ext: &PreResolvedGlobals,
+) -> Vec<(TableIndex, TableIndex)> {
     let ir = &result.ir;
     let mut pending: Vec<(TableIndex, TableIndex, usize)> = Vec::new();
     for (id, sym_idx) in ir.scope0_local_symbols() {
@@ -2078,27 +2326,18 @@ fn global_tables(
             }
         }
     }
-    let mut map = GlobalTables::default();
+    let mut pairs = Vec::new();
     let mut visited: HashSet<TableIndex> = HashSet::default();
     while let Some((local_idx, ext_idx, depth)) = pending.pop() {
         if !ext_idx.is_external() || !visited.insert(local_idx) {
             continue;
         }
         let Some(ext_table) = ext.try_table(ext_idx) else { continue };
-        let local_table = ir.table(local_idx);
-        let has_shared_method = local_table.fields.iter().any(|(name, fi)| {
-            matches!(ir.expr(fi.expr), Expr::FunctionDef(_))
-                && ext_table.fields.get(name).is_some_and(|efi| {
-                    efi.expr.is_external() && matches!(ext.expr(efi.expr), Expr::FunctionDef(_))
-                })
-        });
-        if has_shared_method {
-            map.insert(local_idx, ext_idx);
-        }
+        pairs.push((local_idx, ext_idx));
         if depth >= GLOBAL_TABLE_MAX_DEPTH {
             continue;
         }
-        for (name, fi) in &local_table.fields {
+        for (name, fi) in &ir.table(local_idx).fields {
             if let Some(ValueType::Table(Some(sub))) = result.resolve_field_type(fi)
                 && !sub.is_external()
                 && let Some(ext_fi) = ext_table.fields.get(name)
@@ -2108,7 +2347,7 @@ fn global_tables(
             }
         }
     }
-    map
+    pairs
 }
 
 /// Depth bound for the lift's structural recursion. A returned local function

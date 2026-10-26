@@ -1140,6 +1140,48 @@ fn list_element_namespace_fields() {
     });
 }
 
+// Lists built on the addon namespace, a global table, or a `@class`'s static field
+// read their elements in other files; another file adding to one isn't checked
+// against the elements the building file stores.
+#[test]
+fn list_element_namespace_crossfile() {
+    for lua_file in [
+        "tests/namespace-lists/reader.lua",
+        "tests/namespace-lists/clear.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/namespace-lists"),
+        });
+    }
+}
+
+#[test]
+fn list_element_namespace_fields_crossfile() {
+    for lua_file in [
+        "tests/list-element-crossfile/ns_lists_reader.lua",
+        "tests/list-element-crossfile/holder_counts.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/list-element-crossfile"),
+        });
+    }
+}
+
+// Two addon roots building a same-named namespace list: each addon's files read
+// only its own elements.
+#[test]
+fn list_element_multi_addon() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-lists/AddonA/read.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/multi-addon-lists"),
+    });
+}
+
 #[test]
 fn list_element_ace_addon_fields() {
     run_annotation_tests(&TestConfig {

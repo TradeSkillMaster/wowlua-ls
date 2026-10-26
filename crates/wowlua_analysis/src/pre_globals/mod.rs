@@ -509,6 +509,15 @@ pub struct PreResolvedGlobals {
     /// than harvested from a single first-seen file. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_class_field_paths: HashMap<String, Vec<PathBuf>>,
+    /// Fields the workspace scan typed as an empty table (`ns.list = {}`,
+    /// `Global.list = {}`, in `build_on_stubs`) → every file writing them, sorted.
+    /// A file writing a list there types the field by its own writes; a read in
+    /// another file takes the type those files give it (`analysis/deferred.rs`,
+    /// `Ir::ensure_table_field_overlay`). Keyed by the field's coarse expr, like
+    /// `deferred_call_fields`; a per-addon copy registers its own
+    /// (`build_per_addon_tables`). Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub deferred_table_fields: HashMap<ExprId, Vec<PathBuf>>,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
     /// edits are picked up immediately. The LSP layer owns the map (updated on
@@ -3472,6 +3481,7 @@ impl BuildContext {
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
+            deferred_table_fields: HashMap::default(),
             document_overrides: Default::default(),
             project_configs: None,
         }
@@ -3881,6 +3891,7 @@ impl PreResolvedGlobals {
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
+            deferred_table_fields: HashMap::default(),
             document_overrides: Default::default(),
             project_configs: None,
         }
@@ -4364,9 +4375,9 @@ impl PreResolvedGlobals {
                     let sub = self.field_subtable(&fi).filter(|&sub| !self.shares_call_field_class(&fi, sub));
                     if let (Some(paths_this), Some(sub)) = (paths_this, sub) {
                         let new_sub = self.rebuild_owned_subtable(
-                            sub, std::slice::from_ref(field_name), paths_this, &owned_all, 0,
+                            sub, std::slice::from_ref(field_name), addon_root, paths_this, &owned_all, 0,
                         );
-                        self.repoint_field_subtable(&mut fi, new_sub);
+                        self.repoint_field_subtable(&mut fi, new_sub, addon_root);
                     }
                     fi
                 };
@@ -4430,10 +4441,11 @@ impl PreResolvedGlobals {
     /// field (`ns.db = {}`) carries the same `Table(Some(idx))` in both `expr` and
     /// `annotation`; type resolution reads the annotation, so leaving it pointed at the
     /// pre-filter combined sub-table would leak a sibling addon's `ns.db.*` children.
-    fn repoint_field_subtable(&mut self, fi: &mut FieldInfo, new_sub: TableIndex) {
+    fn repoint_field_subtable(&mut self, fi: &mut FieldInfo, new_sub: TableIndex, addon_root: &Path) {
         let new_expr = ExprId(EXT_BASE + self.exprs.len());
         self.exprs.push(Expr::Literal(ValueType::Table(Some(new_sub))));
         self.rekey_call_field(fi.expr, new_expr);
+        self.rekey_table_field(fi.expr, new_expr, addon_root);
         fi.expr = new_expr;
         if matches!(fi.annotation, Some(ValueType::Table(Some(_)))) {
             fi.annotation = Some(ValueType::Table(Some(new_sub)));
@@ -4445,6 +4457,16 @@ impl PreResolvedGlobals {
     fn rekey_call_field(&mut self, old: ExprId, new: ExprId) {
         if let Some(calls) = self.deferred_call_fields.get(&old).cloned() {
             self.deferred_call_fields.insert(new, calls);
+        }
+    }
+
+    /// Register `new`, the expr of `addon_root`'s copy of the field `old`, for the
+    /// files of that addon writing it (`deferred_table_fields`).
+    fn rekey_table_field(&mut self, old: ExprId, new: ExprId, addon_root: &Path) {
+        let Some(paths) = self.deferred_table_fields.get(&old) else { return };
+        let own: Vec<PathBuf> = paths.iter().filter(|p| p.starts_with(addon_root)).cloned().collect();
+        if !own.is_empty() {
+            self.deferred_table_fields.insert(new, own);
         }
     }
 
@@ -4481,6 +4503,7 @@ impl PreResolvedGlobals {
         &mut self,
         combined_sub_idx: TableIndex,
         prefix: &[String],
+        addon_root: &Path,
         owned_this: &HashSet<Vec<String>>,
         owned_all: &HashSet<Vec<String>>,
         depth: u32,
@@ -4504,9 +4527,9 @@ impl PreResolvedGlobals {
             let child_sub = table.fields.get(&name)
                 .and_then(|fi| self.field_subtable(fi).filter(|&sub| !self.shares_call_field_class(fi, sub)));
             if let Some(child_sub) = child_sub {
-                let new_child = self.rebuild_owned_subtable(child_sub, &child_path, owned_this, owned_all, depth + 1);
+                let new_child = self.rebuild_owned_subtable(child_sub, &child_path, addon_root, owned_this, owned_all, depth + 1);
                 let mut fi = table.fields.remove(&name).unwrap();
-                self.repoint_field_subtable(&mut fi, new_child);
+                self.repoint_field_subtable(&mut fi, new_child, addon_root);
                 table.fields.insert(name, fi);
             }
         }

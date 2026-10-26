@@ -39,6 +39,13 @@ struct MethodPass<'g> {
     meta_overridden_methods: HashSet<(TableIndex, String)>,
 }
 
+/// A scanned field write's target: its root (`ExternalGlobal::name`), the path of
+/// fields under it, and the field.
+type TableFieldPath = (String, Vec<String>, String);
+
+/// A [`TableFieldPath`], borrowed.
+type TableFieldPathRef<'a> = (&'a str, &'a [String], &'a str);
+
 struct BuildOnStubsContext<'a> {
     stubs_base: &'a PreResolvedGlobals,
 
@@ -105,6 +112,8 @@ struct BuildOnStubsContext<'a> {
     deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
     // Class-typed fields written calls: the field's coarse expr → the calls.
     deferred_call_fields: HashMap<ExprId, Vec<crate::analysis::deferred::DeferredCallField>>,
+    // Fields written `{}`: the field's coarse expr → its path from the write's root.
+    deferred_table_fields: HashMap<ExprId, TableFieldPath>,
     // Fields only an existence-only write registered (`any`, `function & table`):
     // a call the build types replaces one.
     existence_fields: HashSet<(TableIndex, String)>,
@@ -166,6 +175,7 @@ impl<'a> BuildOnStubsContext<'a> {
             conflicting_arity_funcs: HashSet::default(),
             deferred_call_globals: HashMap::default(),
             deferred_call_fields: HashMap::default(),
+            deferred_table_fields: HashMap::default(),
             existence_fields: HashSet::default(),
             method_stub_overrides: Vec::new(),
             implicit_protected_prefix,
@@ -248,6 +258,18 @@ impl<'a> BuildOnStubsContext<'a> {
         }
         if let Some(call) = Self::call_of(g, field_name) {
             self.deferred_call_fields.insert(expr, vec![call]);
+        }
+    }
+
+    /// Register the field the write `g` typed as the table it writes (its literal
+    /// `expr`) for the table-field harvest when `g` is an unannotated `t.f = {}`, whose
+    /// file types the field by the list it builds there. The files writing the field
+    /// are collected in `finish`.
+    fn defer_table_field(&mut self, expr: ExprId, g: &crate::annotations::ExternalGlobal) {
+        if let crate::annotations::ExternalGlobalKind::TableField(path, field, crate::annotations::FieldValueKind::Table(_)) = &g.kind
+            && g.returns.is_empty()
+        {
+            self.deferred_table_fields.insert(expr, (g.name.clone(), path.clone(), field.clone()));
         }
     }
 
@@ -731,6 +753,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
                     self.defer_call_field(expr_idx, &vt, g, field_name);
+                    self.defer_table_field(expr_idx, g);
                     // An explicit table constructor (`X.field = { ... }`) is a real,
                     // author-written `table`-typed field even when its shape came out
                     // empty — positional/bracket keys aren't captured by the value-kind
@@ -1690,6 +1713,32 @@ impl<'a> BuildOnStubsContext<'a> {
 
         let deferred_returns_by_path = super::shared::deferred_returns_by_path(&self.deferred_returns, &self.function_locations);
         let deferred_call_globals_by_path = super::shared::deferred_call_globals_by_path(&self.deferred_call_globals);
+        // Every file writing a field written `{}`, whichever write created the field:
+        // one replaced by the `{}` (`ns.f = nil` in a file scanned first) holds those
+        // values too. Only a field still holding the empty table it was written is a
+        // list the writes build — other writes gave this one fields, methods, or a class.
+        let mut table_field_writers: HashMap<TableFieldPathRef<'_>, Vec<Option<&PathBuf>>> = HashMap::default();
+        for (name, path, field) in self.deferred_table_fields.values() {
+            table_field_writers.insert((name, path, field), Vec::new());
+        }
+        for g in ws_globals {
+            if let crate::annotations::ExternalGlobalKind::TableField(path, field, _) = &g.kind
+                && let Some(writers) = table_field_writers.get_mut(&(g.name.as_str(), path.as_slice(), field.as_str()))
+            {
+                writers.push(g.source_path.as_ref());
+            }
+        }
+        let deferred_table_fields: HashMap<ExprId, Vec<PathBuf>> = self.deferred_table_fields.iter()
+            .filter(|(expr, _)| matches!(&self.exprs[expr.ext_offset()], Expr::Literal(ValueType::Table(Some(sub)))
+                if self.tables[sub.ext_offset()].is_shapeless()))
+            .filter_map(|(&expr, (name, path, field))| {
+                let writers = table_field_writers.get(&(name.as_str(), path.as_slice(), field.as_str()))?;
+                let mut paths: Vec<PathBuf> = writers.iter().map(|w| w.cloned()).collect::<Option<_>>()?;
+                paths.sort();
+                paths.dedup();
+                Some((expr, paths))
+            })
+            .collect();
         let mut deferred_field_calls_by_path: HashMap<PathBuf, Vec<(u32, crate::analysis::deferred::CallTarget)>> = HashMap::default();
         for call in self.deferred_call_fields.values().flatten() {
             let calls = deferred_field_calls_by_path.entry(call.path.clone()).or_default();
@@ -1830,6 +1879,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_field_type_args,
             deferred_field_type_args_by_path,
             deferred_class_field_paths,
+            deferred_table_fields,
             document_overrides: Default::default(),
             project_configs: None,
         }

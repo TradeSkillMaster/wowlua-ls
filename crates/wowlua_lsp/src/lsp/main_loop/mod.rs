@@ -3980,6 +3980,42 @@ mod tests {
         );
     }
 
+    /// A namespace list another file builds (`ns.items = {}` filled by inserts) is
+    /// harvested from that file and recorded as a dependency of its readers, so a
+    /// buffer retyping the inserts reaches them without a workspace rebuild (the
+    /// scan sees the same `ns.items = {}`).
+    #[test]
+    fn namespace_list_harvest_follows_writer_edits() {
+        let dir = std::env::temp_dir().join(format!("wowlua_ns_list_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = "local _, ns = ...\nns.items = {}\nns.items[#ns.items + 1] = 1\n";
+        let reader_text = "local _, ns = ...\nlocal first = ns.items[1]\n";
+        std::fs::write(dir.join("writer.lua"), saved).unwrap();
+        std::fs::write(dir.join("reader.lua"), reader_text).unwrap();
+        let mut ws = WorkspaceState::for_test(Some(dir.clone()));
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+        let writer_uri = abs_path_to_uri(&dir.join("writer.lua")).unwrap();
+        let reader_uri = abs_path_to_uri(&dir.join("reader.lua")).unwrap();
+        let first = |ws: &WorkspaceState| {
+            let tree = parse_lua(reader_text);
+            let result = analyze_lua_parsed(&reader_uri, &ws.pre_globals, &ws.configs, &tree);
+            let offset = reader_text.find("local first").unwrap() + "local ".len();
+            result.hover_at(&tree, offset as u32).map(|h| h.type_str)
+        };
+
+        open_text(&mut documents, &mut ws, &reader_uri, reader_text);
+        assert_eq!(first(&ws).as_deref(), Some("(local) first: number"));
+        documents.get_mut(&reader_uri.to_string()).unwrap().dirty = false;
+
+        open_text(&mut documents, &mut ws, &writer_uri, &saved.replace("= 1", "= \"one\""));
+        assert!(documents[&reader_uri.to_string()].dirty, "the open reader is re-analyzed");
+        assert_eq!(first(&ws).as_deref(), Some("(local) first: string"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Other files must keep seeing an open file's unsaved edits across a workspace
     /// rebuild and a full rescan. The open-document text that cross-file harvests read
     /// instead of disk used to live only on the `PreResolvedGlobals` each rebuild

@@ -665,6 +665,7 @@ impl<'a> Analysis<'a> {
                 let Some(fi) = self.ir.tables[t].fields.get_mut(&name) else { continue };
                 let mut writes = std::mem::take(&mut fi.extra_exprs).into_iter();
                 let Some(first) = writes.next() else { continue };
+                self.ir.scan_field_takeovers.entry(fi.expr).or_insert_with(|| (TableIndex(t), name.clone()));
                 fi.expr = first;
                 fi.extra_exprs = writes.collect();
                 fi.annotation = None;

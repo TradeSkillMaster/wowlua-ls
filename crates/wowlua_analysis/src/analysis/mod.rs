@@ -873,9 +873,16 @@ pub struct Ir {
     /// The deferred call fields (by the table read and the field's coarse expr)
     /// `ensure_call_field_overlay` has consulted, so each is harvested once.
     pub call_fields_checked: HashSet<(TableIndex, ExprId)>,
+    /// The fields of this file's tables typed by its own writes over the type the
+    /// workspace scan gave them (`type_scanned_fields_by_own_writes`), by the scanned
+    /// field's coarse expr, for the table-field harvest (`harvest_table_fields`).
+    pub scan_field_takeovers: HashMap<ExprId, (TableIndex, String)>,
+    /// The deferred table fields (by the table read and the field's coarse expr)
+    /// `ensure_table_field_overlay` has consulted, so each is harvested once.
+    pub table_fields_checked: HashSet<(TableIndex, ExprId)>,
     /// Defining files this file harvested a deferred cross-file type from during
-    /// analysis (a body-derived return, a `@creates-global`, a `@class` field, or a
-    /// constructor generic type-arg — recorded by the `ensure_*_overlay` /
+    /// analysis (a body-derived return, a `@creates-global`, a `@class` or table
+    /// field, or a constructor generic type-arg — recorded by the `ensure_*_overlay` /
     /// field-type-args paths). The LSP uses it as a reverse dependency edge: when
     /// one of these files is edited in a way the coarse scan can't see (so no
     /// workspace rebuild fires), only the documents whose set contains the edited
@@ -1964,6 +1971,24 @@ impl Ir {
         None
     }
 
+    /// Whether `expr` reads a field of another file's list: one the workspace scan
+    /// typed no more than the table written there — the empty table of a field
+    /// written `{}` (`deferred_table_fields`) or the bare `table` it parks on a
+    /// `@class` field written `{}` — which a harvest types by the list the files
+    /// writing it build. Its element type is what is stored into it, so a call
+    /// storing into it (`tinsert(ns.list, v)`) adds an element, as into this file's
+    /// lists, rather than checking the value against the elements.
+    pub(super) fn reads_stored_list_field(&self, expr: ExprId) -> bool {
+        let Some((base, field)) = self.field_read_target(expr) else { return false };
+        self.get_field(base, &field).is_some_and(|fi| {
+            fi.from_scan
+                && fi.annotation_text.is_none()
+                && fi.expr.is_external()
+                && (self.ext.deferred_table_fields.contains_key(&fi.expr)
+                    || fi.annotation.as_ref().is_some_and(|a| self.is_bare_scan_placeholder(a)))
+        })
+    }
+
     /// The function `expr` names, found without resolving it: a function
     /// definition, a field holding one (`table.insert`), or a symbol bound to
     /// either.
@@ -2105,15 +2130,8 @@ impl Ir {
             return true;
         }
         let ValueType::Table(Some(idx)) = vt else { return false };
-        let t = self.table(*idx);
         idx.is_external()
-            && t.class_name.is_none()
-            && t.fields.is_empty()
-            && t.value_type.is_none()
-            && t.key_type.is_none()
-            && t.parent_classes.is_empty()
-            && t.metatable_index.is_none()
-            && t.call_func.is_none()
+            && self.table(*idx).is_shapeless()
             && self.overlay_fields.get(idx).is_none_or(|fields| fields.is_empty())
     }
 
@@ -3856,6 +3874,8 @@ impl<'a> Analysis<'a> {
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),
                 call_fields_checked: HashSet::default(),
+                scan_field_takeovers: HashMap::default(),
+                table_fields_checked: HashSet::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),

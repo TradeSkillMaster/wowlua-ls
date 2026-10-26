@@ -1523,6 +1523,21 @@ pub struct TableInfo {
     pub open_mixin: bool,
 }
 
+impl TableInfo {
+    /// Whether the table says no more than "a table": no class, fields, element
+    /// types, parents, or metatable behavior (the workspace scan's table for a
+    /// field written `{}`).
+    pub fn is_shapeless(&self) -> bool {
+        self.class_name.is_none()
+            && self.fields.is_empty()
+            && self.value_type.is_none()
+            && self.key_type.is_none()
+            && self.parent_classes.is_empty()
+            && self.metatable_index.is_none()
+            && self.call_func.is_none()
+    }
+}
+
 // ── Deferred check structs ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

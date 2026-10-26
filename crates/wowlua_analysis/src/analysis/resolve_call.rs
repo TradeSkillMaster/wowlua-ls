@@ -3016,7 +3016,8 @@ impl<'a> Analysis<'a> {
     /// (`Ir::element_write_tables`). An argument that may hold a table that is
     /// annotated, a `@class`, built with positional elements, or one of
     /// `field_maps` is skipped: its element type doesn't come from what calls
-    /// store into it.
+    /// store into it. A list another file builds (`Ir::reads_stored_list_field`)
+    /// is a table argument too, whose elements this file's calls don't type.
     pub(super) fn collect_table_call_args(&mut self, field_maps: &HashSet<TableIndex>) {
         let mut table_call_args: HashMap<TableIndex, Vec<(ExprId, usize)>> = HashMap::default();
         let mut table_arg_calls: HashMap<ExprId, (ExprId, usize)> = HashMap::default();
@@ -3026,6 +3027,10 @@ impl<'a> Analysis<'a> {
                 // Per-slot copies of a multi-return call share its argument exprs.
                 if table_arg_calls.contains_key(&arg) { continue; }
                 let tables = self.ir.element_write_tables(arg);
+                if tables.is_empty() && self.ir.reads_stored_list_field(arg) {
+                    table_arg_calls.insert(arg, (call, pos));
+                    continue;
+                }
                 if tables.is_empty()
                     || !tables.iter().all(|idx| self.ir.element_type_from_writes(*idx) && !field_maps.contains(idx))
                 {
@@ -3071,7 +3076,8 @@ impl<'a> Analysis<'a> {
         values
     }
 
-    /// Whether `arg` is the table argument of a call that stores elements into it.
+    /// Whether `arg` is the table argument of a call that stores elements into it
+    /// (`collect_table_call_args`).
     pub(super) fn call_stores_into(&mut self, arg: ExprId) -> bool {
         let Some(&(call, pos)) = self.table_arg_calls.get(&arg) else { return false };
         !self.call_element_writes_at(call, pos).is_empty()

@@ -8,7 +8,7 @@ local ns = nil
 local _r = ns.Constants.IsRetail
 --                      ^ hover: (field) IsRetail: boolean  def: external
 local _e = ns.Constants.Events
---                      ^ hover: (field) Events: table  def: external
+--                      ^ hover: (field) Events: string[]  def: external
 local _f = ns.Constants.DefaultFont
 --                      ^ hover: (field) DefaultFont: string  def: external
 local _l = ns.Constants.LayerStep
