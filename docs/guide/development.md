@@ -56,8 +56,8 @@ crates/
 └── wowlua_stub_gen/     # Stub generation pipeline (see Stub Generation)
 src/                     # wowlua_ls binary
 ├── main.rs              # Entry point; runs the LSP server over stdio when no subcommand is given
-├── cli/                 # Subcommands: check, evaluate, test-query, dump-types, dump-stubs, doc,
-│                        #   profile, regenerate-stubs
+├── cli/                 # Subcommands: check, evaluate, test-query, dump-types, crossfile-types,
+│                        #   dump-stubs, doc, profile, regenerate-stubs
 └── lib.rs               # Re-exports every crate's modules as wowlua_ls::<module>
 ```
 
@@ -130,6 +130,32 @@ wowlua_ls dump-types path/to/addon --with-stubs | diff baseline.txt -
 ```
 
 Any new `<none>` entries or changed types indicate a regression.
+
+## Cross-file type consistency
+
+A type lost between the file that writes a field and a file that reads it shows as `any` (or not at all) there. That removes diagnostics instead of adding them, so neither a `check` diff nor a `dump-types` diff shows a loss that already exists. The `crossfile-types` subcommand finds them. It keys every global and field access (reads, assignments, function definitions, table constructor keys) by the path it uses, starting at a global, the addon namespace, or a `@class`, and lists the paths whose type differs between files:
+
+```bash
+wowlua_ls crossfile-types path/to/addon [path/to/other-addon ...]
+```
+
+Each directory is analyzed as its own workspace, with the WoW API stubs. A finding names the path and how its types disagree, then each type with its access count and the first access in each file. `(write)` marks an access that writes the path:
+
+```
+<ns>.Settings.levels  [typed differently]
+    number[]  ×2 in 1 file: Settings.lua:12:5 (write)
+    table  ×3 in 2 files: Display.lua:30:18, Options.lua:8:22
+```
+
+- **untyped in some files**: `any`, `nil`, or not found, where another file has a type.
+- **typed differently**: for example a list that another file reads as a bare `table`.
+- **optional in some files**: the same type, `nil`-able in some files only.
+
+Functions whose signatures differ only in parameters some files leave untyped, or only in `self`, are listed one line per kind at the top. Paths under a disagreeing path fold into it ("and 4 paths under it"), because fixing the outer loss usually fixes them. Findings are ranked by how many accesses a fix would change.
+
+The summary also counts accesses that have no path, by what their receiver is: untyped (an unannotated parameter), file-local (a table no other file can reach), built-in (WoW API globals and widgets, which the stubs type alike everywhere), or unnamed (a typed table that no path leads to).
+
+`--accesses` also lists every access with its path and type, so you can grep a path across files. The output is deterministic, so a report saved before a change diffs against one taken after it.
 
 ## Fuzzing
 

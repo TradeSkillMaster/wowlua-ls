@@ -11,18 +11,19 @@ Steps:
 1. Find the most recent tag: `git tag --sort=-v:refname | head -1`
 2. List all commits since that tag: `git log --format="%h %s" <last_tag>..HEAD`
 3. If there are no commits since the last tag, tell the user there's nothing to release.
-4. Read the commit messages and group them into categories:
+4. Check for cross-file type losses this release would ship: `cargo build --release`, run `target/release/wowlua_ls crossfile-types` over every addon in the corpus (`.context/addons/*/` in the main checkout, the first entry of `git worktree list`), and save its output there as `.context/crossfile-types/<short HEAD sha>.txt`. Compare it with the newest earlier report in that directory: each path whose finding is new, or covers more accesses than before, is a regression to name in the closing line of step 10. With no earlier report, just save this one.
+5. Read the commit messages and group them into categories:
    - **Bug Fixes** — anything that fixes incorrect behavior
    - **New** — new features or capabilities
    - **Improvements** — refactors, performance, cleanup, better error handling
    - **Docs** — documentation-only changes
    Skip empty categories. Collapse clusters of related commits (e.g. a series of diagnostic decoupling commits) into a single summary bullet. Drop commits that are pure internal churn with no user-visible effect.
-5. For items in the **New** category, check if a relevant documentation page exists under `docs/guide/` or `docs/reference/` by scanning filenames and headings. If a doc page covers the feature, append a link in the bullet using the format `([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/PAGE.html))`. Pick the most specific page. For new diagnostics, link directly to the diagnostic's anchor on the diagnostics guide page: `([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/diagnostics.html#diagnostic-code))`. For new annotations, link to `/reference/annotations.html`. For other features, pick the best matching guide page (e.g. `/guide/builder-pattern.html`, `/guide/expressions.html`). Only add a link when there's a clear match; don't force it.
-6. Determine the version number following semver (https://semver.org/):
+6. For items in the **New** category, check if a relevant documentation page exists under `docs/guide/` or `docs/reference/` by scanning filenames and headings. If a doc page covers the feature, append a link in the bullet using the format `([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/PAGE.html))`. Pick the most specific page. For new diagnostics, link directly to the diagnostic's anchor on the diagnostics guide page: `([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/diagnostics.html#diagnostic-code))`. For new annotations, link to `/reference/annotations.html`. For other features, pick the best matching guide page (e.g. `/guide/builder-pattern.html`, `/guide/expressions.html`). Only add a link when there's a clear match; don't force it.
+7. Determine the version number following semver (https://semver.org/):
    - If the user provided a version number, use it.
    - Otherwise, auto-increment from the last tag: bump MAJOR for breaking changes, MINOR for new features/diagnostics, PATCH for bug-fix-only releases.
    - Do NOT include a version heading at the top of the release notes — GitHub already displays the tag name as the release title, so a heading would be redundant.
-7. If the user provided extra context or arguments, incorporate them.
-8. Update the workspace name to "Release notes for vX.Y.Z" (using the determined version number) by calling the `update_workspace` MCP tool.
-9. Present the draft to the user for review. Show **only** the release-notes bullets followed by a single short line asking if they want changes. Do not explain your categorization, clustering, or version choices, and do not add any commentary before or after the notes — keep it tight. If a decision genuinely needs the user's input, ask it in that one closing line.
-10. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
+8. If the user provided extra context or arguments, incorporate them.
+9. Update the workspace name to "Release notes for vX.Y.Z" (using the determined version number) by calling the `update_workspace` MCP tool.
+10. Present the draft to the user for review. Show **only** the release-notes bullets followed by a single short line asking if they want changes. Do not explain your categorization, clustering, or version choices, and do not add any commentary before or after the notes — keep it tight. If a decision genuinely needs the user's input, ask it in that one closing line.
+11. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).

@@ -800,6 +800,9 @@ pub struct Ir {
     /// workspace), this file uses its own addon's table instead of the global
     /// `ext.addon_table_idx`. Set via `AnalysisConfig::addon_table_override`.
     pub addon_table_override: Option<TableIndex>,
+    /// This file's tables standing for the addon namespace: one per file-level
+    /// `local _, ns = ...` / `select(2, ...)` (see [`Self::push_addon_ns_view`]).
+    pub addon_ns_views: HashSet<TableIndex>,
     /// Addon folder name for typing the first file-level `...` vararg as a
     /// string literal (e.g. `"MyAddon"` instead of `string`).
     pub addon_folder_name: Option<String>,
@@ -976,6 +979,19 @@ impl Ir {
     #[inline]
     pub fn addon_table_idx(&self) -> Option<TableIndex> {
         self.addon_table_override.or(self.ext.addon_table_idx)
+    }
+
+    /// Push a table for the addon namespace a file-level `...` binds (`local _,
+    /// ns = ...`, `select(2, ...)`), seeded with the namespace's fields.
+    pub(super) fn push_addon_ns_view(&mut self) -> TableIndex {
+        let fields = match self.addon_table_idx() {
+            Some(addon_idx) => self.ext.table(addon_idx).fields.clone(),
+            None => HashMap::default(),
+        };
+        let table_idx = TableIndex(self.tables.len());
+        self.tables.push(TableInfo { fields, ..Default::default() });
+        self.addon_ns_views.insert(table_idx);
+        table_idx
     }
 
     /// Whether an EXT-space function came from the precomputed WoW API stubs
@@ -3887,6 +3903,7 @@ impl<'a> Analysis<'a> {
                 varargs_scope: HashMap::default(),
                 event_type_display: HashMap::default(),
                 addon_table_override,
+                addon_ns_views: HashSet::default(),
                 addon_folder_name,
                 expression_args: HashMap::default(),
                 synthesized_overload_funcs: HashSet::default(),

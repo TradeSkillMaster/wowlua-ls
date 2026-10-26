@@ -2,14 +2,12 @@
 //! workspace. Deterministic, sorted output suitable for baseline diffing.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use log::error;
 
-use wowlua_ls::analysis::{Analysis, AnalysisConfig};
 use wowlua_ls::{config, syntax};
 
-use super::{collect_lua_files, load_workspace, CliResult};
+use super::{analyze_file, collect_lua_files, load_workspace, CliResult};
 
 pub fn run(dir: PathBuf, with_stubs: bool) -> CliResult {
     if !dir.is_dir() {
@@ -42,25 +40,7 @@ pub fn run(dir: PathBuf, with_stubs: bool) -> CliResult {
         let numbers = line_numbers::LinePositions::from(text.as_str());
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
-            let mut analysis = Analysis::new_with_tree(
-                &tree, Arc::clone(&pre_globals), AnalysisConfig {
-                    framexml_enabled: project_configs.framexml_enabled_for(path),
-                    allowed_read_globals: project_configs.allowed_read_globals_for(path),
-                    allowed_write_globals: project_configs.allowed_write_globals_for(path),
-                    allow_slash_commands: project_configs.allow_slash_commands_for(path),
-                    allow_binding_globals: project_configs.allow_binding_globals_for(path),
-                    project_flavors: project_configs.flavors_for(path),
-                    addon_flavors: project_configs.addon_flavors_for(path),
-                    backward_param_types: project_configs.backward_param_types_for(path),
-                    correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
-                    implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
-                    addon_table_override,
-                    addon_folder_name: project_configs.addon_name_for(path),
-                },
-            );
-            analysis.resolve_types();
-            analysis.into_result()
+            analyze_file(&tree, &pre_globals, &project_configs, path)
         }));
 
         let ar = match result {

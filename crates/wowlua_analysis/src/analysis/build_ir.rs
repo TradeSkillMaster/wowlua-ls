@@ -348,14 +348,8 @@ impl<'a> Analysis<'a> {
                         // (addonName, addonTable) vararg. Inside a function,
                         // `...` is the function's own varargs, so lower normally.
                         Some(2) if func_id.is_none() => {
-                            let table_idx = self.ir.tables.len();
-                            let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                                self.ir.ext.table(addon_idx).fields.clone()
-                            } else {
-                                HashMap::default()
-                            };
-                            self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                            Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
+                            let table_idx = self.ir.push_addon_ns_view();
+                            Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                         }
                         Some(1) => {
                             let eid = self.ir.push_expr(Expr::VarArgs(0, func_id.is_none()));
@@ -385,14 +379,8 @@ impl<'a> Analysis<'a> {
                         let ret_index = index - (expressions.len() - 1);
                         if func_id.is_none() && ret_index == 1 {
                             // WoW passes (addonName, addonTable) at file scope
-                            let table_idx = self.ir.tables.len();
-                            let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                                self.ir.ext.table(addon_idx).fields.clone()
-                            } else {
-                                HashMap::default()
-                            };
-                            self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                            Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
+                            let table_idx = self.ir.push_addon_ns_view();
+                            Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                         } else {
                             let eid = self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none()));
                             self.ir.varargs_scope.insert(eid, scope_idx);
@@ -2559,14 +2547,8 @@ impl<'a> Analysis<'a> {
                     let ret_index = index - (expressions.len() - 1);
                     if func_id.is_none() && ret_index == 1 {
                         // WoW passes (addonName, addonTable) at file scope
-                        let table_idx = self.ir.tables.len();
-                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                            self.ir.ext.table(addon_idx).fields.clone()
-                        } else {
-                            HashMap::default()
-                        };
-                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                        Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
+                        let table_idx = self.ir.push_addon_ns_view();
+                        Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                     } else {
                         let eid = self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none()));
                         self.ir.varargs_scope.insert(eid, scope_idx);

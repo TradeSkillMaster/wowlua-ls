@@ -11,10 +11,12 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use wowlua_ls::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use wowlua_ls::pre_globals::PreResolvedGlobals;
-use wowlua_ls::{annotations, config, lsp};
+use wowlua_ls::{annotations, config, lsp, syntax};
 
 mod check;
+mod crossfile_types;
 mod doc;
 mod dump_stubs;
 mod dump_types;
@@ -85,6 +87,17 @@ enum Commands {
         /// Load precomputed WoW API stubs.
         #[arg(long = "with-stubs")]
         with_stubs: bool,
+    },
+    /// List the global and field paths whose type differs between the files
+    /// using them (cross-file type losses).
+    #[command(name = "crossfile-types")]
+    CrossfileTypes {
+        /// Workspace directories, each analyzed on its own.
+        #[arg(required = true)]
+        directories: Vec<PathBuf>,
+        /// Also list every access with its path.
+        #[arg(long = "accesses")]
+        accesses: bool,
     },
     /// Dump every precomputed stub global with its resolved type.
     #[command(name = "dump-stubs")]
@@ -159,6 +172,7 @@ fn run(command: Commands) -> CliResult {
             Ok(())
         }
         Commands::DumpTypes { directory, with_stubs } => dump_types::run(directory, with_stubs),
+        Commands::CrossfileTypes { directories, accesses } => crossfile_types::run(directories, accesses),
         Commands::DumpStubs => dump_stubs::run(),
         Commands::Check { directory, severity } => check::run(directory, severity),
         Commands::Evaluate { file, with_stubs, rest } => evaluate::run(file, with_stubs, &rest),
@@ -189,6 +203,34 @@ pub(crate) fn collect_lua_files(
             }
         }
     }
+}
+
+/// Analyze a parsed file against the workspace, with the project settings
+/// that apply to `path`.
+pub(crate) fn analyze_file(
+    tree: &syntax::tree::SyntaxTree,
+    pre_globals: &Arc<PreResolvedGlobals>,
+    configs: &config::ProjectConfigs,
+    path: &std::path::Path,
+) -> AnalysisResult {
+    let mut analysis = Analysis::new_with_tree(
+        tree, Arc::clone(pre_globals), AnalysisConfig {
+            framexml_enabled: configs.framexml_enabled_for(path),
+            allowed_read_globals: configs.allowed_read_globals_for(path),
+            allowed_write_globals: configs.allowed_write_globals_for(path),
+            allow_slash_commands: configs.allow_slash_commands_for(path),
+            allow_binding_globals: configs.allow_binding_globals_for(path),
+            project_flavors: configs.flavors_for(path),
+            addon_flavors: configs.addon_flavors_for(path),
+            backward_param_types: configs.backward_param_types_for(path),
+            correlated_return_overloads: configs.correlated_return_overloads_for(path),
+            implicit_protected_prefix: configs.implicit_protected_prefix_for(path),
+            addon_table_override: pre_globals.addon_table_for_root(configs.addon_root_for(path)),
+            addon_folder_name: configs.addon_name_for(path),
+        },
+    );
+    analysis.resolve_types();
+    analysis.into_result()
 }
 
 pub(crate) struct WorkspaceData {
@@ -313,7 +355,7 @@ mod tests {
     fn subcommands_are_not_lsp_launches() {
         for cmd in [
             "doc", "test-query", "profile", "regenerate-stubs", "dump-types", "dump-stubs",
-            "check", "evaluate",
+            "check", "evaluate", "crossfile-types",
         ] {
             assert!(!is_lsp_launch(Some(cmd)), "{cmd} should dispatch as a subcommand");
         }

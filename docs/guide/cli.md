@@ -93,4 +93,4 @@ Prints the release the binary was built from, or `0.0.0` for a build from source
 
 ## Contributor tools
 
-The remaining subcommands are for working on wowlua-ls itself: `evaluate` and `test-query` (see [Debugging tools](/guide/testing#debugging-tools)), `dump-types` (see [Hover regression testing](/guide/development#hover-regression-testing)), and `regenerate-stubs` (see [Stub Generation](/guide/stub-generation)).
+The remaining subcommands are for working on wowlua-ls itself: `evaluate` and `test-query` (see [Debugging tools](/guide/testing#debugging-tools)), `dump-types` (see [Hover regression testing](/guide/development#hover-regression-testing)), `crossfile-types` (see [Cross-file type consistency](/guide/development#cross-file-type-consistency)), and `regenerate-stubs` (see [Stub Generation](/guide/stub-generation)).

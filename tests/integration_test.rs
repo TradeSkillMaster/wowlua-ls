@@ -1292,6 +1292,68 @@ fn ace_addon_method_fields() {
 }
 
 #[test]
+fn path_accesses_key_a_field_alike_in_every_file() {
+    // However a file reaches a field (the addon namespace, a local alias,
+    // `self`, a class-typed parameter, a global or `_G`, a table the file
+    // stores, a mixin on a frame), `path_accesses` keys its reads and writes
+    // by one path: the one `crossfile-types` compares the field's types across
+    // files on, and a member a class inherits by the class declaring it.
+    // Receivers no other file reaches, or whose type is unknown or built in,
+    // have none.
+    let dir = std::fs::canonicalize("tests/crossfile-types").unwrap();
+    let (pg, configs) = scan_with_stub_decls(&dir);
+    let ext_paths = wowlua_ls::analysis::queries::ext_table_paths(&pg);
+    let mut keys: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = Default::default();
+    let mut displays: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = Default::default();
+    for file in ["settings.lua", "reader.lua"] {
+        let path = dir.join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let tree = wowlua_ls::syntax::parser::parse(&text);
+        let config = AnalysisConfig { addon_folder_name: configs.addon_name_for(&path), ..AnalysisConfig::default() };
+        let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pg), config);
+        a.resolve_types();
+        for access in a.into_result().path_accesses(&tree, &ext_paths) {
+            let name: String = text[access.offset as usize..].chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let key = match access.path {
+                Ok(path) => path.to_string(),
+                Err(kind) => format!("{kind:?}"),
+            };
+            displays.entry(name.clone()).or_default().insert(access.display);
+            keys.entry(name).or_default().insert(if access.write { format!("{key} (write)") } else { key });
+        }
+    }
+    let expect = |name: &str, want: &[&str]| {
+        let got: Vec<&str> = keys[name].iter().map(String::as_str).collect();
+        assert_eq!(got, want, "accesses of `{name}`");
+    };
+    expect("Settings", &["<ns>.Settings", "<ns>.Settings (write)"]);
+    expect("threshold", &["<ns>.Settings.threshold", "<ns>.Settings.threshold (write)"]);
+    expect("GetThreshold", &["<ns>.Settings.GetThreshold", "<ns>.Settings.GetThreshold (write)"]);
+    expect("Reset", &["<ns>.Settings.Reset", "<ns>.Settings.Reset (write)"]);
+    expect("entries", &["Ledger.entries"]);
+    expect("Count", &["Ledger.Count (write)"]);
+    expect("label", &["<ns>.items[].label", "<ns>.items[].label (write)"]);
+    expect("FixtureAddonDB", &["FixtureAddonDB", "FixtureAddonDB (write)"]);
+    expect("scale", &["FixtureAddonDB.profile.scale", "FixtureAddonDB.profile.scale (write)"]);
+    expect("size", &["FileLocal", "FileLocal (write)"]);
+    expect("anything", &["Untyped"]);
+    expect("Show", &["BuiltIn"]);
+    expect("After", &["BuiltIn"]);
+    // Members found on a mixin applied to a built-in instance, read or written.
+    expect("Refresh", &["FixtureMixin.Refresh", "FixtureMixin.Refresh (write)"]);
+    expect("count", &["FixtureMixin.count", "FixtureMixin.count (write)"]);
+    // `_G.FixtureFlags` is the global, showing the global's type.
+    expect("FixtureFlags", &["FixtureFlags", "FixtureFlags (write)"]);
+    expect("verbose", &["FixtureFlags.verbose", "FixtureFlags.verbose (write)"]);
+    assert_eq!(displays["FixtureFlags"].iter().collect::<Vec<_>>(), ["{…}"]);
+    // Inherited members through a `FixturePanel : FixtureBase` parameter.
+    expect("Reload", &["FixtureBase.Reload", "FixtureBase.Reload (write)"]);
+    expect("reloaded", &["FixtureBase.reloaded", "FixtureBase.reloaded (write)"]);
+}
+
+#[test]
 fn deep_inheritance() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/deep-inheritance.lua",

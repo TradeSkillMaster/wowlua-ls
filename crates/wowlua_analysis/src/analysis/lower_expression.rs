@@ -1015,13 +1015,7 @@ impl<'a> Analysis<'a> {
                     // vararg. Inside a function, `...` is the function's own varargs.
                     if let Some(2) = crate::annotations::is_select_varargs(expr)
                         && self.current_func_id.is_none() {
-                        let table_idx = TableIndex(self.ir.tables.len());
-                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                            self.ir.ext.table(addon_idx).fields.clone()
-                        } else {
-                            HashMap::default()
-                        };
-                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
+                        let table_idx = self.ir.push_addon_ns_view();
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
                     } else {
                         self.lower_expression(expr, scope_idx)
@@ -1359,13 +1353,7 @@ impl<'a> Analysis<'a> {
         // function, `...` is the function's own varargs, so lower the call normally.
         let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr)
             && self.current_func_id.is_none() {
-            let table_idx = TableIndex(self.ir.tables.len());
-            let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                self.ir.ext.table(addon_idx).fields.clone()
-            } else {
-                HashMap::default()
-            };
-            self.ir.tables.push(TableInfo { fields, ..Default::default() });
+            let table_idx = self.ir.push_addon_ns_view();
             self.ir.push_expr(Expr::TableConstructor(table_idx))
         } else {
             self.lower_function_call(&base_call, scope_idx, 0, false)
