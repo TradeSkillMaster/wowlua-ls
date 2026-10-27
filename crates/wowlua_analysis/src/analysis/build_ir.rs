@@ -191,7 +191,7 @@ impl<'a> Analysis<'a> {
                     self.push_upvalue_entry_versions(fid, frame.block.syntax(), scope_idx);
                 }
             }
-            let statements = frame.block.statements();
+            let items = frame.block.items();
 
             // Process pending branch merges for this scope.
             // When an if/elseif/else chain is processed, branch frames are pushed onto the
@@ -209,7 +209,7 @@ impl<'a> Analysis<'a> {
             self.process_pending_exit_narrowings(scope_idx, &mut pending_exit_narrowings);
             self.process_pending_branch_merges(scope_idx, &mut pending_branch_merges);
 
-            if frame.next_stmt >= statements.len() {
+            if frame.next_stmt >= items.len() {
                 let popped_block = frame.block;
                 let popped_scope = scope_idx;
                 let popped_func_id = func_id;
@@ -226,15 +226,26 @@ impl<'a> Analysis<'a> {
 
             let stmt_index = frame.next_stmt;
             frame.next_stmt += 1;
+            let statement = match &items[stmt_index] {
+                BlockItem::Statement(statement) => statement,
+                BlockItem::Dangling(expr) => {
+                    // The expression of an incomplete statement (`val.` while
+                    // typing): the casts before it apply, and its root name is
+                    // read like any other.
+                    self.scan_cast_annotations(expr.syntax(), scope_idx);
+                    self.lower_dangling_root(expr, scope_idx);
+                    continue;
+                }
+            };
             // Apply @cast annotations from comments preceding this statement
-            self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
+            self.scan_cast_annotations(statement.syntax(), scope_idx);
             // Register @correlated annotations for local variables
-            self.scan_correlated_annotations(statements[stmt_index].syntax(), scope_idx);
+            self.scan_correlated_annotations(statement.syntax(), scope_idx);
             // Snapshot expr count before lowering this statement so we can mark
             // the range as conditionally-reached when the enclosing frame is a
             // conditionally-executed block (if/elseif/else/while/for body).
             let stmt_expr_start = self.ir.exprs.len();
-            match &statements[stmt_index] {
+            match statement {
                 Statement::LocalAssign(assign) => self.build_stmt_local_assign(assign, scope_idx, func_id, &mut stack),
                 Statement::Do(group) => self.build_stmt_do(group, scope_idx, func_id, constructor_of, frame_is_conditional, &mut stack),
                 Statement::While(while_loop) => self.build_stmt_while(while_loop, scope_idx, func_id, constructor_of, &mut stack, &mut pending_while_narrowings),
@@ -252,7 +263,7 @@ impl<'a> Analysis<'a> {
             }
 
             // Apply @cast annotations from comments immediately following this statement
-            self.scan_trailing_cast_annotations(statements[stmt_index].syntax(), scope_idx);
+            self.scan_trailing_cast_annotations(statement.syntax(), scope_idx);
 
             // Mark exprs created by this statement as conditionally-reached if
             // the enclosing frame is a conditionally-executed block. This only
@@ -3999,6 +4010,17 @@ impl<'a> Analysis<'a> {
         }
         cast_lines.reverse();
         self.apply_cast_lines(&cast_lines, scope_idx);
+    }
+
+    /// Lower the root name of a dangling expression as an ordinary read, so it
+    /// counts as a use and hover and completion on it see the casts and
+    /// narrowing in effect there. Only the root: the field still being typed
+    /// isn't looked up.
+    fn lower_dangling_root(&mut self, expr: &Expression<'a>, scope_idx: ScopeIndex) {
+        let Some(root) = expr.syntax().descendants()
+            .find(|n| n.kind() == SyntaxKind::NameRef)
+            .and_then(Expression::cast) else { return };
+        self.lower_expression(&root, scope_idx);
     }
 
     /// Apply `@cast` comments, each given as its text and start offset.

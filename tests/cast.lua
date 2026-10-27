@@ -491,3 +491,33 @@ function CastSelfClass:PathMethod()
     ---@cast self.frame table
     print(self)
 end
+
+-- ── @cast before an incomplete statement (`val.` while typing) ───────────────
+
+---@class CastIncompleteBase
+---@field id integer
+
+---@class CastIncompleteSub : CastIncompleteBase
+---@field name string
+
+---@param val CastIncompleteBase
+local function castIncomplete(val)
+    if val.id == 0 then
+        --- @cast val CastIncompleteSub
+        val.
+--      ^ hover: (param) val: CastIncompleteSub
+--          ^ comp: id, name
+    end
+end
+
+-- A partial field name, and a following statement that reads the cast too.
+
+---@param val CastIncompleteBase
+local function castIncompleteMid(val)
+    --- @cast val CastIncompleteSub
+    val.na
+--  ^ hover: (param) val: CastIncompleteSub
+--        ^ comp: name
+    print(val)
+--        ^ hover: (param) val: CastIncompleteSub
+end

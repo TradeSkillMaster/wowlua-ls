@@ -439,9 +439,29 @@ impl<'a> Identifier<'a> {
 
 define_ast_node!(Block, Block);
 
+/// A direct child of a block: a statement, or the expression the parser leaves
+/// bare when the statement it starts is incomplete (`val.` while typing).
+#[derive(Debug, Clone, Copy)]
+pub enum BlockItem<'a> {
+    Statement(Statement<'a>),
+    Dangling(Expression<'a>),
+}
+
 impl<'a> Block<'a> {
     pub fn statements(&self) -> Vec<Statement<'a>> {
         self.node.children().filter_map(Statement::cast).collect()
+    }
+
+    /// The statements and dangling expressions in source order.
+    pub fn items(&self) -> Vec<BlockItem<'a>> {
+        self.node
+            .children()
+            .filter_map(|child| {
+                Statement::cast(child)
+                    .map(BlockItem::Statement)
+                    .or_else(|| Expression::cast(child).map(BlockItem::Dangling))
+            })
+            .collect()
     }
 }
 

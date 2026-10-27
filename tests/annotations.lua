@@ -915,6 +915,24 @@ local myFrame = {}
 myFrame.
 --      ^ comp: name, visible, width
 
+-- A statement being typed reads the version later loop iterations carry in.
+---@class LoopCarried
+---@field label string
+
+---@return LoopCarried
+local function makeLoopCarried() return { label = "" } end
+
+local carried = nil
+for i = 1, 3 do
+    if i == 1 then
+        carried = makeLoopCarried()
+    elseif carried then
+        carried.
+--      ^ hover: (local) carried: LoopCarried {\n  label: string\n}
+--              ^ comp: label
+    end
+end
+
 -- Completion tests: multi-line method chain (whitespace before colon)
 factory.create("x")
     :setName("hi")

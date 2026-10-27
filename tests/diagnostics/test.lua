@@ -397,6 +397,10 @@ local unused_var = 42
 local used_var = 10
 _consume(used_var)
 
+-- A local read only by the statement being typed is used.
+local typing_var = 10
+typing_var.
+
 local _ = "ignore me"
 ---@diagnostic disable: unused-local
 
