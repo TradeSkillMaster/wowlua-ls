@@ -456,6 +456,8 @@ local cfg = {
 
 Optional fields (those with `?` or `nil` in their type) don't trigger the warning.
 
+A constructor that declares its class again with a bare `---@class Config`, as widget constructors do, gets the same checks: its entries take the types `Config`'s `@field`s declare, in whichever file the class is declared.
+
 ## Enum types (`@enum`)
 
 Use `@enum` instead of `@class` to declare an enum type: a named table whose values are bidirectionally compatible with their value type (`number` or `string`):

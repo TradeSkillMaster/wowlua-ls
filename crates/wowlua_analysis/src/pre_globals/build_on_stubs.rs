@@ -1897,6 +1897,9 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(ws_globals, ws_classes, &mut class_field_paths);
         ctx.resolve_inheritance(ws_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, ws_globals);
+        super::shared::drop_untyped_ctor_entries_typed_by_ancestors(
+            ws_classes, &ctx.classes, &mut ctx.tables, &ctx.declared_class_fields, &mut ctx.field_locations,
+        );
         ctx.settle_instance_tables();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals, &class_field_paths);

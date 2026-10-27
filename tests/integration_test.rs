@@ -2969,6 +2969,22 @@ fn unknown_types() {
     });
 }
 
+// A class declared with `@field`s and again, bare, on a constructor: the
+// constructor's entries take the declared types (no `unknown-field-type`), in
+// the defining files and in another file, on both builds.
+#[test]
+fn class_redeclared_ctor() {
+    for with_stubs in [false, true] {
+        for file in ["ctor", "reader", "samefile", "single", "generic", "generic_ctor"] {
+            run_annotation_tests(&TestConfig {
+                lua_file: &format!("tests/class-redeclared-ctor/{file}.lua"),
+                with_stubs,
+                scan_dir: Some("tests/class-redeclared-ctor"),
+            });
+        }
+    }
+}
+
 #[test]
 fn framexml_disabled() {
     run_annotation_tests(&TestConfig {

@@ -347,19 +347,54 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Each class name's declarations in file order, and the field names they
+        // declare with `@field`.
+        let mut decls_by_name: HashMap<&str, (Vec<usize>, HashSet<&str>)> = HashMap::default();
+        for (i, class) in scan.classes.iter().enumerate() {
+            let (decls, declared) = decls_by_name.entry(class.name.as_str()).or_default();
+            decls.push(i);
+            declared.extend(class.declared_field_names.iter().map(String::as_str));
+        }
+
+        // A field typed by a class type parameter (`@field value T`) stays with its
+        // declaration: a redeclaration declares no type parameters to bind it. Pass 2
+        // stores one without an annotation; the workspace build resolves it to the
+        // type variable.
+        let binds_type_param = |fi: &FieldInfo, type_params: &[String]| fi.annotation.is_none()
+            || fi.annotation_type_raw.as_ref()
+                .is_some_and(|raw| crate::pre_globals::annotation_type_references_type_params(raw, type_params));
+
         // Propagate field annotations to duplicate @class tables.
-        // When multiple @class declarations share the same name, the first one
-        // with @field annotations defines the field contract. Subsequent tables
-        // inherit those annotations so missing-fields and inject-field work correctly.
+        // Same-name declarations each get their own table but describe one class:
+        // each table takes the `@field`s the others declare, over a constructor
+        // entry its own declaration inferred (as a declaration's own `@field` wins
+        // over its constructor's entry), so missing-fields and inject-field work
+        // correctly. A table with no fields of its own also takes the other
+        // annotated fields of the first one that has some.
         for i in 0..class_table_indices.len() {
             let idx = class_table_indices[i];
-            if idx.is_external() || self.ir.tables[idx.val()].has_source_fields { continue; }
-            let class_name = &scan.classes[i].name;
+            if idx.is_external() { continue; }
+            let class = &scan.classes[i];
+            let decls = &decls_by_name[class.name.as_str()].0;
+            if decls.len() < 2 { continue; }
+            let mut taken: HashSet<&str> = HashSet::default();
+            for &j in decls.iter().filter(|&&j| j != i) {
+                let sibling_idx = class_table_indices[j];
+                for name in &scan.classes[j].declared_field_names {
+                    if class.declared_field_names.contains(name) || taken.contains(name.as_str()) { continue; }
+                    let sibling = self.ir.table(sibling_idx);
+                    let Some(fi) = sibling.fields.get(name)
+                        .filter(|fi| !binds_type_param(fi, &sibling.class_type_params))
+                        .cloned() else { continue };
+                    taken.insert(name.as_str());
+                    self.ir.tables[idx.val()].fields.insert(name.clone(), fi);
+                    self.ir.ctor_placeholder_fields.remove(&(idx, name.clone()));
+                }
+            }
+            if self.ir.tables[idx.val()].has_source_fields { continue; }
             // Find the canonical table (first one with source fields) for this class name
-            let canonical = (0..class_table_indices.len())
-                .find(|&j| j != i
-                    && scan.classes[j].name == *class_name
-                    && self.ir.tables[class_table_indices[j].val()].has_source_fields);
+            let canonical = decls.iter().copied()
+                .find(|&j| j != i && self.ir.tables[class_table_indices[j].val()].has_source_fields);
             if let Some(j) = canonical {
                 let canonical_idx = class_table_indices[j];
                 let annotated_fields: Vec<(String, FieldInfo)> = self.ir.tables[canonical_idx.val()].fields.iter()
@@ -475,6 +510,29 @@ impl<'a> Analysis<'a> {
                         self.ir.tables[local_idx.val()].parent_classes.push(parent_idx);
                     }
                 }
+            }
+        }
+
+        // Likewise a `@field` another file declares for a constructor entry's
+        // field types it (see the same-file sharing above). The workspace class
+        // keeps the entry another declaration registered when the `@field` didn't
+        // resolve (a class type parameter it lost), so a declared `any` or bare
+        // `table` is taken for that placeholder and left to this file's entry.
+        for (class_i, class) in scan.classes.iter().enumerate() {
+            let local_idx = class_table_indices[class_i];
+            if local_idx.is_external() { continue; }
+            let Some(&ext_idx) = ext.classes.get(&class.name) else { continue };
+            let Some(ext_declared) = ext.declared_class_fields.get(&class.name) else { continue };
+            let declared_in_file = &decls_by_name[class.name.as_str()].1;
+            for (field_name, _, _) in &class.fields {
+                if declared_in_file.contains(field_name.as_str()) || !ext_declared.contains(field_name) { continue; }
+                let ext_table = self.ir.table(ext_idx);
+                let Some(fi) = ext_table.fields.get(field_name)
+                    .filter(|fi| !binds_type_param(fi, &ext_table.class_type_params)
+                        && !matches!(fi.annotation, Some(ValueType::Any | ValueType::Table(None))))
+                    .cloned() else { continue };
+                self.ir.tables[local_idx.val()].fields.insert(field_name.clone(), fi);
+                self.ir.ctor_placeholder_fields.remove(&(local_idx, field_name.clone()));
             }
         }
 

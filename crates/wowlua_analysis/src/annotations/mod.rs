@@ -589,6 +589,12 @@ pub struct ClassDecl {
     /// in the stub blob).
     #[serde(skip)]
     pub ctor_function_entries: HashSet<String>,
+    /// Constructor entries the class scan could only type `any` (a reference or a
+    /// call): registered so the field exists in other files, but a type an
+    /// ancestor declares for the field wins over them. Workspace-only (not in the
+    /// stub blob).
+    #[serde(skip)]
+    pub untyped_ctor_entries: HashSet<String>,
     /// For constructor self-fields whose coarse type is `any` because the RHS is a
     /// function call the scan couldn't resolve: maps field name → the RHS call's
     /// byte range. Lets the deferred harvest recover the field's precise type
@@ -681,6 +687,7 @@ impl ClassDecl {
             bare_inferred_field_names: HashSet::default(),
             typed_ctor_entries: HashSet::default(),
             ctor_function_entries: HashSet::default(),
+            untyped_ctor_entries: HashSet::default(),
             deferred_field_call_ranges: HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),
@@ -1329,9 +1336,14 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
 
     if result.classes.is_empty() { return; }
 
-    // Build a map from class name to class index for matching.
+    // Build a map from class name to class index for matching, and one from each
+    // declaration's `@class` comment: a class declared more than once in the file
+    // takes a constructor's entries on the declaration annotating it.
     let class_by_name: HashMap<String, usize> = result.classes.iter().enumerate()
         .map(|(i, c)| (c.name.clone(), i))
+        .collect();
+    let class_by_comment: HashMap<u32, usize> = result.classes.iter().enumerate()
+        .filter_map(|(i, c)| Some((c.def_range?.0, i)))
         .collect();
     // The addon-namespace local and `@class` locals, built on the first recorded
     // string-literal call to spell its callee as declarations are keyed.
@@ -1353,6 +1365,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
         // Walk backward through preceding sibling tokens to find attached comments.
         // Stop at blank lines (two consecutive newlines) or non-comment/non-whitespace tokens.
         let mut class_name_in_comments: Option<String> = None;
+        let mut class_comment_start: Option<u32> = None;
         let mut tok: Option<SyntaxToken<'_>> = stmt.syntax().first_token()
             .and_then(|t| t.prev_token());
         while let Some(t) = tok {
@@ -1376,6 +1389,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
                         .next().unwrap_or("").trim();
                     if !name.is_empty() {
                         class_name_in_comments = Some(name.to_string());
+                        class_comment_start = Some(u32::from(t.text_range().start()));
                     }
                 }
             } else if kind != SyntaxKind::Whitespace {
@@ -1385,7 +1399,9 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
         }
 
         let Some(class_name) = class_name_in_comments else { continue };
-        let Some(&class_idx) = class_by_name.get(class_name.as_str()) else { continue };
+        let Some(class_idx) = class_comment_start.and_then(|start| class_by_comment.get(&start))
+            .or_else(|| class_by_name.get(class_name.as_str()))
+            .copied() else { continue };
 
         // Check if the RHS is a table constructor
         let Some(expr_list) = expr_list else { continue };
@@ -1426,6 +1442,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
         let mut new_literals: HashMap<String, String> = HashMap::default();
         let mut new_typed: Vec<String> = Vec::new();
         let mut new_functions: Vec<String> = Vec::new();
+        let mut new_untyped: Vec<String> = Vec::new();
         for field in tc.fields() {
             let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
             if existing_fields.contains(name.as_str()) { continue; }
@@ -1479,6 +1496,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
                 // field as 'any' so undefined-field doesn't fire cross-file.
                 // Note: cross-file callers will see 'any'; the actual type is only
                 // available in per-file analysis of the defining file.
+                new_untyped.push(name.clone());
                 AnnotationType::Simple("any".into())
             };
             let vis = default_visibility_for_name(&name, false);
@@ -1505,6 +1523,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             class.field_literals.extend(new_literals);
             class.typed_ctor_entries.extend(new_typed);
             class.ctor_function_entries.extend(new_functions);
+            class.untyped_ctor_entries.extend(new_untyped);
         }
     }
 }
@@ -1644,7 +1663,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {

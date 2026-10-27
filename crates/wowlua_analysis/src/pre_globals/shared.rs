@@ -366,12 +366,26 @@ pub fn populate_class_fields(
     string_literals: &mut HashMap<ExprId, String>,
     number_literals: &mut HashMap<ExprId, String>,
 ) {
+    // Propagate declared_field_names for doc generation filtering
+    for class in class_decls {
+        if !class.declared_field_names.is_empty() {
+            declared_class_fields.entry(class.name.clone())
+                .or_default()
+                .extend(class.declared_field_names.iter().cloned());
+        }
+    }
     // Populate @field entries (expr indices use EXT_BASE)
     for class in class_decls {
         let table_idx = ctx.classes[&class.name];
         let local_idx = table_idx.ext_offset();
+        // A field another declaration of the class declares with `@field` keeps
+        // that declaration over what this one infers for it (a constructor entry),
+        // whichever declaration comes first.
+        let declared_elsewhere = |field_name: &str| !class.declared_field_names.contains(field_name)
+            && declared_class_fields.get(&class.name).is_some_and(|d| d.contains(field_name));
         // Record per-field locations from ClassDecl.field_ranges
         for (field_name, &(start, end)) in &class.field_ranges {
+            if declared_elsewhere(field_name) { continue; }
             let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
             if let Some(path) = path {
                 field_locations.entry_or_default(table_idx)
@@ -382,13 +396,8 @@ pub fn populate_class_fields(
                     });
             }
         }
-        // Propagate declared_field_names for doc generation filtering
-        if !class.declared_field_names.is_empty() {
-            declared_class_fields.entry(class.name.clone())
-                .or_default()
-                .extend(class.declared_field_names.iter().cloned());
-        }
         for (field_name, annotation_type, visibility) in &class.fields {
+            if declared_elsewhere(field_name) && ctx.tables[local_idx].fields.contains_key(field_name) { continue; }
             // Handle index signatures: @field [string] Type, @field [number] Type,
             // or @field [K] V where K is a class type param
             if field_name.starts_with('[') && field_name.ends_with(']') {
@@ -835,6 +844,56 @@ pub fn resolve_inheritance(class_decls: &[ClassDecl], ctx: &mut FnBuildCtx) {
         let new_local = new_idx.ext_offset();
         if !tables[new_local].parent_classes.contains(&old_idx) {
             tables[new_local].parent_classes.push(old_idx);
+        }
+    }
+}
+
+/// Drop the constructor entries the class scan could only type `any`
+/// (`ClassDecl::untyped_ctor_entries`) that an ancestor declares a type for: the
+/// entry is only there so the field exists in other files, and would shadow the
+/// declaration. The nearer ancestors' own untyped fields are passed over, so the
+/// outcome doesn't depend on which classes were dropped from first. A field one of
+/// the class's own declarations declares is kept, and so is an entry overriding a
+/// function an ancestor declares (`OnClick = OnClick` implements it) or one typed
+/// by the ancestor's type parameters. Runs once inheritance is linked.
+pub fn drop_untyped_ctor_entries_typed_by_ancestors(
+    class_decls: &[ClassDecl],
+    classes: &HashMap<String, TableIndex>,
+    tables: &mut LayeredVec<TableInfo>,
+    declared_class_fields: &HashMap<String, HashSet<String>>,
+    field_locations: &mut SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
+) {
+    let declares = |class: Option<&String>, name: &str| class
+        .and_then(|class| declared_class_fields.get(class))
+        .is_some_and(|declared| declared.contains(name));
+    for class in class_decls {
+        if class.untyped_ctor_entries.is_empty() { continue; }
+        let Some(&table_idx) = classes.get(&class.name) else { continue };
+        let table = &tables[table_idx.ext_offset()];
+        let dropped: Vec<String> = class.untyped_ctor_entries.iter()
+            .filter(|&name| {
+                !declares(Some(&class.name), name)
+                    && table.fields.get(name).is_some_and(|fi| matches!(fi.annotation, Some(ValueType::Any)))
+                    && table.parent_classes.iter().find_map(|&parent| {
+                        let parent = &tables[parent.ext_offset()];
+                        let fi = parent.fields.get(name)?;
+                        let generic = fi.annotation_type_raw.as_ref()
+                            .is_some_and(|raw| annotation_type_references_type_params(raw, &parent.class_type_params));
+                        match fi.annotation.as_ref().map(ValueType::strip_nil) {
+                            _ if generic => Some(false),
+                            Some(ValueType::Any | ValueType::Table(None)) if !declares(parent.class_name.as_ref(), name) => None,
+                            Some(ValueType::Function(_) | ValueType::FunctionSig(_)) | None => Some(false),
+                            Some(_) => Some(true),
+                        }
+                    }) == Some(true)
+            })
+            .cloned()
+            .collect();
+        for name in dropped {
+            tables[table_idx.ext_offset()].fields.remove(&name);
+            if field_locations.get(&table_idx).is_some_and(|locations| locations.contains_key(&name)) {
+                field_locations.entry_or_default(table_idx).remove(&name);
+            }
         }
     }
 }

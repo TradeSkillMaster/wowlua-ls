@@ -8,12 +8,17 @@ pub struct UnknownFieldType;
 impl DiagnosticPass for UnknownFieldType {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         if analysis.is_meta { return; }
-        let mut pending: Vec<(&str, &str, &FieldInfo)> = Vec::new();
+        // `(field, class, info, annotated)`
+        let mut pending: Vec<(&str, &str, &FieldInfo, bool)> = Vec::new();
 
-        for (_table_idx, table) in analysis.local_tables() {
+        for (table_idx, table) in analysis.local_tables() {
             let Some(class_name) = table.class_name.as_deref() else { continue };
             for (field_name, fi) in &table.fields {
-                pending.push((field_name, class_name, fi));
+                // The class scan's placeholder for a constructor entry it couldn't
+                // type isn't an annotation: the entry's value types the field.
+                let annotated = fi.annotation_type_raw.is_some()
+                    && !analysis.ir.ctor_placeholder_fields.contains(&(table_idx, field_name.clone()));
+                pending.push((field_name, class_name, fi, annotated));
             }
         }
 
@@ -21,14 +26,13 @@ impl DiagnosticPass for UnknownFieldType {
         for (&table_idx, fields) in &analysis.ir.overlay_fields {
             let Some(class_name) = analysis.table(table_idx).class_name.as_deref() else { continue };
             for (field_name, fi) in fields {
-                pending.push((field_name, class_name, fi));
+                pending.push((field_name, class_name, fi, fi.annotation_type_raw.is_some()));
             }
         }
 
-        for (field_name, class_name, fi) in pending {
+        for (field_name, class_name, fi, annotated) in pending {
             let Some((start, end)) = fi.def_range else { continue };
             // A `---@field` declaration is the field's type; otherwise the assigned value's.
-            let annotated = fi.annotation_type_raw.is_some();
             let ty = if annotated { fi.annotation.clone() } else { analysis.resolve_expr_type(fi.expr) };
             if annotated && ty.is_none() { continue; }
             let Some(desc) = unknown_type_message(ty.as_ref(), annotated) else { continue };

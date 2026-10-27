@@ -3993,6 +3993,9 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(globals, external_classes, &mut class_field_paths);
         ctx.resolve_inheritance(external_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, globals);
+        shared::drop_untyped_ctor_entries_typed_by_ancestors(
+            external_classes, &ctx.classes, &mut ctx.tables, &ctx.declared_class_fields, &mut ctx.field_locations,
+        );
         ctx.settle_instance_tables();
         ctx.propagate_override_overloads();
         ctx.mark_callable_classes(callable_classes);
@@ -5404,6 +5407,7 @@ mod tests {
             bare_inferred_field_names: crate::collections::HashSet::default(),
             typed_ctor_entries: crate::collections::HashSet::default(),
             ctor_function_entries: crate::collections::HashSet::default(),
+            untyped_ctor_entries: crate::collections::HashSet::default(),
             deferred_field_call_ranges: crate::collections::HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),
