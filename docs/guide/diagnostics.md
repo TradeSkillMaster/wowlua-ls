@@ -337,6 +337,21 @@ local cache = obj.Custom or obj.Fallback -- the `or` fallback idiom
 A deeper access on a now-known field is still checked, so genuine typos are not
 hidden: `if obj.cfg then obj.cfg.typo end` still flags `typo`.
 
+An intersection type declared on a variable (`---@type`, `---@param`, or an
+`--[[@as]]` cast) is checked against all of its members:
+
+```lua
+---@type Frame & {test: boolean}
+local frame = CreateFrame("Frame")
+print(frame.test)   -- no undefined-field
+frame:NonExisting() -- undefined-field
+```
+
+A frame created from a template (`CreateFrame("Frame", nil, nil, "BackdropTemplate")`)
+or returned by `Mixin()` has an intersection type too, but is not checked: such
+frames commonly receive members at runtime from XML key values and template
+scripts.
+
 ### `inject-field` <Badge type="tip" text="Hint" />
 
 Setting a field not declared on a `@class`:

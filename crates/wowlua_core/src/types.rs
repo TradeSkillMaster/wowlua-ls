@@ -993,9 +993,12 @@ impl ValueType {
     /// or a `function | table` union:
     /// - **callable** — the `function` member makes `is_callable` true, so calling
     ///   the field (`ns.Foo()`) doesn't false-positive as `cannot-call`.
-    /// - **permissive reads** — `undefined-field` skips top-level intersections
-    ///   (concrete instances that commonly receive untracked runtime fields), so
-    ///   sub-field reads stay clean, exactly as the bare `table` did.
+    /// - **permissive reads** — `undefined-field` checks an intersection only when
+    ///   a variable's declaration spells it out (`Ir::declares_intersection`) and
+    ///   every member's fields are known (`intersection_tables`). This one is never
+    ///   such a declaration, and its `function` and bare `table` members fail
+    ///   `intersection_tables` regardless, so sub-field reads stay clean, exactly
+    ///   as the bare `table` did.
     /// - **lenient assignability** — an intersection is assignable to X if *any*
     ///   member is, so the field still flows into table-expecting params
     ///   (`pairs(ns.Foo)`); a `function | table` union would break that, since a

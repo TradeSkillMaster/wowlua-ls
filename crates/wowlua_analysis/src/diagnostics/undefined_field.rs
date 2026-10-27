@@ -175,6 +175,20 @@ fn base_chain_is_open_mixin(analysis: &AnalysisResult, mut expr: ExprId) -> bool
     false
 }
 
+/// Collect the tables an intersection's fields come from. False when a member
+/// can hold any field (`any`, a bare `table`, a map, a type variable).
+fn intersection_tables(analysis: &AnalysisResult, t: &ValueType, out: &mut Vec<TableIndex>) -> bool {
+    match t {
+        ValueType::Intersection(members) => members.iter().all(|m| intersection_tables(analysis, m, out)),
+        ValueType::OpaqueAlias(_, inner) => intersection_tables(analysis, inner, out),
+        ValueType::Table(Some(idx)) if analysis.table(*idx).key_type.is_none() && !analysis.table(*idx).placeholder => {
+            out.push(*idx);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A `string`-typed receiver whose string-ness is reliable enough to flag
 /// unknown field reads on. Narrowing / grouping wrappers are peeled to the
 /// underlying receiver, which must then be a *direct* string value: a literal, a
@@ -526,11 +540,21 @@ impl DiagnosticPass for UndefinedField {
             if matches!(table_type, ValueType::Any) { continue; }
             // For unions, recurse into intersection/opaque-alias members so
             // mixin patterns like `(Frame & Template) | AceEvent-3.0` check
-            // all tables. Top-level intersections are skipped — they're concrete
-            // instances that commonly receive untracked runtime fields.
+            // all tables.
             let mut table_indices: Vec<TableIndex> = Vec::new();
             match &table_type {
                 ValueType::Table(Some(idx)) => table_indices.push(*idx),
+                // A top-level intersection is checked only when the receiver's own
+                // annotation declares it. One inferred from a call (a templated
+                // `CreateFrame`, `Mixin`, a pool's `Acquire`) is a frame that
+                // commonly gets fields this file can't see: per-instance XML
+                // `KeyValue`s, members its template's `OnLoad` installs, writes in
+                // other files.
+                ValueType::Intersection(_) => {
+                    let declared = matches!(*analysis.ir.expr(super::unwrap_to_inner_expr(&analysis.ir, *table)),
+                        Expr::SymbolRef(sym, _) if analysis.ir.declares_intersection(sym, &table_type));
+                    if !declared || !intersection_tables(analysis, &table_type, &mut table_indices) { continue; }
+                }
                 ValueType::Union(_) => {
                     super::collect_class_indices(&table_type, &mut table_indices);
                     // A `string` union member indexes into the `string` library via its

@@ -1108,6 +1108,24 @@ local function useConstrainedMixin(widget)
   --     ^ hover: (local) cr: Frame & StyleHookMixin
 end
 
+-- ── Declared intersection types are checked by undefined-field ──────────────
+-- An intersection the variable's annotation declares is checked against every
+-- member, like a plain `---@type Frame`; a templated `CreateFrame` frame or a
+-- `Mixin` result keeps getting members at runtime this file can't see, so it
+-- stays unchecked.
+---@type Frame&{test: boolean}
+local _declaredFrame = CreateFrame("Frame")
+_declaredFrame:NonExisting()
+--             ^ diag: undefined-field
+_declaredFrame:SetShown(_declaredFrame.test)
+_declaredFrame.extra = 1
+print(_declaredFrame.extra)
+
+local _templatedFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
+_templatedFrame:NotChecked()
+local _mixedFrame = Mixin(CreateFrame("Frame"), StyleHookMixin)
+_mixedFrame:NotChecked()
+
 -- ── Deep chained overlay on deferred runtime field ──────────────────────────
 -- Regression: self.sub.field = CreateFrame(...) where `sub` is a runtime
 -- field injected by a deferred field assignment. The deep field injection

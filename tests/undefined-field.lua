@@ -281,6 +281,90 @@ _consume(opaqueUnion.libMethod)
 _consume(opaqueUnion.missing)
 --                   ^ diag: undefined-field
 
+-- A top-level intersection a variable's own annotation declares is checked
+-- against all of its members, like a class: `---@type`, `---@param`, and an
+-- `--[[@as]]` initializer, also once narrowed or read from a closure.
+---@type MixinTargetA & {extra: boolean}
+local declaredIsect = nil
+
+_consume(declaredIsect.targetA)
+_consume(declaredIsect.extra)
+_consume(declaredIsect.missing)
+--                     ^ diag: undefined-field
+local function readDeclaredIsect()
+    _consume(declaredIsect.missingInClosure)
+    --                     ^ diag: undefined-field
+end
+_consume(readDeclaredIsect)
+
+---@param p MixinTargetA & MixinTemplateB
+---@param q? MixinTargetA & MixinTemplateB
+local function useDeclaredIsect(p, q)
+    _consume(p.templateB)
+    p:MissingMethod()
+    --^ diag: undefined-field
+    if q then
+        _consume(q.targetA)
+        _consume(q.missing)
+        --         ^ diag: undefined-field
+    end
+    -- A write of an undeclared member lands on the first class, as through a
+    -- receiver of that class alone, so reading it back is not undefined.
+    p.written = 1
+    --^ diag: inject-field
+    _consume(p.written)
+end
+_consume(useDeclaredIsect)
+
+local castIsect = embedded --[[@as MixinTargetA & MixinLibC]]
+_consume(castIsect.libMethod)
+_consume(castIsect.missing)
+--                 ^ diag: undefined-field
+
+-- An intersection a call infers stays unchecked, like a templated
+-- `CreateFrame` frame, which commonly gets members at runtime this file can't
+-- see. So does a declared one with a member that can hold any field.
+---@generic T, M
+---@param target T
+---@param mixin M
+---@return T & M
+local function combine(target, mixin) return target end
+
+---@type MixinTargetA
+local mixTarget = nil
+---@type MixinLibC
+local mixLib = nil
+local inferredIsect = combine(mixTarget, mixLib)
+--    ^ hover: (local) inferredIsect: MixinTargetA & MixinLibC
+_consume(inferredIsect.notChecked)
+
+-- A member defined through an inferred one stays off the file's class, which
+-- every other value of that class shares.
+local derivedIsect = combine({}, mixTarget)
+function derivedIsect:DerivedOnly() end
+_consume(mixTarget.DerivedOnly)
+--                 ^ diag: undefined-field
+
+-- A variable declared an intersection but reassigned one a call infers holds
+-- the inferred one: its reads stay unchecked and its members stay off the class.
+local reassignedIsect = embedded --[[@as MixinTargetA & MixinLibC]]
+reassignedIsect = combine({}, mixTarget)
+_consume(reassignedIsect.notChecked)
+function reassignedIsect:ReassignedOnly() end
+_consume(mixTarget.ReassignedOnly)
+--                 ^ diag: undefined-field
+
+---@param isectParam? MixinTargetA & MixinTemplateB
+local function reassignDeclaredParam(isectParam)
+    isectParam = combine(mixTarget, mixLib)
+    _consume(isectParam.notChecked)
+end
+_consume(reassignDeclaredParam)
+
+---@type MixinTargetA & table<string, number>
+local mapIsect = nil
+_consume(mapIsect.anyKey)
+
 -- ═══════════════════════════════════════════════════════════
 -- Closed-record (module-private table) undefined-field.
 -- A `local X = {}` whose fields are all statically assigned

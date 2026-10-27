@@ -1058,6 +1058,22 @@ impl Ir {
         self.param_decl_version(func, pos)?.resolved_type.as_ref()
     }
 
+    /// Whether the intersection `isect` a version of local `sym` holds is the one
+    /// the variable's declaration spells out: a `---@type` or `---@param`
+    /// annotation, or an `--[[@as]]` cast on its initializer, each of which lowers
+    /// to a `Literal` of that type, or of a union containing it when optional.
+    /// Not one a call infers (a templated `CreateFrame`, `Mixin`), including
+    /// through a later assignment of the variable.
+    pub fn declares_intersection(&self, sym: SymbolIndex, isect: &ValueType) -> bool {
+        if sym.is_external() { return false; }
+        let Some(decl) = self.symbols[sym.val()].versions.first().and_then(|v| v.type_source) else { return false };
+        match self.expr(decl) {
+            Expr::Literal(ValueType::Union(members)) => members.contains(isect),
+            Expr::Literal(declared) => declared == isect,
+            _ => false,
+        }
+    }
+
     /// Mutable [`Self::param_decl_version`] for a local function (`None` when the
     /// parameter's symbol is external, which is immutable).
     pub(super) fn param_decl_version_mut(&mut self, func_idx: FunctionIndex, pos: usize) -> Option<&mut SymbolVersion> {

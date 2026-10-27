@@ -3080,7 +3080,7 @@ impl<'a> Analysis<'a> {
     /// clears what the frame's factory set (`f.SetValue = nil`).
     fn deferred_write_table(&self, sym_idx: SymbolIndex, ver_idx: usize, field: &str, value: ExprId) -> Option<TableIndex> {
         self.deferred_receiver_table_idx(sym_idx, ver_idx).or_else(|| {
-            let Some(ValueType::Intersection(members)) = &self.ir.sym(sym_idx).versions[ver_idx].resolved_type else {
+            let Some(isect @ ValueType::Intersection(members)) = &self.ir.sym(sym_idx).versions[ver_idx].resolved_type else {
                 return None;
             };
             if matches!(self.ir.expr(value), Expr::Literal(ValueType::Nil)) {
@@ -3093,8 +3093,12 @@ impl<'a> Analysis<'a> {
             if classes.iter().any(|&class| self.class_has_field(class, field)) {
                 return None;
             }
-            // Only an external class has the overlay the file's writes go to.
-            classes.into_iter().find(|class| class.is_external())
+            // An external class's overlay is the file's view of it, shared with its
+            // other frames. When the receiver holds the intersection its declaration
+            // spells out, of only the file's own classes, the write lands on the
+            // first, as through a receiver of that one class.
+            classes.iter().copied().find(|class| class.is_external())
+                .or_else(|| classes.first().copied().filter(|_| self.ir.declares_intersection(sym_idx, isect)))
         })
     }
 
