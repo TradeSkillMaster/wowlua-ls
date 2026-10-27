@@ -89,7 +89,8 @@ pub fn run(dir: PathBuf) -> CliResult {
         let at = std::time::Instant::now();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let t0 = std::time::Instant::now();
-            let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), AnalysisConfig::default());
+            let config = AnalysisConfig { file_path: Some(path.clone()), ..AnalysisConfig::default() };
+            let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), config);
             let d_build = t0.elapsed();
             let t1 = std::time::Instant::now();
             analysis.resolve_types();
@@ -195,7 +196,8 @@ pub fn run(dir: PathBuf) -> CliResult {
             let _ = annotations::scan_all_annotations(root);
             let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false, None);
             let _ = annotations::scan_built_name_calls(root, &all_globals, false);
-            let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+            let config = AnalysisConfig { file_path: Some(slowest.clone()), ..AnalysisConfig::default() };
+            let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), config);
             analysis.resolve_types();
             let _result = analysis.into_result();
         }

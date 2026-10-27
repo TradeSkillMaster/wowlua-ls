@@ -664,9 +664,10 @@ impl<'a> Analysis<'a> {
     /// Same-name `@class` declarations in one file each get their own table (see
     /// `class_table_by_offset`), but they describe one class, so a field written
     /// through any of them belongs to all — otherwise the name resolves to a table
-    /// missing the fields written through the other declarations. Runs after
-    /// `build_ir` has recorded the writes; annotated `@field`s are shared in
-    /// `prescan_classes_and_aliases`.
+    /// missing the fields written through the other declarations. A table holding
+    /// the workspace's `any` for a field, which its writes refine, takes the writes
+    /// made through the others too. Runs after `build_ir` has recorded the writes;
+    /// annotated `@field`s are shared in `prescan_classes_and_aliases`.
     pub(super) fn share_duplicate_class_fields(&mut self) {
         let mut by_name: HashMap<String, Vec<TableIndex>> = HashMap::default();
         for &idx in self.ir.class_table_by_offset.values() {
@@ -680,16 +681,41 @@ impl<'a> Analysis<'a> {
             if tables.len() < 2 { continue; }
             tables.sort_unstable_by_key(|t| t.val());
             let mut written: Vec<(String, FieldInfo)> = Vec::new();
+            let mut writes: Vec<(String, Vec<ExprId>)> = Vec::new();
             for &t in &tables {
-                for (name, fi) in &self.ir.tables[t.val()].fields {
+                let mut fields: Vec<(&String, &FieldInfo)> = self.ir.tables[t.val()].fields.iter().collect();
+                fields.sort_unstable_by_key(|(name, _)| *name);
+                for (name, fi) in fields {
                     if fi.annotation.is_none() && !written.iter().any(|(n, _)| n == name) {
                         written.push((name.clone(), fi.clone()));
+                    }
+                    let exprs = match writes.iter_mut().position(|(n, _)| n == name) {
+                        Some(i) => &mut writes[i].1,
+                        None => {
+                            writes.push((name.clone(), Vec::new()));
+                            &mut writes.last_mut().expect("just pushed").1
+                        }
+                    };
+                    for e in std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()) {
+                        if !e.is_external() && !exprs.contains(&e) {
+                            exprs.push(e);
+                        }
                     }
                 }
             }
             for &t in &tables {
                 for (name, fi) in &written {
                     self.ir.tables[t.val()].fields.entry(name.clone()).or_insert_with(|| fi.clone());
+                }
+                for (name, exprs) in &writes {
+                    let Some(fi) = self.ir.tables[t.val()].fields.get_mut(name)
+                        .filter(|fi| fi.expr.is_external() && matches!(fi.annotation, Some(ValueType::Any)))
+                    else { continue };
+                    for &e in exprs {
+                        if fi.expr != e && !fi.extra_exprs.contains(&e) {
+                            fi.extra_exprs.push(e);
+                        }
+                    }
                 }
             }
         }
@@ -700,25 +726,37 @@ impl<'a> Analysis<'a> {
     /// type (`field_is_coarse_placeholder`: written in a function) is typed by
     /// this file's own writes instead when it writes a list or record there
     /// (`Ir::writes_unkeyed_table`), as with no scan, so what the file builds in
-    /// it (`tinsert(self.items, v)`) reads back. A placeholder standing for calls of
-    /// this file only (`Ir::placeholder_of_own_calls`) becomes a placeholder `any`
-    /// annotation, which reads take from the field's writes when they resolve.
-    /// Runs after `build_ir` has recorded the writes.
+    /// it (`tinsert(self.items, v)`) reads back. A placeholder standing for calls
+    /// this file makes (`Ir::other_files_placeholder_calls`) becomes a placeholder
+    /// `any` annotation, which reads take from the field's writes when they resolve,
+    /// beside the type other files' calls of it resolve to (harvested), standing in
+    /// for those. Runs after `build_ir` has recorded the writes.
     pub(super) fn type_scanned_fields_by_own_writes(&mut self) {
         for t in 0..self.ir.tables.len() {
             let scanned = |fi: &FieldInfo| fi.from_scan && fi.annotation_text.is_none() && fi.expr.is_external();
-            let own_calls: Vec<String> = self.ir.tables[t].fields.iter()
+            let mut own_calls: Vec<(String, Vec<crate::analysis::deferred::DeferredCallField>)> = self.ir.tables[t].fields.iter()
                 .filter(|(_, fi)| {
                     scanned(fi)
                         && fi.annotation.is_none()
                         && fi.extra_exprs.iter().any(|e| !e.is_external())
                         && crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext)
-                        && self.ir.placeholder_of_own_calls(fi)
                 })
-                .map(|(name, _)| name.clone())
+                .filter_map(|(name, fi)| Some((name.clone(), self.ir.other_files_placeholder_calls(fi)?)))
                 .collect();
-            for name in own_calls {
+            own_calls.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            for (name, others) in own_calls {
+                let stand_in = if others.is_empty() {
+                    None
+                } else {
+                    self.ir.deferred_dep_files.extend(others.iter().map(|call| call.path.clone()));
+                    let ext = Arc::clone(&self.ir.ext);
+                    let Some(ty) = crate::analysis::deferred::resolve_deferred_calls_type(&ext, &others) else { continue };
+                    Some(self.ir.push_expr(Expr::Literal(ty)))
+                };
                 if let Some(fi) = self.ir.tables[t].fields.get_mut(&name) {
+                    if let Some(expr) = stand_in {
+                        fi.expr = expr;
+                    }
                     fi.annotation = Some(ValueType::Any);
                 }
             }
@@ -1093,9 +1131,10 @@ impl<'a> Analysis<'a> {
         // or bare tbl.func("ClassName") / tbl:func("ClassName") statements.
         let addon_name_local = crate::annotations::scan_defclass::file_addon_name_local(&block);
         let addon_name = self.ir.addon_folder_name.clone();
-        let addon_name_arg = crate::annotations::scan_defclass::AddonNameArg {
+        let addon_name_arg = crate::annotations::scan_defclass::ClassNameArgs {
             local: addon_name_local.as_deref(),
             name: addon_name.as_deref(),
+            strings: crate::annotations::scan_defclass::file_string_locals(&block),
         };
         for stmt in block.statements() {
             let (var_name, call) = match &stmt {

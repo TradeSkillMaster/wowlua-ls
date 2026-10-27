@@ -1307,6 +1307,25 @@ fn ace_addon_scan_classes() {
 }
 
 #[test]
+fn ace_addon_constructor_entry() {
+    // A class's constructor entry holding `NewAddon(...)` named by the addon's
+    // `...` is that addon class in every file, its `@defclass` parents and mixins
+    // included, and so are the modules it names through a local.
+    let dir = std::fs::canonicalize("tests/value-fields-crossfile/HubAddon").unwrap();
+    let (pg, configs) = scan_with_stub_decls(&dir);
+    let analyze = |file: &str, locals: &[&str]| scan_hovers_and_warnings(&pg, &configs, &dir.join(file), locals);
+
+    let (hovers, warnings) = analyze("Main.lua", &["addon", "widgets", "enabled"]);
+    assert!(hovers[0].starts_with("(local) addon: HubAddon {"), "{}", hovers[0]);
+    assert!(hovers[1].starts_with("(local) widgets: Widgets {"), "{}", hovers[1]);
+    assert_eq!(hovers[2], "(local) enabled: boolean");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let (hovers, warnings) = analyze("HubAddon.lua", &["preset"]);
+    assert!(hovers[0].starts_with("(local) preset: Widgets {"), "{}", hovers[0]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
 fn ace_addon_method_fields() {
     // The fields a created class's methods write exist in other files, but not on
     // a library class a mixin name was mistaken for, and not over an ancestor's.
@@ -2406,6 +2425,12 @@ fn crossfile_class_ctor_fields() {
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
     });
+    // Only the workspace build harvests a call-valued entry's type from its file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/class_ctor_calls_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
 }
 
 #[test]
@@ -2563,6 +2588,12 @@ fn class_deep_field_crossfile() {
             scan_dir: Some("tests/class-deep-field-crossfile"),
         });
     }
+    // Only the workspace build harvests an entry's type from its file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-deep-field-crossfile/replace_harvest_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-deep-field-crossfile"),
+    });
     // The cold build leaves `Root.Util = {}` unannotated, so a file re-declaring
     // the class doesn't import it there.
     run_annotation_tests(&TestConfig {
@@ -3027,6 +3058,12 @@ fn class_redeclared_ctor() {
             });
         }
     }
+    // Only the workspace build harvests a constructor entry's type from its file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-redeclared-ctor/reader_child.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-redeclared-ctor"),
+    });
 }
 
 #[test]
@@ -6228,6 +6265,24 @@ fn infunc_call_fields_crossfile() {
             lua_file: &format!("tests/infunc-call-fields/{lua_file}"),
             with_stubs: true,
             scan_dir: Some("tests/infunc-call-fields"),
+        });
+    }
+}
+
+#[test]
+fn value_fields_crossfile() {
+    // Fields written a call, an operator expression or a constructor, in a class's
+    // constructor, a function body or a method, read in other files as the writing
+    // file reads them, and the writing file reads its own writes.
+    for lua_file in [
+        "consts_user.lua", "toolkit_main.lua",
+        "toolkit_user.lua", "bossmod.lua", "bossmod_user.lua", "saved_init.lua", "saved_user.lua",
+        "gearview_user.lua", "store_user.lua", "frames.lua", "frames_user.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file: &format!("tests/value-fields-crossfile/{lua_file}"),
+            with_stubs: true,
+            scan_dir: Some("tests/value-fields-crossfile"),
         });
     }
 }

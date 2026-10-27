@@ -12,7 +12,9 @@ use super::*;
 // IMPORTANT: Update this function when adding semantic fields to ExternalGlobal.
 // assigned_call_offset: positional (RHS call byte offset) — the call harvest only
 // accepts a call there that still assigns the global or field, so a stale offset
-// misses and falls back to the coarse type until the next real rebuild.
+// misses and falls back to the coarse type until the next real rebuild. Whether a
+// call is recorded, and how many (`extra_call_offsets`), is compared: a self-field
+// gaining a second call or a value of another kind changes what the harvest takes.
 pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
     x.name == y.name
         && x.kind == y.kind
@@ -45,6 +47,8 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.declares_class == y.declares_class
         && x.ctor_method == y.ctor_method
         && x.export_method == y.export_method
+        && x.assigned_call_offset.is_some() == y.assigned_call_offset.is_some()
+        && x.extra_call_offsets.len() == y.extra_call_offsets.len()
         && x.assigned_call_local == y.assigned_call_local
         && x.guessed_local == y.guessed_local
         && x.in_function == y.in_function

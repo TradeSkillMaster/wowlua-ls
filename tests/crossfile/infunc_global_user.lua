@@ -1,8 +1,8 @@
 ---@diagnostic disable: unused-local
 -- A global created only inside a function body in the defs file must resolve
--- here without an undefined-global false positive.
+-- here without an undefined-global false positive, as the table it's assigned.
 local d = MY_SAVED_DATA
---        ^ hover: (global) MY_SAVED_DATA: ?  def: external
+--        ^ hover: (global) MY_SAVED_DATA: {\nversion: number\n}  def: external
 
 -- A function-scoped local in the defs file must NOT leak as a global: reading
 -- it here is genuinely undefined.

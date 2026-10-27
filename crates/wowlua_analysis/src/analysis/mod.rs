@@ -1901,6 +1901,12 @@ impl Ir {
         }
     }
 
+    /// Whether every workspace definition of the global `name` is in this file.
+    fn defines_global_alone(&self, name: &str) -> bool {
+        let defs = self.ext.symbol_locations_for_name(name);
+        self.file_path.as_ref().is_some_and(|path| !defs.is_empty() && defs.iter().all(|def| def.path == *path))
+    }
+
     /// [`Self::find_table_for_symbol`] for the receiver of a field write, also
     /// seeing through a local bound to a field holding a known table (`local Foo =
     /// ns.Foo`). Without this, writes through such a local are deferred past the
@@ -1920,6 +1926,12 @@ impl Ir {
 
     fn find_receiver_table(&self, root_name: &str, scope_idx: ScopeIndex, follow_declared: bool) -> Option<TableIndex> {
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx)?;
+        // A global only this file defines, not yet assigned where the write is built
+        // (an event handler initializes it): its workspace table is a copy of this
+        // file's own value, so the write waits for the fixpoint, which reaches that.
+        if symbol_idx.is_external() && self.defines_global_alone(root_name) {
+            return None;
+        }
         let ver = &self.sym(symbol_idx).versions[self.version_for_scope(symbol_idx, scope_idx)];
         ver.type_source
             .and_then(|type_source| self.find_receiver_table_index(type_source, follow_declared, 0))
@@ -2184,12 +2196,13 @@ impl Ir {
             && self.writes_unkeyed_table(rhs, table, field)
     }
 
-    /// Whether the placeholder the workspace scan left in `fi` stands for calls it
-    /// couldn't type (`deferred_call_fields`) that are all this file's: its own
-    /// writes of the field are then every write the placeholder stands for.
-    pub(super) fn placeholder_of_own_calls(&self, fi: &FieldInfo) -> bool {
-        let (Some(calls), Some(path)) = (self.ext.deferred_call_fields.get(&fi.expr), &self.file_path) else { return false };
-        !calls.is_empty() && calls.iter().all(|call| call.path == *path)
+    /// When the placeholder the workspace scan left in `fi` stands for calls it
+    /// couldn't type (`deferred_call_fields`) and some are this file's: the others,
+    /// made in other files. This file's own writes of the field are the rest.
+    pub(super) fn other_files_placeholder_calls(&self, fi: &FieldInfo) -> Option<Vec<deferred::DeferredCallField>> {
+        let (Some(calls), Some(path)) = (self.ext.deferred_call_fields.get(&fi.expr), &self.file_path) else { return None };
+        calls.iter().any(|call| call.path == *path)
+            .then(|| calls.iter().filter(|call| call.path != *path).cloned().collect())
     }
 
     /// Record the tables of this file `writes` hold in `unknown_element_tables`.

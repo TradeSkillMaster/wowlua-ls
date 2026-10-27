@@ -1,0 +1,5 @@
+## Interface: 110000
+## Title: HubAddon
+HubAddon.lua
+Module.lua
+Main.lua

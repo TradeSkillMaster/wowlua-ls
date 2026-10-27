@@ -20,10 +20,4 @@ local function readTypes(first, second)
     --                        ^ hover: (field) type: string
 end
 
----@param child RedeclPairChild
-local function readChild(child)
-    return child.first
-    --           ^ hover: (field) first: any
-end
-
-return read, readTypes, readChild
+return read, readTypes

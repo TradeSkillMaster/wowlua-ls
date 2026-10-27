@@ -454,6 +454,11 @@ pub struct ExternalGlobal {
     /// again). Runtime only — `#[serde(skip)]`, no BLOB_VERSION bump.
     #[serde(skip)]
     pub assigned_call_offset: Option<u32>,
+    /// For a field the self-field scan finds written several calls in its file
+    /// (`self.f = Call()` in two methods): the calls besides `assigned_call_offset`,
+    /// which the harvest takes in too. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub extra_call_offsets: Vec<u32>,
     /// For a field or global assigned a local a call initializes (`t.f = w`, `G =
     /// w` after `local w = f(...)`): the local, whose call `assigned_call_offset`
     /// locates — a function body's by its key (`w#1`, `function_locals::CallLocal`).
@@ -572,6 +577,7 @@ impl ExternalGlobal {
             body_derived_returns: false,
             deferred_call_type: false,
             assigned_call_offset: None,
+            extra_call_offsets: Vec::new(),
             assigned_call_local: None,
             guessed_local: None,
             in_function: false,
@@ -1276,6 +1282,13 @@ struct FieldWrite {
     /// A call's callee chain and first string argument ([`funcall_callee`]), which the
     /// funcall scan types the field from.
     call: Option<(Vec<String>, Option<String>)>,
+    /// The start offsets of the calls among the field's writes, which other files
+    /// harvest its type by (`ExternalGlobal::assigned_call_offset`,
+    /// `extra_call_offsets`).
+    call_offsets: Vec<u32>,
+    /// One of the field's writes holds a value of another kind: its calls alone
+    /// don't tell its type.
+    other_values: bool,
     /// The type the bare scan infers from the value ([`bare_write_type`]).
     bare: Option<AnnotationType>,
     /// Another write gives the field a different kind of value: this one's type is
@@ -1321,16 +1334,30 @@ impl FieldWrite {
         let differs = matches!((self.kind(), later.kind()), (Some(a), Some(b)) if a != b);
         let mixed = self.mixed || later.mixed || differs;
         if self.declared.is_none() && later.declared.is_some() {
-            *self = later;
+            let earlier = std::mem::replace(self, later);
+            self.join_calls(&earlier);
+        } else {
+            self.join_calls(&later);
         }
         self.mixed = mixed;
+    }
+
+    /// Take in another write's calls (`call_offsets`) and whether it holds a value
+    /// of another kind (`other_values`).
+    fn join_calls(&mut self, other: &FieldWrite) {
+        for &offset in &other.call_offsets {
+            if !self.call_offsets.contains(&offset) {
+                self.call_offsets.push(offset);
+            }
+        }
+        self.other_values |= other.other_values;
     }
 }
 
 /// Every class field the file's receivers ([`field_receivers`]) write: each
 /// receiver's own writes merged ([`FieldWrite::merge`]), then the receiver whose
 /// write the higher-precedence scan registers ([`FieldWrite::priority`]; the
-/// first on a tie).
+/// first on a tie), taking in the others' calls ([`FieldWrite::join_calls`]).
 fn class_field_writes(root: SyntaxNode<'_>, known_classes: &HashSet<String>) -> Vec<FieldWrite> {
     let mut writes: Vec<FieldWrite> = Vec::new();
     let mut index: HashMap<(String, String), usize> = HashMap::default();
@@ -1340,7 +1367,10 @@ fn class_field_writes(root: SyntaxNode<'_>, known_classes: &HashSet<String>) -> 
                 std::collections::hash_map::Entry::Occupied(e) => {
                     let first = &mut writes[*e.get()];
                     if write.priority() > first.priority() {
-                        *first = write;
+                        let earlier = std::mem::replace(first, write);
+                        first.join_calls(&earlier);
+                    } else {
+                        first.join_calls(&write);
                     }
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -1401,7 +1431,14 @@ impl<'a> WriteWalk<'a, '_> {
             },
             _ => (None, bare_write_type(value, &self.param_types, self.recv.instance)),
         };
-        let write = FieldWrite { class_name: self.recv.class_name.clone(), name, range, declared, call, bare, mixed: false };
+        let call_offsets = match value {
+            Some(Expression::FunctionCall(c)) if call.is_some() => vec![u32::from(c.syntax().text_range().start())],
+            _ => Vec::new(),
+        };
+        let mut write = FieldWrite {
+            class_name: self.recv.class_name.clone(), name, range, declared, call, call_offsets, other_values: false, bare, mixed: false,
+        };
+        write.other_values = write.call.is_none() && write.kind().is_some();
         match self.seen.get(&write.name) {
             Some(&first) => self.writes[first].merge(write),
             None => {
@@ -1549,6 +1586,13 @@ pub fn scan_method_funcall_self_fields(
             continue;
         }
         let vis = default_visibility_for_name(&write.name, implicit_protected_prefix);
+        // Every call written to the field is registered for the harvest, which
+        // refines it only when they agree; a value of another kind leaves the
+        // callee's type.
+        let (assigned_call_offset, extra_call_offsets) = match write.call_offsets.split_first() {
+            Some((&first, rest)) if !write.other_values => (Some(first), rest.to_vec()),
+            _ => (None, Vec::new()),
+        };
         results.push(ExternalGlobal {
             name: write.class_name,
             kind: ExternalGlobalKind::TableField(
@@ -1577,7 +1621,8 @@ pub fn scan_method_funcall_self_fields(
             requires: Vec::new(),
             body_derived_returns: false,
             deferred_call_type: false,
-            assigned_call_offset: None,
+            assigned_call_offset,
+            extra_call_offsets,
             assigned_call_local: None,
             guessed_local: None,
             in_function: false,

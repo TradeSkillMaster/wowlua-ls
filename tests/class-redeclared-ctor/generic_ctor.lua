@@ -9,7 +9,7 @@ end
 
 -- A child of a parameterized generic class keeps its constructor entry rather than
 -- reading the parent's `first` in other files, which there is its unbound `T`
--- (reader.lua).
+-- (reader_child.lua).
 ---@param v string
 local function MakeChild(v)
     --- @class RedeclPairChild : RedeclPair<string>

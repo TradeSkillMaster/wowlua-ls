@@ -2,8 +2,6 @@
 
 local db = DeepFieldReplaced.db
 --    ^ hover: (local) db: DeepFieldStore
-local cache = DeepFieldReplaced.cache
---    ^ hover: (local) cache: any
 local kept = DeepFieldReplaced.kept
 --    ^ hover: (local) kept: DeepFieldStore
 

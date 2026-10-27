@@ -400,8 +400,49 @@ fn collect_all_local_names(root: &SyntaxNode<'_>) -> HashSet<String> {
     locals
 }
 
+/// The globals the file assigns a table constructor by name (`X = { ... }`, `X = X
+/// or {}`, `_G.X = {}`), anywhere: names no `local` anywhere in the file (`locals`)
+/// binds.
+fn collect_table_globals(root: &SyntaxNode<'_>, locals: &HashSet<String>) -> HashSet<String> {
+    let mut globals: HashSet<String> = HashSet::default();
+    for node in root.descendants() {
+        let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
+        let (Some(var_list), Some(values)) = (assign.variable_list(), assign.expression_list()) else { continue };
+        let values = values.expressions();
+        for (ident, value) in var_list.identifiers().iter().zip(values) {
+            if ident.has_non_string_bracket_tail() || ident.has_prefix_expr_base()
+                || !matches!(unwrap_logical_chain(value), Expression::TableConstructor(_))
+            {
+                continue;
+            }
+            match ident.names().as_slice() {
+                [name] if !locals.contains(name) => { globals.insert(name.clone()); }
+                [g, name] if g == "_G" => { globals.insert(name.clone()); }
+                _ => {}
+            }
+        }
+    }
+    globals
+}
+
+/// [`classify_ctor_entry`] for a constructor a function body writes: a call is typed
+/// as the body's calls are ([`BodyCalls`]), and a name, which may be one the function
+/// declares, not at all.
+fn classify_body_ctor_entry(field: SyntaxNode<'_>, value: &Expression<'_>, scope: &CalleeScope<'_>, body_calls: &BodyCalls<'_>) -> FieldValueKind {
+    match value {
+        Expression::TableConstructor(tc) => FieldValueKind::Table(
+            ctor_entry_kinds(tc, |field, value| classify_body_ctor_entry(field, value, scope, body_calls))
+                .into_iter()
+                .map(|f| (f.name, f.kind))
+                .collect(),
+        ),
+        Expression::FunctionCall(call) if constructor_entry_type(field, value).is_none() => body_calls.call_kind(call),
+        _ => classify_expression_value_kind(value, scope),
+    }
+}
+
 /// The names `node` binds as locals (`local`/`local function`/params/for-vars).
-fn local_bindings(node: SyntaxNode<'_>) -> Vec<String> {
+pub(super) fn local_bindings(node: SyntaxNode<'_>) -> Vec<String> {
     match node.kind() {
         SyntaxKind::LocalAssignStatement => LocalAssign::cast(node)
             .and_then(|assign| assign.name_list())
@@ -1130,6 +1171,7 @@ impl CtorEntryScan<'_> {
             body_derived_returns: false,
             deferred_call_type: false,
             assigned_call_offset: None,
+            extra_call_offsets: Vec::new(),
             assigned_call_local: None,
             guessed_local: None,
             in_function: false,
@@ -1323,6 +1365,7 @@ fn build_func_external(
         body_derived_returns: is_body_derived,
         deferred_call_type: false,
         assigned_call_offset: None,
+        extra_call_offsets: Vec::new(),
         assigned_call_local: None,
         guessed_local: None,
         in_function: false,
@@ -2330,6 +2373,7 @@ pub fn scan_file_globals_with_synth(
                                 body_derived_returns: false,
                                 deferred_call_type: false,
                                 assigned_call_offset,
+                                extra_call_offsets: Vec::new(),
                                 assigned_call_local,
                                 guessed_local: None,
                                 in_function: false,
@@ -2580,6 +2624,7 @@ pub fn scan_file_globals_with_synth(
                                 body_derived_returns: false,
                                 deferred_call_type: false,
                                 assigned_call_offset,
+                                extra_call_offsets: Vec::new(),
                                 assigned_call_local,
                                 guessed_local: None,
                                 in_function: false,
@@ -2678,6 +2723,9 @@ pub fn scan_file_globals_with_synth(
     // data field from being promoted to callable-or-unknown. Built lazily on the
     // first non-`self` identifier-RHS field write.
     let mut ctor_key_paths: Option<HashSet<String>> = None;
+    // The globals the file assigns a table, whose fields a function body writing
+    // them registers. Built lazily on the first field write on another root.
+    let mut table_globals: Option<HashSet<String>> = None;
     // A field a function body writes a call, or a local a call initializes there
     // (`local f = CreateFrame(...)`), is typed as one written at file level: from
     // the call, which other files harvest (`assigned_call_offset`). What the body
@@ -2826,9 +2874,19 @@ pub fn scan_file_globals_with_synth(
                 } else {
                     (u32::from(range.start()), u32::from(range.end()))
                 };
+                // A global a function initializes with a constructor (a saved
+                // variable: `DB = DB or { ... }` in an event handler) is that table,
+                // as at file level, with the entries a scan of the body can type.
+                let (kind, ctor_fields) = match rhs_exprs.get(target_idx).map(|value| unwrap_logical_chain(*value)) {
+                    Some(Expression::TableConstructor(tc)) => {
+                        let entries = ctor_entry_kinds(&tc, |field, value| classify_body_ctor_entry(field, value, &callee_scope, &body_calls));
+                        (ExternalGlobalKind::Table, entries.into_iter().map(|f| CtorField { kind: nil_entries_unknown(f.kind), ..f }).collect())
+                    }
+                    _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), Vec::new()),
+                };
                 globals.push(ExternalGlobal {
                     name: name.clone(),
-                    kind: ExternalGlobalKind::Variable(FieldValueKind::Unknown),
+                    kind,
                     params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
                     doc: None, deprecated: false, deprecated_message: None, nodiscard: false, constructor: false,
                     visibility: Visibility::Public, generics: Vec::new(),
@@ -2850,10 +2908,11 @@ pub fn scan_file_globals_with_synth(
                     body_derived_returns: false,
                     deferred_call_type: false,
                     assigned_call_offset: None,
+                    extra_call_offsets: Vec::new(),
                     assigned_call_local: None,
                     guessed_local: None,
                     in_function: false,
-                    ctor_fields: Vec::new(),
+                    ctor_fields,
                     declares_class: false,
                     ctor_method: false,
                     export_method: false,
@@ -2868,6 +2927,7 @@ pub fn scan_file_globals_with_synth(
             }
             if names.len() < 2 { continue; }
             let root_name = &names[0];
+            let mut global_root = false;
             let canonical_name = if let Some(i) = call_root {
                 function_locals.call_locals[i].key.clone()
             } else if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -2946,6 +3006,16 @@ pub fn scan_file_globals_with_synth(
                         continue;
                     }
                 }
+            } else if table_globals
+                .get_or_insert_with(|| collect_table_globals(&root, all_local_names.get_or_insert_with(|| collect_all_local_names(&root))))
+                .contains(root_name)
+            {
+                // A field of a table global the file builds (a saved variable it
+                // initializes in an event handler) written a call, as at file
+                // level. Not of a global only another file or the game defines (a
+                // Blizzard frame).
+                global_root = true;
+                root_name.clone()
             } else {
                 // Not a known namespace/class root (e.g. a function-local table):
                 // the coarse scan can't attribute the field, so skip.
@@ -2974,6 +3044,9 @@ pub fn scan_file_globals_with_synth(
                 (1, [value]) => written_value(&assign, unwrap_logical_chain(*value)),
                 _ => None,
             };
+            if global_root && written.is_none() {
+                continue;
+            }
             let existence_kind = match rhs_exprs.get(target_idx) {
                 Some(Expression::Function(_)) => FieldValueKind::Function,
                 Some(Expression::Identifier(_)) if !root_is_self => {
@@ -3034,6 +3107,7 @@ pub fn scan_file_globals_with_synth(
                 body_derived_returns: false,
                 deferred_call_type: false,
                 assigned_call_offset,
+                extra_call_offsets: Vec::new(),
                 assigned_call_local,
                 guessed_local,
                 in_function,
@@ -3461,6 +3535,7 @@ pub fn scan_created_globals(
                 body_derived_returns: false,
                 deferred_call_type: true,
                 assigned_call_offset: None,
+                extra_call_offsets: Vec::new(),
                 assigned_call_local: None,
                 guessed_local: None,
                 in_function: false,
@@ -3566,27 +3641,16 @@ pub fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -
                 at
             } else {
                 match &value {
-                    Expression::Literal(lit) => {
-                        if lit.get_string().is_some() { AnnotationType::Simple("string".into()) }
-                        else if lit.get_number().is_some() { AnnotationType::Simple("number".into()) }
-                        else if lit.get_bool().is_some() { AnnotationType::Simple("boolean".into()) }
-                        // `key = nil` declares a field assigned later: untyped (see
-                        // `nil_entries_unknown`).
-                        else { AnnotationType::Simple("any".into()) }
-                    }
-                    Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
-                        if super::annotation_scanning::extract_number_from_expr(&value).is_some() {
-                            AnnotationType::Simple("number".into())
-                        } else {
-                            AnnotationType::Simple("any".into())
-                        }
-                    }
                     Expression::TableConstructor(nested) => {
                         extract_table_literal_annotation(nested)
                             .unwrap_or_else(|| AnnotationType::Simple("table".into()))
                     }
-                    Expression::Function(_) => AnnotationType::Simple("function".into()),
-                    _ => AnnotationType::Simple("any".into()),
+                    // Typed by its shape (an operator's result, `a == b`, too), as a
+                    // `---@class` constructor's entries are. `key = nil` declares a
+                    // field assigned later: untyped (see `nil_entries_unknown`).
+                    _ => super::infer_expression_type(&value)
+                        .filter(|t| !matches!(t, AnnotationType::Simple(name) if name == "nil"))
+                        .unwrap_or_else(|| AnnotationType::Simple("any".into())),
                 }
             };
             keyed |= field.kind().is_none();

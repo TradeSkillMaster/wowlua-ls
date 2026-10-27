@@ -4142,7 +4142,7 @@ impl<'a> Analysis<'a> {
             // typed `defaults` shape through `AceDB:New`'s `Defaults &
             // AceDBObject-3.0` return into a copied section (`local p = db.profile`).
             if receiver_is_intersection
-                && field_types.iter().any(|t| matches!(t, ValueType::Table(Some(_))))
+                && field_types.iter().any(|t| matches!(t, ValueType::Table(Some(_)) | ValueType::TableShape(_)))
                 && field_types.iter().any(|t| matches!(t, ValueType::Table(None)))
             {
                 field_types.retain(|t| !matches!(t, ValueType::Table(None)));

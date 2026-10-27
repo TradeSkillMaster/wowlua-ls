@@ -333,6 +333,10 @@ fn resolve_expr_type_uncleared(
             let field = field.clone();
             let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
             let table_type = table_type.into_strip_opaque();
+            // Inline `TableShape` members (cross-file carriers) declare fields by
+            // value, as in the fixpoint's `resolve_field_access`.
+            let mut field_types: Vec<ValueType> = Vec::new();
+            table_type.collect_shape_field_types(&field, &mut field_types);
             let table_indices: Vec<TableIndex> = match &table_type {
                 ValueType::Table(Some(idx)) => vec![*idx],
                 ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
@@ -347,10 +351,10 @@ fn resolve_expr_type_uncleared(
                     }).collect(),
                     _ => vec![],
                 }).collect(),
+                _ if !field_types.is_empty() => Vec::new(),
                 _ => return None,
             };
             // Try each table in the union for the field, including parent classes
-            let mut field_types: Vec<ValueType> = Vec::new();
             for &idx in &table_indices {
                 if let Some(fi) = ir.get_field(idx, &field) {
                     let primary = fi.expr;
@@ -432,6 +436,13 @@ fn resolve_expr_type_uncleared(
             }
             if field_types.is_empty() {
                 return ir.explicit_map_value_type(&table_indices);
+            }
+            // An intersection narrows across members, as in `resolve_field_access`.
+            if matches!(table_type, ValueType::Intersection(_))
+                && field_types.iter().any(|t| matches!(t, ValueType::Table(Some(_)) | ValueType::TableShape(_)))
+                && field_types.iter().any(|t| matches!(t, ValueType::Table(None)))
+            {
+                field_types.retain(|t| !matches!(t, ValueType::Table(None)));
             }
             Some(ValueType::make_union(field_types))
         }

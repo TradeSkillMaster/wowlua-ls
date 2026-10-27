@@ -209,13 +209,16 @@ impl DefclassContext {
     }
 }
 
-/// A file's addon-name local (`file_addon_name_local`) and the addon name it holds.
-pub struct AddonNameArg<'a> {
+/// The names a file's `@defclass` calls can give a class through a local: its
+/// addon-name local (`file_addon_name_local`) with the addon name it holds, and the
+/// locals it binds to a string literal (`file_string_locals`).
+pub struct ClassNameArgs<'a> {
     pub local: Option<&'a str>,
     pub name: Option<&'a str>,
+    pub strings: HashMap<String, String>,
 }
 
-impl AddonNameArg<'_> {
+impl ClassNameArgs<'_> {
     /// Whether call argument `arg` is the addon-name local.
     pub fn holds(&self, arg: &Expression<'_>) -> bool {
         let Expression::Identifier(ident) = arg else { return false };
@@ -223,9 +226,9 @@ impl AddonNameArg<'_> {
     }
 
     /// The class name a `@defclass` call's `args` give at the first of `positions`
-    /// holding a string literal or the addon's name, and that position. The addon's
-    /// name (`NewAddon(addonName, "AceEvent-3.0")`) ends the search even when the
-    /// addon isn't known: a later string is a mixin, not the name.
+    /// holding a string literal, a local bound to one, or the addon's name, and that
+    /// position. The addon's name (`NewAddon(addonName, "AceEvent-3.0")`) ends the
+    /// search even when the addon isn't known: a later string is a mixin, not the name.
     pub fn class_name_at(&self, args: &[Expression<'_>], positions: &[usize]) -> Option<(String, usize)> {
         for &pos in positions {
             match args.get(pos) {
@@ -235,11 +238,53 @@ impl AddonNameArg<'_> {
                     }
                 }
                 Some(arg) if self.holds(arg) => return self.name.map(|name| (name.to_string(), pos)),
+                Some(Expression::Identifier(ident)) => {
+                    if let [local] = &ident.names()[..]
+                        && let Some(s) = self.strings.get(local)
+                    {
+                        return Some((s.clone(), pos));
+                    }
+                }
                 _ => {}
             }
         }
         None
     }
+}
+
+/// The file-level locals bound once to a string literal (`local moduleName =
+/// "Cooldowns"`) that nothing assigns again or shadows, with their strings.
+pub fn file_string_locals(block: &Block<'_>) -> HashMap<String, String> {
+    let mut strings: HashMap<String, String> = HashMap::default();
+    for stmt in block.statements() {
+        let Statement::LocalAssign(la) = stmt else { continue };
+        let (Some(names), Some(exprs)) = (la.name_list(), la.expression_list()) else { continue };
+        if let ([name], [Expression::Literal(lit)]) = (names.names().as_slice(), exprs.expressions().as_slice())
+            && let Some(s) = lit.get_string()
+        {
+            strings.insert(name.clone(), s.trim_matches(|c: char| c == '"' || c == '\'').to_string());
+        }
+    }
+    if strings.is_empty() {
+        return strings;
+    }
+    let mut bindings: HashMap<String, usize> = HashMap::default();
+    for node in block.syntax().descendants() {
+        let mut bound = super::scan_globals::local_bindings(node);
+        if let Some(Statement::Assign(assign)) = Statement::cast(node) {
+            bound.extend(assign.variable_list().into_iter().flat_map(|vars| vars.identifiers()).filter_map(|ident| {
+                match ident.names().as_slice() {
+                    [name] => Some(name.clone()),
+                    _ => None,
+                }
+            }));
+        }
+        for name in bound {
+            *bindings.entry(name).or_default() += 1;
+        }
+    }
+    strings.retain(|name, _| bindings.get(name).copied() == Some(1));
+    strings
 }
 
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
@@ -248,6 +293,18 @@ impl AddonNameArg<'_> {
 pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl], implicit_protected_prefix: bool, addon_name: Option<&str>) -> Vec<ClassDecl> {
     let ctx = DefclassContext::new(all_globals, all_classes);
     scan_defclass_calls_with_context(root, &ctx, implicit_protected_prefix, addon_name)
+}
+
+/// The calls `tc`'s entries hold, nested constructors' too, each with the range of
+/// the call as the class definition it may be.
+fn collect_ctor_entry_calls<'a>(tc: &crate::ast::TableConstructor<'a>, out: &mut Vec<(FunctionCall<'a>, Option<String>, crate::syntax::TextRange)>) {
+    for field in tc.fields() {
+        match field.syntax().children().filter_map(Expression::cast).last() {
+            Some(Expression::FunctionCall(call)) => out.push((call, None, call.syntax().text_range())),
+            Some(Expression::TableConstructor(nested)) => collect_ctor_entry_calls(&nested, out),
+            _ => {}
+        }
+    }
 }
 
 /// The local a file binds its addon's name to: the first value of the file's
@@ -270,7 +327,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
     let Some(block) = Block::cast(root) else { return Vec::new() };
     if ctx.defclass_funcs.is_empty() && ctx.generates_events.is_empty() { return Vec::new(); }
     let addon_name_local = file_addon_name_local(&block);
-    let addon_name_arg = AddonNameArg { local: addon_name_local.as_deref(), name: addon_name };
+    let addon_name_arg = ClassNameArgs { local: addon_name_local.as_deref(), name: addon_name, strings: file_string_locals(&block) };
 
     // Result from find_defclass_in_chain: class name, parents, constraint type arg subs, and table literal fields
     struct DefclassCallResult {
@@ -292,7 +349,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
     fn find_defclass_in_chain(
         call: &FunctionCall<'_>,
         defclass_funcs: &HashMap<String, DefclassFuncInfo>,
-        addon_name_arg: &AddonNameArg<'_>,
+        addon_name_arg: &ClassNameArgs<'_>,
     ) -> Option<DefclassCallResult> {
         let ident = call.identifier()?;
         let func_names = ident.names();
@@ -409,6 +466,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
     let mut stmts = Vec::new();
     collect_statements_recursive(&block, &mut stmts);
 
+    let mut calls: Vec<(FunctionCall<'_>, Option<String>, crate::syntax::TextRange)> = Vec::new();
     for stmt in &stmts {
         // Extract the single RHS expression from local or non-local assignments
         let (rhs_call, lhs_var_name) = match stmt {
@@ -439,8 +497,23 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             Statement::FunctionCall(call) => (Some(*call), None),
             _ => (None, None),
         };
-        let Some(call) = rhs_call else { continue };
-
+        // Each with its definition location: the statement's text range (an entry's
+        // call's below).
+        calls.extend(rhs_call.map(|call| (call, lhs_var_name, stmt.syntax().text_range())));
+        // A call a constructor's entry holds (`X = { addon = NewAddon(...) }`) defines
+        // its class as a bare call statement does.
+        let rhs = match stmt {
+            Statement::LocalAssign(la) => la.expression_list(),
+            Statement::Assign(a) => a.expression_list(),
+            _ => None,
+        };
+        for expr in rhs.map(|el| el.expressions()).unwrap_or_default() {
+            if let Expression::TableConstructor(tc) = expr {
+                collect_ctor_entry_calls(&tc, &mut calls);
+            }
+        }
+    }
+    for (call, lhs_var_name, def_range) in calls {
         if let Some(mut result) = find_defclass_in_chain(&call, &ctx.defclass_funcs, &addon_name_arg) {
             // Resolve variable parent names to actual class names via var_to_result.
             // E.g. DefineClass("Child", ParentVar) records parent as "ParentVar";
@@ -537,8 +610,6 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             if result.named_by_primary {
                 primary_named.insert(idx);
             }
-            // Use the statement's text range as the definition location
-            let stmt_range = stmt.syntax().text_range();
             results.push(ClassDecl {
                 name: result.name,
                 type_params: Vec::new(),
@@ -554,7 +625,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 is_enum: false,
                 is_key_enum: false,
                 correlated_groups: Vec::new(),
-                def_range: Some((u32::from(stmt_range.start()), u32::from(stmt_range.end()))),
+                def_range: Some((u32::from(def_range.start()), u32::from(def_range.end()))),
                 def_path: None,
                 field_ranges,
                 field_paths: HashMap::default(),
@@ -1284,6 +1355,31 @@ mod tests {
             "LibX should be embedded as a parent, got {:?}", my.parents);
         assert!(my.parents.contains(&"LibY".to_string()),
             "LibY should be embedded as a parent, got {:?}", my.parents);
+    }
+
+    // A file-level local bound once to a string names a defclass call's class
+    // (`local name = "Core"; DefineClass(name)`), but not where another binding of
+    // the name — a loop variable, a `local function` — may hold something else.
+    #[test]
+    fn defclass_string_local_names_class_unless_rebound() {
+        let globals = vec![make_defclass_global()];
+        let scan = |src: &str| {
+            let tree = crate::syntax::parser::parse(src);
+            scan_defclass_calls(SyntaxNode::new_root(&tree), &globals, &[], false, None)
+        };
+        let decl = "local name = \"ShadowCore\"\nlocal Core = DefineClass(name)\n";
+        assert!(scan(decl).iter().any(|c| c.name == "ShadowCore"));
+        for rebinding in [
+            "for _, name in ipairs({}) do DefineClass(name) end\n",
+            "if true then local function name() end DefineClass(name) end\n",
+        ] {
+            let src = format!("{decl}{rebinding}");
+            let rebound_from = decl.len() as u32;
+            let misnamed: Vec<_> = scan(&src).into_iter()
+                .filter(|c| c.name == "ShadowCore" && c.def_range.is_some_and(|(start, _)| start >= rebound_from))
+                .collect();
+            assert!(misnamed.is_empty(), "{rebinding:?} named its call's class from the outer local");
+        }
     }
 
     // A non-string vararg (e.g. a table prototype) is skipped: only string

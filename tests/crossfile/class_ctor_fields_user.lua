@@ -28,11 +28,10 @@ local _h = _gobj.Bar
 --               ^ hover: (field) Bar: number
 
 -- Function-call constructor fields should not produce undefined-field cross-file
+-- (their types: class_ctor_calls_user.lua)
 local CallCtorFields = ns.CallCtorFields
 local _call1 = CallCtorFields.FromCall
---                            ^ hover: (field) FromCall: any
 local _call2 = CallCtorFields.FromMethod
---                            ^ hover: (field) FromMethod: any
 local _call3 = CallCtorFields.Literal
 --                            ^ hover: (field) Literal: string
 

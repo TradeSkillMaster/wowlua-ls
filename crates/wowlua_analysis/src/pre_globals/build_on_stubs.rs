@@ -242,14 +242,15 @@ impl<'a> BuildOnStubsContext<'a> {
     }
 
     /// Register the field `field_name` the write `g` typed `vt` (its literal `expr`)
-    /// for the call-field harvest when `vt` is a class and `g` recorded the call its
-    /// value comes from (`call_of`).
+    /// for the call-field harvest when `vt` is a class and `g` recorded the calls its
+    /// value comes from (`calls_of`).
     fn defer_call_field(&mut self, expr: ExprId, vt: &ValueType, g: &crate::annotations::ExternalGlobal, field_name: &str) {
         if !matches!(vt, ValueType::Table(Some(idx)) if self.tables[idx.ext_offset()].class_name.is_some()) {
             return;
         }
-        if let Some(call) = Self::call_of(g, field_name) {
-            self.deferred_call_fields.insert(expr, vec![call]);
+        let calls = Self::calls_of(g, field_name);
+        if !calls.is_empty() {
+            self.deferred_call_fields.insert(expr, calls);
         }
     }
 
@@ -271,35 +272,37 @@ impl<'a> BuildOnStubsContext<'a> {
     /// field only when all its calls agree; any other write ends it.
     fn note_field_write(&mut self, table_idx: TableIndex, field_name: &str, g: &crate::annotations::ExternalGlobal) {
         let Some(expr) = self.tables[table_idx.ext_offset()].fields.get(field_name).map(|fi| fi.expr) else { return };
-        let call = Self::call_of(g, field_name);
-        let Some(calls) = self.deferred_call_fields.get_mut(&expr) else { return };
-        match call {
-            Some(call) => {
-                if !calls.iter().any(|c| c.path == call.path && c.call_offset == call.call_offset) {
-                    calls.push(call);
-                }
-            }
-            None => {
-                self.deferred_call_fields.remove(&expr);
+        let calls = Self::calls_of(g, field_name);
+        let Some(registered) = self.deferred_call_fields.get_mut(&expr) else { return };
+        if calls.is_empty() {
+            self.deferred_call_fields.remove(&expr);
+            return;
+        }
+        for call in calls {
+            if !registered.iter().any(|c| c.path == call.path && c.call_offset == call.call_offset) {
+                registered.push(call);
             }
         }
     }
 
-    /// The call the write `g` of `field_name` records its value comes from
-    /// (`ExternalGlobal::assigned_call_offset`): its own right-hand side, or the call
-    /// initializing the local it assigns (`assigned_call_local`).
-    fn call_of(g: &crate::annotations::ExternalGlobal, field_name: &str) -> Option<crate::analysis::deferred::DeferredCallField> {
+    /// The calls the write `g` of `field_name` records its value comes from
+    /// (`ExternalGlobal::assigned_call_offset`, `extra_call_offsets`): its own
+    /// right-hand side, or the call initializing the local it assigns
+    /// (`assigned_call_local`).
+    fn calls_of(g: &crate::annotations::ExternalGlobal, field_name: &str) -> Vec<crate::analysis::deferred::DeferredCallField> {
         use crate::analysis::deferred::{CallTarget, DeferredCallField};
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
-        let (Some(call_offset), Some(path)) = (g.assigned_call_offset, &g.source_path) else { return None };
+        let (Some(call_offset), Some(path)) = (g.assigned_call_offset, &g.source_path) else { return Vec::new() };
         let target = match (&g.assigned_call_local, &g.kind) {
             (Some(local), ExternalGlobalKind::TableField(..)) => {
                 CallTarget::Local(crate::annotations::function_locals::call_local_name(local).to_string())
             }
             (None, ExternalGlobalKind::TableField(_, _, FieldValueKind::FunctionCall { .. })) => CallTarget::Field(field_name.to_string()),
-            _ => return None,
+            _ => return Vec::new(),
         };
-        Some(DeferredCallField { path: path.clone(), call_offset, target })
+        std::iter::once(call_offset).chain(g.extra_call_offsets.iter().copied())
+            .map(|call_offset| DeferredCallField { path: path.clone(), call_offset, target: target.clone() })
+            .collect()
     }
 
     /// The type of the call a field is assigned (`X.f = Call(args)`): the callee's
@@ -1379,8 +1382,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     // there (the call-field harvest), and a namespace field's file from
                     // its own writes (`type_scanned_fields_by_own_writes`).
                     if body_derived || (untyped && !g.in_function && g.name == crate::annotations::ADDON_NS_NAME) {
-                        if let Some(call) = Self::call_of(g, field_name) {
-                            self.deferred_call_fields.insert(expr_idx, vec![call]);
+                        let calls = Self::calls_of(g, field_name);
+                        if !calls.is_empty() {
+                            self.deferred_call_fields.insert(expr_idx, calls);
                         }
                     } else {
                         self.defer_call_field(expr_idx, &vt, g, field_name);

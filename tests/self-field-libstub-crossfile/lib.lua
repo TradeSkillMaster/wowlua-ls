@@ -5,9 +5,9 @@
 -- scanner emits the `[Name, Method]` chain so build_on_stubs walks class `Name`
 -- to `Method`, typing the field cross-file instead of parking it as `any`.
 --
--- In THIS defining file the field additionally keeps the richer generic binding
--- from its own assignment (`Defaults & AceDBObject-3.0` — the typed default
--- sections), while user.lua falls back to the base `AceDBObject-3.0`.
+-- The field keeps the richer generic binding of its assignment
+-- (`Defaults & AceDBObject-3.0` — the typed default sections): in this file from
+-- the assignment itself, in user.lua from the call harvested here.
 ---@diagnostic disable: unused-local, unused-function
 
 ---@class LibStubHost

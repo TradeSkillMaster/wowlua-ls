@@ -166,7 +166,7 @@ fn run(command: Commands) -> CliResult {
         Commands::TestQuery { location, with_stubs, scan_dir } => {
             test_query::run(&location, with_stubs, scan_dir.map(absolute))
         }
-        Commands::Profile { directory } => profile::run(directory),
+        Commands::Profile { directory } => profile::run(absolute(directory)),
         Commands::RegenerateStubs => {
             wowlua_ls::stub_gen::regenerate_stubs();
             Ok(())

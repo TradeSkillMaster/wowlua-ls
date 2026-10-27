@@ -977,8 +977,17 @@ pub fn resolve_deferred_call_global_type(
 /// return types of those calls in their files (memoized). `None` when a call can't be
 /// resolved or two disagree; the reader then keeps the field's coarse type.
 pub fn resolve_deferred_call_field_type(ext: &Arc<PreResolvedGlobals>, expr: ExprId) -> Option<ValueType> {
+    resolve_deferred_calls_type(ext, ext.deferred_call_fields.get(&expr)?)
+}
+
+/// The type the field-writing `calls` resolve to in their files (memoized), when
+/// they all resolve and agree on it.
+pub fn resolve_deferred_calls_type<'c>(
+    ext: &Arc<PreResolvedGlobals>,
+    calls: impl IntoIterator<Item = &'c DeferredCallField>,
+) -> Option<ValueType> {
     let mut agreed: Option<ValueType> = None;
-    for call in ext.deferred_call_fields.get(&expr)? {
+    for call in calls {
         let ty = read_unit(ext, Unit::File(call.path.clone()), |h| {
             h.file().and_then(|f| f.call_fields.get(&call.call_offset).cloned())
         })
@@ -1866,6 +1875,31 @@ fn accumulate_class_fields_in_file(
             let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
             if !entry.tys.contains(&lifted) {
                 entry.tys.push(lifted);
+            }
+        }
+    }
+    // The entries of a class's own constructor (`---@class C` on `C = { f = Call() }`),
+    // which the class scan types by their shape alone (a call: `any`). A `nil` entry
+    // only declares the field, as it does to the scan; a table merged into the class
+    // that isn't a constructor (another declaration's) holds no entries.
+    let mut ctors: Vec<(TableIndex, &String)> = ir.ctor_merged_class.iter()
+        .filter(|(ctor, _)| ir.table(**ctor).class_name.is_none())
+        .filter_map(|(&ctor, class)| Some((ctor, class_name_of.get(class)?)))
+        .collect();
+    ctors.sort_unstable();
+    for (ctor, name) in ctors {
+        let mut entries: Vec<(&String, ExprId)> = ir.table(ctor).fields.iter().map(|(f, fi)| (f, fi.expr)).collect();
+        entries.sort_unstable();
+        for (field, expr) in entries {
+            if matches!(ir.expr(expr), Expr::Literal(ValueType::Nil)) {
+                continue;
+            }
+            let entry = acc.entry((name.clone(), field.clone())).or_default();
+            if let Some(ty) = result.resolve_expr_type(expr) {
+                let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
+                if !entry.tys.contains(&lifted) {
+                    entry.tys.push(lifted);
+                }
             }
         }
     }
