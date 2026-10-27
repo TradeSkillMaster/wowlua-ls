@@ -88,6 +88,8 @@ fn my_feature() {
 }
 ```
 
+A cross-file test (`scan_dir`) always runs against the workspace build the language server uses, which layers the scanned files onto the WoW API stubs. With `with_stubs: false` it also runs against the scanned files alone, so it can't use WoW APIs.
+
 ## Per-directory config
 
 Test subdirectories can include a `.wowluarc.json` to control behavior. Tests that rely on default-off diagnostics (`need-check-nil`, `implicit-nil-return`, etc.) must live in a subdirectory whose `.wowluarc.json` enables them:

@@ -34,11 +34,7 @@ pub fn run(location: &str, with_stubs: bool, scan_dir: Option<PathBuf>) -> CliRe
         project_configs.try_load_toc(&abs_parent);
     }
 
-    let file_path = if std::path::Path::new(filename).is_absolute() {
-        std::path::PathBuf::from(filename)
-    } else {
-        std::env::current_dir().unwrap_or_default().join(filename)
-    };
+    let file_path = super::absolute(PathBuf::from(filename));
     let scan_dirs: Vec<PathBuf> = scan_dir.into_iter().collect();
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let ws = load_workspace(

@@ -244,10 +244,11 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 ./tests/smoke.sh
 ```
 
-Test expectations are embedded as comments below code lines, fields separated by double-space (`hover:`, `def:`, `defs:`, `typedef:`, `typedefs:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`, `lens:`). Two rules that are easy to trip on:
+Test expectations are embedded as comments below code lines, fields separated by double-space (`hover:`, `def:`, `defs:`, `typedef:`, `typedefs:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`, `lens:`). Three rules that are easy to trip on:
 
 - **Exhaustive diagnostic checking** — the harness fails on *any* uncovered diagnostic (WARNING/ERROR/HINT), so a new unexpected diagnostic fails the test automatically. Therefore **never write `diag: none`** (it's redundant); only assert `diag: <code>` for a diagnostic that *should* fire. Suppress incidental diagnostics with a top-of-file `---@diagnostic disable: code1, code2`.
 - **Default-off codes** (`need-check-nil`, `implicit-nil-return`, `unused-vararg`, `incomplete-signature-doc`, `unknown-*-type`) must live in a subdirectory with an adjacent `.wowluarc.json` that opts in via `diagnostics.enable`.
+- **Cross-file fixtures run the language server's build** — a `scan_dir` fixture always runs on `build_on_stubs`; `with_stubs: false` adds a run on the cold `build` (the stub blob's), so its files can't use stub APIs. Where the two builds legitimately differ, assert the stub-based result with `with_stubs: true` and say why.
 
 The full per-file test catalog and the complete field semantics (`defs:`/`typedefs:` counts, `tok:`/`lens:` formats, the harness config-filter path) are in [.claude/TESTING.md](.claude/TESTING.md).
 

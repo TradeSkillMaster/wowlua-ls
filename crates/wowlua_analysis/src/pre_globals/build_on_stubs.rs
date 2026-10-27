@@ -1054,6 +1054,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.tables[local_idx].fields.entry(method_name.clone()).or_insert(new_field);
                     was_absent
                 };
+                if claimed_field {
+                    record_field_location(&mut self.field_locations, target_idx, method_name, g);
+                }
                 // When a `@meta` override owns the method, later duplicates are dropped
                 // (see the duplicate branch) so its signature stays authoritative.
                 if claimed_field && g.is_meta && super::global_has_type_annotations(g) {
@@ -1372,7 +1375,10 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.existence_fields.remove(&ctor_entry);
                     }
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
-                    if body_derived {
+                    // A call typed only in its own file: other files take its type from
+                    // there (the call-field harvest), and a namespace field's file from
+                    // its own writes (`type_scanned_fields_by_own_writes`).
+                    if body_derived || (untyped && !g.in_function && g.name == crate::annotations::ADDON_NS_NAME) {
                         if let Some(call) = Self::call_of(g, field_name) {
                             self.deferred_call_fields.insert(expr_idx, vec![call]);
                         }

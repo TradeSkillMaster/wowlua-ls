@@ -1463,9 +1463,10 @@ fn analyze_file(
             backward_param_types: configs.backward_param_types_for(path),
             addon_folder_name: configs.addon_name_for(path),
             addon_table_override: ext.addon_table_for_root(configs.addon_root_for(path)),
+            file_path: Some(path.to_path_buf()),
             ..AnalysisConfig::default()
         },
-        None => AnalysisConfig::default(),
+        None => AnalysisConfig { file_path: Some(path.to_path_buf()), ..AnalysisConfig::default() },
     };
 
     let tree = crate::syntax::parser::parse(&text);
@@ -2019,12 +2020,13 @@ fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType
         return None;
     }
     let ty = ValueType::make_union(tys);
-    let ty = if lateinit { ty.strip_nil() } else { ty };
-    if contains_coarse_placeholder(&ty) || matches!(ty, ValueType::Nil) {
-        None
-    } else {
-        Some(ty)
+    // Checked before stripping: a `lateinit` field written only nil would strip to
+    // an empty union.
+    if matches!(ty, ValueType::Nil) {
+        return None;
     }
+    let ty = if lateinit { ty.strip_nil() } else { ty };
+    (!contains_coarse_placeholder(&ty)).then_some(ty)
 }
 
 /// Lift a per-file `ResolvedOverload` into external-index space: each param type

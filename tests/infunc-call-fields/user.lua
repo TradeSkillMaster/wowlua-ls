@@ -42,7 +42,7 @@ local localWidget = ns.LocalWidget
 local made = ns.Made
 --    ^ hover: (local) made: any
 local madeTop = ns.MadeTop
---    ^ hover: (local) madeTop: any
+--    ^ hover: (local) madeTop: { custom: number }
 local startTime = ns.StartTime
 --    ^ hover: (local) startTime: number
 local factoryRow = ns.FactoryRow

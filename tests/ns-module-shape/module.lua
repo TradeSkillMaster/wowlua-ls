@@ -24,6 +24,30 @@ function Manager:Stop() end
 
 local mgr = ns.Manager
 --    ^ hover: (local) mgr: {\n  Init: fun(self: table),\n  Start: fun(self: table),\n  Stop: fun(self: table),\n  active: false,\n  frame: nil\n}
+local active = ns.Manager.active
+--    ^ hover: (local) active: false
+
+-- A field its methods write before and after the export holds every write.
+local Store = {}
+
+function Store:Init()
+    self.count = 1
+    self.handler = {}
+end
+
+ns.Store = Store
+
+function Store:Reset()
+    self.count = "none"
+    self.handler = function() end
+end
+
+function Store:Run()
+    ns.Store.handler()
+end
+
+local storeCount = ns.Store.count
+--    ^ hover: (local) storeCount: number | string
 
 -- Verify that genuinely different tables in a union receiver are NOT collapsed,
 -- even when one's field set is a subset of another's.

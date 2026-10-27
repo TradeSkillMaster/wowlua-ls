@@ -28,8 +28,22 @@ static STUB_GLOBALS: LazyLock<Arc<PreResolvedGlobals>> = LazyLock::new(|| {
 /// Configuration for running annotation tests on a Lua file.
 struct TestConfig<'a> {
     lua_file: &'a str,
+    /// Load the WoW API stubs. A `scan_dir` workspace is then layered onto them
+    /// (`build_on_stubs`, the language server's build). Without stubs it is built
+    /// on its own (`build`, the stub blob's build), and onto the stubs too.
     with_stubs: bool,
     scan_dir: Option<&'a str>,
+}
+
+/// The globals a test file is analyzed against.
+#[derive(Clone, Copy, Debug)]
+enum Globals {
+    Empty,
+    Stubs,
+    /// `scan_dir` built on its own by `PreResolvedGlobals::build`.
+    ColdWorkspace,
+    /// `scan_dir` layered onto the stubs by `PreResolvedGlobals::build_on_stubs`.
+    StubWorkspace,
 }
 
 /// Run annotation-based tests on a Lua file.
@@ -48,6 +62,20 @@ struct TestConfig<'a> {
 ///   highlight: L:C, L:C — expected documentHighlight locations (include_declaration=true)
 ///   comp: a, b, c     — expected completion items
 fn run_annotation_tests(config: &TestConfig) {
+    let runs: &[Globals] = match (config.with_stubs, config.scan_dir.is_some()) {
+        (false, false) => &[Globals::Empty],
+        (true, false) => &[Globals::Stubs],
+        // The language server only ever runs the stub-based build, so a workspace
+        // fixture runs it even when it doesn't need the stubs.
+        (false, true) => &[Globals::ColdWorkspace, Globals::StubWorkspace],
+        (true, true) => &[Globals::StubWorkspace],
+    };
+    for &globals in runs {
+        run_annotation_tests_against(config, globals);
+    }
+}
+
+fn run_annotation_tests_against(config: &TestConfig, globals: Globals) {
     let contents = std::fs::read_to_string(config.lua_file)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config.lua_file, e));
 
@@ -81,8 +109,11 @@ fn run_annotation_tests(config: &TestConfig) {
         if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
     });
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
-    let pre_globals = if config.with_stubs {
-        if let Some(ref dir) = abs_scan_dir {
+    let pre_globals = match globals {
+        Globals::Empty => Arc::new(PreResolvedGlobals::empty()),
+        Globals::Stubs => STUB_GLOBALS.clone(),
+        Globals::StubWorkspace => {
+            let dir = abs_scan_dir.as_ref().expect("a workspace build scans scan_dir");
             // Pass the stub `@creates-global` specs (but empty stub globals/classes,
             // to keep defclass/built-name scan behavior unchanged) so that named
             // globals from e.g. `CreateFrame(type, "Name")` are detected — mirroring
@@ -100,28 +131,26 @@ fn run_annotation_tests(config: &TestConfig) {
             // per-file inference flags (mirrors the LSP server's WorkspaceState).
             pg.set_project_configs(Arc::new(project_configs.clone()));
             Arc::new(pg)
-        } else {
-            STUB_GLOBALS.clone()
         }
-    } else if let Some(ref dir) = abs_scan_dir {
-        let scan = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
-        let (sc, mut sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
-        wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
-        if sc.is_empty() && sg.is_empty() && se.is_empty() && sa.is_empty() {
-            Arc::new(PreResolvedGlobals::empty())
-        } else {
-            let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
-            pg.merge_events(&se);
-            pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
-            pg.register_callback_consumer_methods(&sg);
-            build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
-            // Attach project configs so the cross-file deferred harvester honors
-            // per-file inference flags (mirrors the LSP server's WorkspaceState).
-            pg.set_project_configs(Arc::new(project_configs.clone()));
-            Arc::new(pg)
+        Globals::ColdWorkspace => {
+            let dir = abs_scan_dir.as_ref().expect("a workspace build scans scan_dir");
+            let scan = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            let (sc, mut sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
+            wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
+            if sc.is_empty() && sg.is_empty() && se.is_empty() && sa.is_empty() {
+                Arc::new(PreResolvedGlobals::empty())
+            } else {
+                let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
+                pg.merge_events(&se);
+                pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
+                pg.register_callback_consumer_methods(&sg);
+                build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
+                // Attach project configs so the cross-file deferred harvester honors
+                // per-file inference flags (mirrors the LSP server's WorkspaceState).
+                pg.set_project_configs(Arc::new(project_configs.clone()));
+                Arc::new(pg)
+            }
         }
-    } else {
-        Arc::new(PreResolvedGlobals::empty())
     };
 
     // Parse and analyze ONCE
@@ -143,6 +172,7 @@ fn run_annotation_tests(config: &TestConfig) {
             implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
             addon_table_override,
             addon_folder_name: project_configs.addon_name_for(&file_path),
+            file_path: Some(file_path.clone()),
         },
     );
     analysis.resolve_types();
@@ -700,13 +730,13 @@ fn run_annotation_tests(config: &TestConfig) {
 
     if !failures.is_empty() {
         panic!(
-            "\n{} test(s) failed out of {} in {}:\n{}",
-            failures.len(), test_count, config.lua_file, failures.join("\n")
+            "\n{} test(s) failed out of {} in {} ({:?}):\n{}",
+            failures.len(), test_count, config.lua_file, globals, failures.join("\n")
         );
     }
 
     assert!(test_count > 0, "No test annotations found in {}", config.lua_file);
-    eprintln!("  {} passed {} annotation tests", config.lua_file, test_count);
+    eprintln!("  {} ({:?}) passed {} annotation tests", config.lua_file, globals, test_count);
 }
 
 /// Format a semantic token (type_index, modifiers_bitset) back into its legend names.
@@ -2252,13 +2282,11 @@ fn class_deep_method_same_file() {
 #[test]
 fn class_deep_method_crossfile() {
     for lua_file in ["tests/class-deep-method-crossfile/user.lua", "tests/class-deep-method-crossfile/redeclare.lua"] {
-        for with_stubs in [false, true] {
-            run_annotation_tests(&TestConfig {
-                lua_file,
-                with_stubs,
-                scan_dir: Some("tests/class-deep-method-crossfile"),
-            });
-        }
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: false,
+            scan_dir: Some("tests/class-deep-method-crossfile"),
+        });
     }
     run_annotation_tests(&TestConfig {
         lua_file: "tests/class-deep-method-crossfile/ctor_user.lua",
@@ -2272,13 +2300,11 @@ fn class_deep_method_crossfile() {
 // the stub blob comes from as from `build_on_stubs`.
 #[test]
 fn global_tables_both_builds() {
-    for with_stubs in [false, true] {
-        run_annotation_tests(&TestConfig {
-            lua_file: "tests/global-tables-both-builds/user.lua",
-            with_stubs,
-            scan_dir: Some("tests/global-tables-both-builds"),
-        });
-    }
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/global-tables-both-builds/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/global-tables-both-builds"),
+    });
 }
 
 // Methods defined via `function <@class-typed-local>:Method()` inside a function body
@@ -2530,14 +2556,12 @@ fn crossfile_deep_chain() {
 // stub-based workspace build.
 #[test]
 fn class_deep_field_crossfile() {
-    for with_stubs in [false, true] {
-        for lua_file in ["user.lua", "replace_user.lua"] {
-            run_annotation_tests(&TestConfig {
-                lua_file: &format!("tests/class-deep-field-crossfile/{lua_file}"),
-                with_stubs,
-                scan_dir: Some("tests/class-deep-field-crossfile"),
-            });
-        }
+    for lua_file in ["user.lua", "replace_user.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file: &format!("tests/class-deep-field-crossfile/{lua_file}"),
+            with_stubs: false,
+            scan_dir: Some("tests/class-deep-field-crossfile"),
+        });
     }
     // The cold build leaves `Root.Util = {}` unannotated, so a file re-declaring
     // the class doesn't import it there.
@@ -2574,14 +2598,12 @@ fn class_deep_field_replaced_entry_gotodef() {
 // reference to a member (`ns.stepsAlias = ns.state.steps`) takes its declared type.
 #[test]
 fn typed_field_instance_crossfile() {
-    for with_stubs in [false, true] {
-        for lua_file in ["defs.lua", "user.lua"] {
-            run_annotation_tests(&TestConfig {
-                lua_file: &format!("tests/typed-field-instance-crossfile/{lua_file}"),
-                with_stubs,
-                scan_dir: Some("tests/typed-field-instance-crossfile"),
-            });
-        }
+    for lua_file in ["defs.lua", "user.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file: &format!("tests/typed-field-instance-crossfile/{lua_file}"),
+            with_stubs: false,
+            scan_dir: Some("tests/typed-field-instance-crossfile"),
+        });
     }
 }
 
@@ -2707,11 +2729,35 @@ fn crossfile_funcall_return() {
 
 #[test]
 fn crossfile_generic_funcall_no_false_positive() {
+    // Stub-based build only: the cold build parks an untyped call's namespace field
+    // as a placeholder table, which the defining file's write joins.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/generic_funcall_user.lua",
-        with_stubs: false,
+        with_stubs: true,
         scan_dir: Some("tests/crossfile"),
     });
+}
+
+// The writing file tells the calls the workspace registered for a field as its own
+// by its path: an edit shifting the call keeps its type there until the workspace
+// is rebuilt, and the same text analyzed as another file doesn't take it.
+#[test]
+fn crossfile_own_call_field_by_path() {
+    let dir = std::env::current_dir().unwrap().join("tests/crossfile");
+    let pg = fresh_workspace_globals(&dir);
+    let path = dir.join("generic_funcall_user.lua");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let hover_other = |text: &str, file_path: std::path::PathBuf| -> String {
+        let tree = wowlua_ls::syntax::parser::parse(text);
+        let offset = (text.find("ns.Other").unwrap() + "ns.".len()) as u32;
+        let config = AnalysisConfig { file_path: Some(file_path), ..AnalysisConfig::default() };
+        let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pg), config);
+        a.resolve_types();
+        a.into_result().hover_at(&tree, offset).expect("hover on ns.Other").type_str
+    };
+    let shifted = hover_other(&format!("-- an edit above the write\n{text}"), path);
+    assert!(shifted.starts_with("(field) Other: MixinA"), "{shifted}");
+    assert_eq!(hover_other(&text, dir.join("other_file.lua")), "(field) Other: any");
 }
 
 #[test]
@@ -2745,13 +2791,11 @@ fn ns_class_alias() {
 
 #[test]
 fn crossfile_ns_alias_field_readback() {
-    for with_stubs in [false, true] {
-        run_annotation_tests(&TestConfig {
-            lua_file: "tests/crossfile/ns_alias_field_user.lua",
-            with_stubs,
-            scan_dir: Some("tests/crossfile"),
-        });
-    }
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_alias_field_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
 }
 
 #[test]
@@ -3867,14 +3911,12 @@ fn crossfile_global_class() {
 #[test]
 fn crossfile_table_kv() {
     // Cross-file @field table<K,V> and `table<K,V>` class parents: bracket access
-    // and method calls, on both the cold `build` and `build_on_stubs`
-    for with_stubs in [false, true] {
-        run_annotation_tests(&TestConfig {
-            lua_file: "tests/crossfile/table_kv_user.lua",
-            with_stubs,
-            scan_dir: Some("tests/crossfile"),
-        });
-    }
+    // and method calls
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/table_kv_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
 }
 
 #[test]
@@ -4985,6 +5027,7 @@ fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTre
             implicit_protected_prefix: false,
             addon_table_override: None,
             addon_folder_name: None,
+            file_path: None,
         },
     );
     analysis.resolve_types();
@@ -5493,6 +5536,11 @@ fn workspace_symbol_with_stubs_excludes_api() {
     let results = lsp::search_workspace_symbols("MyWidget", &pre);
     assert!(results.iter().any(|s| s.name == "MyWidget" && s.kind == SymbolKind::CLASS),
         "workspace class MyWidget should appear with stubs loaded");
+
+    // And their methods
+    let results = lsp::search_workspace_symbols("Show", &pre);
+    assert!(results.iter().any(|s| s.name == "MyWidget:Show" && s.kind == SymbolKind::METHOD),
+        "workspace method MyWidget:Show should appear with stubs loaded");
 }
 
 #[test]

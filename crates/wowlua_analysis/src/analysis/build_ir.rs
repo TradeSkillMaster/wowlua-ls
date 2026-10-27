@@ -2687,7 +2687,9 @@ impl<'a> Analysis<'a> {
 
     /// Lay the function entries of the local table `rhs` holds over `scan_table`
     /// (see [`Self::overlay_ctor_functions`]): all of them when `replace`, else
-    /// those the copy has no definition of from this file.
+    /// those the copy has no definition of from this file. Once the file is built
+    /// (not `replace`), so are the entries the copy lacks, such as the fields the
+    /// table's methods write through `self`, holding every write by then.
     fn overlay_table_functions(&mut self, scan_table: TableIndex, rhs: ExprId, depth: usize, replace: bool) {
         if depth > 16 || !scan_table.is_external() || self.ir.table(scan_table).class_name.is_some() {
             return;
@@ -2697,19 +2699,23 @@ impl<'a> Analysis<'a> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (name, fi) in entries {
+            let overlaid = self.ir.overlay_fields.get(&scan_table).is_some_and(|fields| fields.contains_key(&name));
             if matches!(self.ir.expr(fi.expr), Expr::FunctionDef(_)) {
-                if replace || !self.ir.overlay_fields.get(&scan_table).is_some_and(|fields| fields.contains_key(&name)) {
+                if replace || !overlaid {
                     self.ir.insert_overlay_field(scan_table, name, fi);
                 }
                 continue;
             }
-            // A nested constructor, or a local table the entry holds.
-            let nested = self.ir.table(scan_table).fields.get(&name).and_then(|f| match f.annotation {
+            let scanned = self.ir.table(scan_table).fields.get(&name).map(|f| match f.annotation {
                 Some(ValueType::Table(Some(t))) => Some(t),
                 _ => self.ir.find_table_index(f.expr),
             });
-            if let Some(nested) = nested {
-                self.overlay_table_functions(nested, fi.expr, depth + 1, replace);
+            match scanned {
+                // A nested constructor, or a local table the entry holds.
+                Some(Some(nested)) => self.overlay_table_functions(nested, fi.expr, depth + 1, replace),
+                Some(None) => {}
+                None if !replace && !overlaid => self.ir.insert_overlay_field(scan_table, name, fi),
+                None => {}
             }
         }
     }

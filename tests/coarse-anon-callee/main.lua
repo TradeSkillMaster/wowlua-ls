@@ -4,7 +4,8 @@
 -- `@class`. The coarse scan's `first_string_literal_arg` defclass hint is paired
 -- with a non-empty callee chain, and an anonymous callee yields an empty chain,
 -- so the hint is dropped and the field settles on the honest `any` placeholder
--- (the call's return is genuinely unresolvable cross-file — NOT a known table).
+-- (the call's return is genuinely unresolvable cross-file — NOT a known table),
+-- which this file reads as the call's own type.
 -- A genuine NAMED-defclass call (`F1("Widget")`) keeps its class-name hint.
 ---@diagnostic disable: unused-local, missing-return
 local name, ns = ...
@@ -15,16 +16,20 @@ local Widget = {}
 ---@param key string
 ---@return Widget
 local function F1(key) end
+
 ---@param key string
----@return Widget
-local function F2(key) end
+---@return number
+local function G1(key) end
+---@param key string
+---@return number
+local function G2(key) end
 
 ---@type boolean
 local cond
 
--- Anonymous callee: empty chain -> hint suppressed -> honest `any` placeholder.
-ns.anon = (cond and F1 or F2)("Widget")
--- ^ hover: (field) anon: any
+-- Anonymous callee: empty chain -> hint suppressed -> the call's own type.
+ns.anon = (cond and G1 or G2)("Widget")
+-- ^ hover: (field) anon: number
 
 -- Named callee: the defclass class-name hint still applies.
 ns.named = F1("Widget")

@@ -10,7 +10,13 @@ impl DiagnosticPass for InjectField {
             if fa.is_method_def { continue; }
             if fa.had_annotation_at_build { continue; }
             if fa.in_constructor { continue; }
-            if !fa.in_function && fa.table_idx.is_external() { continue; }
+            // A file-level write to a class defines a static field: on its external
+            // table, or on the copy of it a `@defclass` call's variable holds here.
+            if !fa.in_function
+                && (fa.table_idx.is_external() || analysis.defclass_vars.get(&fa.root_name) == Some(&fa.table_idx))
+            {
+                continue;
+            }
             if fa.field_existed_at_build { continue; }
             // @class-annotated variables are class definitions — field assignments
             // on them define new class fields, not inject foreign fields.

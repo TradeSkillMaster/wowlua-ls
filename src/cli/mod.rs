@@ -164,19 +164,28 @@ fn run(command: Commands) -> CliResult {
     match command {
         Commands::Doc { project_root, out_dir, class } => doc::run(project_root, out_dir, class),
         Commands::TestQuery { location, with_stubs, scan_dir } => {
-            test_query::run(&location, with_stubs, scan_dir)
+            test_query::run(&location, with_stubs, scan_dir.map(absolute))
         }
         Commands::Profile { directory } => profile::run(directory),
         Commands::RegenerateStubs => {
             wowlua_ls::stub_gen::regenerate_stubs();
             Ok(())
         }
-        Commands::DumpTypes { directory, with_stubs } => dump_types::run(directory, with_stubs),
-        Commands::CrossfileTypes { directories, accesses } => crossfile_types::run(directories, accesses),
+        Commands::DumpTypes { directory, with_stubs } => dump_types::run(absolute(directory), with_stubs),
+        Commands::CrossfileTypes { directories, accesses } => {
+            crossfile_types::run(directories.into_iter().map(absolute).collect(), accesses)
+        }
         Commands::DumpStubs => dump_stubs::run(),
-        Commands::Check { directory, severity } => check::run(directory, severity),
+        Commands::Check { directory, severity } => check::run(absolute(directory), severity),
         Commands::Evaluate { file, with_stubs, rest } => evaluate::run(file, with_stubs, &rest),
     }
+}
+
+/// `path` made absolute, as the LSP's paths are: the scan records the paths it
+/// walks, and the per-file analyses look themselves up by theirs (the addon a
+/// file belongs to, the writes the workspace registered for it).
+pub(crate) fn absolute(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
 }
 
 /// Recursively collect `.lua` files under `dir`, honoring ignore patterns.
@@ -227,6 +236,7 @@ pub(crate) fn analyze_file(
             implicit_protected_prefix: configs.implicit_protected_prefix_for(path),
             addon_table_override: pre_globals.addon_table_for_root(configs.addon_root_for(path)),
             addon_folder_name: configs.addon_name_for(path),
+            file_path: Some(path.to_path_buf()),
         },
     );
     analysis.resolve_types();

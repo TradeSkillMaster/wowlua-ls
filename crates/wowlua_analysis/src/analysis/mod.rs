@@ -806,6 +806,9 @@ pub struct Ir {
     /// Addon folder name for typing the first file-level `...` vararg as a
     /// string literal (e.g. `"MyAddon"` instead of `string`).
     pub addon_folder_name: Option<String>,
+    /// The analyzed file's path, as the workspace scan records it
+    /// (`AnalysisConfig::file_path`).
+    pub file_path: Option<std::path::PathBuf>,
     /// Maps string-literal ExprIds to their `expression<C, R>` context.
     /// Populated during call resolution when a string arg matches an
     /// `expression<C, R>` parameter annotation.
@@ -2179,6 +2182,14 @@ impl Ir {
             && fi.annotation_text.is_none()
             && fi.annotation.as_ref().is_some_and(|a| self.is_shapeless_scan_table(a))
             && self.writes_unkeyed_table(rhs, table, field)
+    }
+
+    /// Whether the placeholder the workspace scan left in `fi` stands for calls it
+    /// couldn't type (`deferred_call_fields`) that are all this file's: its own
+    /// writes of the field are then every write the placeholder stands for.
+    pub(super) fn placeholder_of_own_calls(&self, fi: &FieldInfo) -> bool {
+        let (Some(calls), Some(path)) = (self.ext.deferred_call_fields.get(&fi.expr), &self.file_path) else { return false };
+        !calls.is_empty() && calls.iter().all(|call| call.path == *path)
     }
 
     /// Record the tables of this file `writes` hold in `unknown_element_tables`.
@@ -3779,6 +3790,9 @@ pub struct AnalysisConfig {
     /// When set, the first file-level `...` vararg is typed as this string literal
     /// instead of plain `string`.
     pub addon_folder_name: Option<String>,
+    /// The file's path, as the workspace scan records it: tells the writes the
+    /// workspace registered for this file from other files' (`None`: unknown).
+    pub file_path: Option<std::path::PathBuf>,
 }
 
 impl Default for AnalysisConfig {
@@ -3796,6 +3810,7 @@ impl Default for AnalysisConfig {
             implicit_protected_prefix: false,
             addon_table_override: None,
             addon_folder_name: None,
+            file_path: None,
         }
     }
 }
@@ -3820,6 +3835,7 @@ impl<'a> Analysis<'a> {
             implicit_protected_prefix,
             addon_table_override,
             addon_folder_name,
+            file_path,
         } = config;
 
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
@@ -3905,6 +3921,7 @@ impl<'a> Analysis<'a> {
                 addon_table_override,
                 addon_ns_views: HashSet::default(),
                 addon_folder_name,
+                file_path,
                 expression_args: HashMap::default(),
                 synthesized_overload_funcs: HashSet::default(),
                 tc_expected_class: HashMap::default(),

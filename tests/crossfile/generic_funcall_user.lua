@@ -9,7 +9,7 @@ local addonName, ns = ...
 -- An argument named by a field path binds the generic.
 ns.Instance = MakeInstance(ns.MixinA)
 --    ^ hover: (field) Instance: MixinA
--- A local argument doesn't: the field keeps the placeholder.
+-- A local argument doesn't, but the call's type in this file does.
 local mixin = ns.MixinA
 ns.Other = MakeInstance(mixin)
---    ^ hover: (field) Other: table | MixinA
+--    ^ hover: (field) Other: MixinA

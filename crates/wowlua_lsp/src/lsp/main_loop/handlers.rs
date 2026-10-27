@@ -294,6 +294,7 @@ pub(super) fn analyze_path_parsed(
             implicit_protected_prefix: configs.implicit_protected_prefix_for(file_path),
             addon_table_override,
             addon_folder_name: configs.addon_name_for(file_path),
+            file_path: Some(file_path.to_path_buf()),
         },
     );
     analysis.resolve_types();
@@ -1935,6 +1936,7 @@ pub(super) fn try_batch_analyze(
                     implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
                     addon_table_override,
                     addon_folder_name: configs.addon_name_for(&file_path),
+                    file_path: Some(file_path.clone()),
                 },
             );
             analysis.resolve_types();

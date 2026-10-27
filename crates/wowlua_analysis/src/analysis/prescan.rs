@@ -700,15 +700,31 @@ impl<'a> Analysis<'a> {
     /// type (`field_is_coarse_placeholder`: written in a function) is typed by
     /// this file's own writes instead when it writes a list or record there
     /// (`Ir::writes_unkeyed_table`), as with no scan, so what the file builds in
-    /// it (`tinsert(self.items, v)`) reads back. Runs after `build_ir` has
-    /// recorded the writes.
+    /// it (`tinsert(self.items, v)`) reads back. A placeholder standing for calls of
+    /// this file only (`Ir::placeholder_of_own_calls`) becomes a placeholder `any`
+    /// annotation, which reads take from the field's writes when they resolve.
+    /// Runs after `build_ir` has recorded the writes.
     pub(super) fn type_scanned_fields_by_own_writes(&mut self) {
         for t in 0..self.ir.tables.len() {
+            let scanned = |fi: &FieldInfo| fi.from_scan && fi.annotation_text.is_none() && fi.expr.is_external();
+            let own_calls: Vec<String> = self.ir.tables[t].fields.iter()
+                .filter(|(_, fi)| {
+                    scanned(fi)
+                        && fi.annotation.is_none()
+                        && fi.extra_exprs.iter().any(|e| !e.is_external())
+                        && crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext)
+                        && self.ir.placeholder_of_own_calls(fi)
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            for name in own_calls {
+                if let Some(fi) = self.ir.tables[t].fields.get_mut(&name) {
+                    fi.annotation = Some(ValueType::Any);
+                }
+            }
             let taken: Vec<String> = self.ir.tables[t].fields.iter()
                 .filter(|(name, fi)| {
-                    fi.from_scan
-                        && fi.annotation_text.is_none()
-                        && fi.expr.is_external()
+                    scanned(fi)
                         && (crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext)
                             || fi.annotation.as_ref().is_some_and(|a| self.ir.is_shapeless_scan_table(a)))
                         && fi.extra_exprs.iter().any(|&w| self.ir.writes_unkeyed_table(w, TableIndex(t), name))

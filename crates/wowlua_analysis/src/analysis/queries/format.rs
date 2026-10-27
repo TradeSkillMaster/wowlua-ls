@@ -1169,16 +1169,10 @@ impl AnalysisResult {
             let overlay = self.ir.overlay_fields.get(&table_idx);
             let is_enum = table.enum_kind.is_enum();
             let is_accessible = |fi: &FieldInfo| self.visible_from(fi.visibility, table_idx, viewers);
-            for (name, field_info) in &table.fields {
+            // This file's overlay first, as a read of the field sees it.
+            for (name, field_info) in overlay.into_iter().flatten().chain(&table.fields) {
                 if seen.insert(name.as_str()) && is_accessible(field_info) {
                     fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
-                }
-            }
-            if let Some(ov) = overlay {
-                for (name, field_info) in ov.iter() {
-                    if seen.insert(name.as_str()) && is_accessible(field_info) {
-                        fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
-                    }
                 }
             }
             for &parent_idx in &table.parent_classes {
@@ -1552,15 +1546,11 @@ impl AnalysisResult {
                     let indent = "  ".repeat(depth + 1);
                     let is_enum = table.enum_kind.is_enum();
                     let mut seen: HashSet<&str> = HashSet::default();
-                    let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
-                        seen.insert(name.as_str());
-                        self.format_enum_field_line(&indent, name, field_info, is_enum, depth)
-                    }).collect();
-                    if let Some(ov) = overlay {
-                        for (name, field_info) in ov.iter() {
-                            if seen.insert(name.as_str()) {
-                                fields.push(self.format_enum_field_line(&indent, name, field_info, is_enum, depth));
-                            }
+                    let mut fields: Vec<String> = Vec::new();
+                    // This file's overlay first, as a read of the field sees it.
+                    for (name, field_info) in overlay.into_iter().flatten().chain(&table.fields) {
+                        if seen.insert(name.as_str()) {
+                            fields.push(self.format_enum_field_line(&indent, name, field_info, is_enum, depth));
                         }
                     }
                     // Include inherited fields from parent classes
@@ -1599,16 +1589,13 @@ impl AnalysisResult {
                     format!("{{{}}}", fields.join(", "))
                 } else {
                     let indent = "  ".repeat(depth + 1);
-                    let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
-                        let type_str = self.format_field_type(field_info, depth);
-                        format!("{}{}: {}", indent, name, type_str)
-                    }).collect();
-                    if let Some(ov) = overlay {
-                        for (name, field_info) in ov.iter() {
-                            if !table.fields.contains_key(name) {
-                                let type_str = self.format_field_type(field_info, depth);
-                                fields.push(format!("{}{}: {}", indent, name, type_str));
-                            }
+                    let mut seen: HashSet<&str> = HashSet::default();
+                    let mut fields: Vec<String> = Vec::new();
+                    // This file's overlay first, as a read of the field sees it.
+                    for (name, field_info) in overlay.into_iter().flatten().chain(&table.fields) {
+                        if seen.insert(name.as_str()) {
+                            let type_str = self.format_field_type(field_info, depth);
+                            fields.push(format!("{}{}: {}", indent, name, type_str));
                         }
                     }
                     fields.sort();

@@ -626,6 +626,7 @@ pub(super) fn handle_incoming_calls(
                         implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
                         addon_table_override,
                         addon_folder_name: ws.configs.addon_name_for(path),
+                        file_path: Some(path.to_path_buf()),
                     },
                 );
                 analysis.resolve_types();
