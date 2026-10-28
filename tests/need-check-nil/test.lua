@@ -268,6 +268,27 @@ local function testNilNoNarrow(state)
 end
 _consume(testNilNoNarrow)
 
+-- A nil write replaces an earlier narrowing of the field.
+---@param state NilCheckState
+local function testNilAfterAssign(state)
+    state.btn = createBtn()
+    state.btn:Show()
+    state.btn = nil
+    state.btn:Show()
+    -- ^ diag: need-check-nil
+end
+_consume(testNilAfterAssign)
+
+---@param state NilCheckState
+local function testNilAfterGuard(state)
+    if state.btn then
+        state.btn = nil
+        state.btn:Show()
+        -- ^ diag: need-check-nil
+    end
+end
+_consume(testNilAfterGuard)
+
 -- ── Assignment narrows field for indexed-WRITE targets ──────────────────
 -- `recv.field = recv.field or {}` must narrow the field non-nil for a
 -- subsequent indexed *write* (`recv.field[k] = v`), not just for reads.
@@ -610,6 +631,259 @@ end
 if true then
     query4:ResetOrderBy()
     -- ^ diag: need-check-nil
+end
+
+-- ── All-branch field assignment narrows post-chain ─────────────────────
+-- A field every path through the chain assigns non-nil (or guards) is
+-- non-nil after it, as a local is.
+
+---@class BranchFieldHolder
+---@field q BranchQuery|nil
+local BranchFieldHolder = {}
+
+---@return BranchQuery?
+local function maybeQuery() return nil end
+
+---@param flag boolean
+function BranchFieldHolder:AssignBoth(flag)
+    if flag then
+        self.q = createQuery()
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+    local q = self.q
+    --    ^ hover: (local) q: BranchQuery {
+end
+
+-- Exiting branches don't reach the code after the chain.
+---@param flag boolean
+---@param other boolean
+function BranchFieldHolder:AssignOrExit(flag, other)
+    if flag then
+        self.q = createQuery()
+    elseif other then
+        return
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+end
+
+-- A branch that guards the field instead of assigning it.
+function BranchFieldHolder:GuardOrAssign()
+    if self.q then
+        self.q:ResetOrderBy()
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+end
+
+-- A nested chain carries its merged write up to the enclosing branch.
+---@param flag boolean
+---@param other boolean
+function BranchFieldHolder:NestedAssign(flag, other)
+    if flag then
+        if other then
+            self.q = createQuery()
+        else
+            self.q = createQuery()
+        end
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+end
+
+-- Implicit else: `not self.q` was false there.
+---@param flag boolean
+function BranchFieldHolder:EnsureInitChain(flag)
+    if not self.q then
+        self.q = createQuery()
+    elseif flag then
+        self.q:ResetOrderBy()
+    end
+    self.q:ResetOrderBy()
+end
+
+---@param holder BranchFieldHolder
+---@param flag boolean
+local function testBranchFieldParam(holder, flag)
+    if flag then
+        holder.q = createQuery()
+    else
+        holder.q = createQuery()
+    end
+    holder.q:ResetOrderBy()
+end
+_consume(testBranchFieldParam)
+
+-- No else: the field keeps its declared type on that path.
+---@param flag boolean
+---@param other boolean
+function BranchFieldHolder:AssignNoElse(flag, other)
+    if flag then
+        self.q = createQuery()
+    elseif other then
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+---@param flag boolean
+function BranchFieldHolder:AssignNilable(flag)
+    if flag then
+        self.q = createQuery()
+    else
+        self.q = maybeQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+---@param flag boolean
+function BranchFieldHolder:AssignNil(flag)
+    if flag then
+        self.q = createQuery()
+    else
+        self.q = nil
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+-- A loop body may not run.
+---@param flag boolean
+function BranchFieldHolder:AssignInLoop(flag)
+    if flag then
+        for _ = 1, 2 do
+            self.q = createQuery()
+        end
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+-- The branch's guard predates the write nested below it.
+function BranchFieldHolder:GuardThenNestedClear()
+    if self.q then
+        for _ = 1, 2 do
+            self.q = nil
+        end
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+-- The path that skips the branch keeps the earlier value.
+---@param flag boolean
+function BranchFieldHolder:OverwriteNilable(flag)
+    self.q = createQuery()
+    if flag then
+        self.q = maybeQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+-- The nested chain's untouched path keeps a value the loop replaced.
+---@param flag boolean
+---@param other boolean
+function BranchFieldHolder:ClearInLoopThenNested(flag, other)
+    if flag then
+        self.q = createQuery()
+        for _ = 1, 2 do
+            self.q = nil
+        end
+        if other then
+            self.q = createQuery()
+        end
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+-- Writes that replace a field's value without assigning the chain itself.
+
+---@class BranchListNode
+---@field next BranchListNode|nil
+---@field Touch fun(self: BranchListNode)
+
+---@return BranchListNode
+local function newListNode()
+    ---@type BranchListNode
+    local created = {}
+    return created
+end
+
+-- Re-pointing the root local.
+---@param cur BranchListNode
+---@param advance boolean
+local function testBranchRootReassign(cur, advance)
+    if advance then
+        cur.next = newListNode()
+        cur = cur.next
+        cur.next:Touch()
+        --  ^ diag: need-check-nil
+    else
+        cur.next = newListNode()
+    end
+    cur.next:Touch()
+    --  ^ diag: need-check-nil
+end
+_consume(testBranchRootReassign)
+
+---@class BranchFieldOwner
+---@field holder BranchFieldHolder
+
+-- Replacing a prefix of the chain.
+---@param owner BranchFieldOwner
+---@param other BranchFieldHolder
+---@param flag boolean
+local function testBranchPrefixWrite(owner, other, flag)
+    if flag then
+        owner.holder.q = createQuery()
+        owner.holder = other
+    else
+        owner.holder.q = createQuery()
+    end
+    owner.holder.q:ResetOrderBy()
+    --           ^ diag: need-check-nil
+end
+_consume(testBranchPrefixWrite)
+
+---@return number, BranchQuery?
+local function countAndMaybeQuery() return 0, nil end
+
+---@return number, BranchQuery
+local function countAndQuery() return 0, createQuery() end
+
+-- Assigning a later return slot.
+---@param flag boolean
+function BranchFieldHolder:AssignReturnSlot(flag)
+    if flag then
+        self.q = createQuery()
+        local count
+        count, self.q = countAndMaybeQuery()
+    else
+        self.q = createQuery()
+    end
+    self.q:ResetOrderBy()
+    --     ^ diag: need-check-nil
+end
+
+function BranchFieldHolder:ReturnSlotNarrows()
+    local count
+    count, self.q = countAndQuery()
+    self.q:ResetOrderBy()
 end
 
 -- ── `not x` elseif narrowing WITHOUT early exit ────────────────────────

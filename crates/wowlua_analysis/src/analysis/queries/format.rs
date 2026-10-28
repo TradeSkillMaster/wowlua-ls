@@ -219,6 +219,25 @@ fn enrich_class_field_from_local(
     crate::analysis::enriched_class_field(ann, &writes, ir)
 }
 
+/// The read-only `Analysis::assigned_non_nil`: whether the value an
+/// `Expr::AssignNarrow` records is non-nil, on every path of an if-chain's merge.
+/// Each path gets its own copy of `visited`, so a sub-expression two paths
+/// share isn't taken for a cycle in the second.
+fn assigned_non_nil(
+    ir: &Ir,
+    resolved_expr_cache: &[Option<ValueType>],
+    rhs: ExprId,
+    visited: &mut HashSet<ExprId>,
+    depth: usize,
+) -> bool {
+    if let Expr::BranchMerge(paths) = ir.expr(rhs) {
+        return paths.iter()
+            .all(|&path| assigned_non_nil(ir, resolved_expr_cache, path, &mut visited.clone(), depth + 1));
+    }
+    resolve_expr_type_impl(ir, resolved_expr_cache, rhs, visited, depth)
+        .is_some_and(|t| !t.contains_nil())
+}
+
 /// Shared implementation for read-only expression type resolution.
 /// Both `Analysis::resolve_expr_type` and `AnalysisResult::resolve_expr_type` delegate here.
 pub(crate) fn resolve_expr_type_impl(
@@ -532,12 +551,7 @@ fn resolve_expr_type_uncleared(
             let inner = *inner;
             let rhs = *rhs;
             let inner_ty = resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1);
-            let rhs_ty = resolve_expr_type_impl(ir, resolved_expr_cache, rhs, visited, depth + 1);
-            let strip = match rhs_ty {
-                Some(ref t) => !t.contains_nil(),
-                None => false,
-            };
-            if strip {
+            if assigned_non_nil(ir, resolved_expr_cache, rhs, visited, depth + 1) {
                 match inner_ty.map(|vt| vt.strip_nil()) {
                     Some(ValueType::Union(ref members)) if members.is_empty() => None,
                     other => other,

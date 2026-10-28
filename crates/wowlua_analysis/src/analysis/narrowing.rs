@@ -2703,8 +2703,17 @@ impl<'a> Analysis<'a> {
     pub(super) fn record_field_assignment_narrow_rhs(&mut self, names: &[String], scope_idx: ScopeIndex, rhs_expr_id: crate::types::ExprId) {
         if names.len() < 2 { return; }
         let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) else { return };
-        let chain = names[1..].to_vec();
-        let key = NarrowTarget::Field(sym_idx, chain);
+        let chain = &names[1..];
+        // The written value replaces the table the longer chains read through
+        // (`o.h = v` after `o.h.q = w`).
+        self.forget_field_values(scope_idx, |target| matches!(target,
+            NarrowTarget::Field(s, c) if *s == sym_idx && c.len() > chain.len() && c.starts_with(chain)));
+        self.record_field_assignment_narrow(NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx, rhs_expr_id);
+    }
+
+    /// `record_field_assignment_narrow_rhs` for a resolved field chain, also used
+    /// for the value an if-chain leaves it (`process_pending_field_merges`).
+    pub(super) fn record_field_assignment_narrow(&mut self, key: NarrowTarget, scope_idx: ScopeIndex, rhs_expr_id: ExprId) {
         // Assignment supersedes any prior guard-based narrowing in this scope.
         if let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx) {
             set.remove(&key);
@@ -2712,8 +2721,60 @@ impl<'a> Analysis<'a> {
         if let Some(set) = self.narrowing.falsy_narrowed.get_mut(&scope_idx) {
             set.remove(&key);
         }
+        // The enclosing scopes' own facts now predate a write below them.
+        if let Some(writes) = self.unsettled_field_writes.get_mut(&scope_idx) {
+            writes.remove(&key);
+        }
+        let at = self.field_writes_recorded;
+        self.field_writes_recorded += 1;
+        for si in super::ancestor_scopes(&self.ir.scopes, scope_idx).skip(1) {
+            let writes = self.unsettled_field_writes.entry(si).or_default();
+            if !writes.contains_key(&key) {
+                writes.insert(key.clone(), at);
+            }
+        }
         self.narrowing.field_assignment_narrowed.entry(scope_idx).or_default()
             .insert(key, rhs_expr_id);
+    }
+
+    /// A write to `sym_idx` itself in `scope_idx`: its field chains now read
+    /// through another table.
+    pub(super) fn forget_root_field_values(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
+        self.forget_field_values(scope_idx, |target| matches!(target, NarrowTarget::Field(s, _) if *s == sym_idx));
+    }
+
+    /// Record the field chains `forgotten` picks, among those with a write or
+    /// nil guard visible from `scope_idx`, as written an unknown value there, so
+    /// they read as their declared type and no stale fact survives a merge.
+    fn forget_field_values(&mut self, scope_idx: ScopeIndex, forgotten: impl Fn(&NarrowTarget) -> bool) {
+        let mut keys: Vec<NarrowTarget> = Vec::new();
+        for si in super::ancestor_scopes(&self.ir.scopes, scope_idx) {
+            let written = self.narrowing.field_assignment_narrowed.get(&si).into_iter().flat_map(|m| m.keys());
+            let guarded = [&self.narrowing.narrowed, &self.narrowing.falsy_narrowed].into_iter()
+                .filter_map(|m| m.get(&si))
+                .flatten();
+            for key in written.chain(guarded) {
+                if forgotten(key) && !keys.contains(key) {
+                    keys.push(key.clone());
+                }
+            }
+        }
+        if keys.is_empty() { return; }
+        let unknown = self.ir.push_expr(Expr::Unknown);
+        for key in keys {
+            self.record_field_assignment_narrow(key, scope_idx, unknown);
+        }
+    }
+
+    /// The field chains the conditions of an if-chain's `branches` prove non-nil
+    /// when they are all false, as on its implicit-else path: `not t.f`, `t.f == nil`.
+    pub(super) fn negated_nil_guard_fields(&self, branches: &[IfBranch<'_>], scope_idx: ScopeIndex) -> Vec<NarrowTarget> {
+        branches.iter().filter_map(|branch| {
+            let names = Self::extract_nil_guard_field(&branch.expression()?);
+            if names.len() < 2 { return None; }
+            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+            Some(NarrowTarget::Field(sym_idx, names[1..].to_vec()))
+        }).collect()
     }
 
     /// Like `try_narrow_field` but also marks the field chain as falsy-narrowed

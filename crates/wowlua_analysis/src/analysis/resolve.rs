@@ -537,6 +537,18 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Whether the value an `Expr::AssignNarrow` records is non-nil: its type
+    /// resolves without nil. For the `BranchMerge` of the values an if-chain's
+    /// paths leave a field (`build_ir::process_pending_field_merges`), every
+    /// path's value must be, an unresolved one counting as nil as it does alone.
+    fn assigned_non_nil(&mut self, rhs: ExprId) -> bool {
+        if let Expr::BranchMerge(paths) = self.expr(rhs) {
+            let paths = paths.clone();
+            return paths.into_iter().all(|path| self.assigned_non_nil(path));
+        }
+        self.resolve_expr(rhs).is_some_and(|t| !t.contains_nil())
+    }
+
     /// `reads_version` minus aliases of another symbol: the versions that only
     /// re-type `sym`'s own value (a narrowing, or the alias restoring it after a
     /// narrowed `and` operand). A cross-symbol alias (`self` in `function f:m()`)
@@ -3685,12 +3697,7 @@ impl<'a> Analysis<'a> {
                 // to a non-nil type. If RHS resolves to None or includes nil, leave
                 // the inner type unchanged (the field could legitimately be nil).
                 let inner_ty = self.resolve_expr(inner);
-                let rhs_ty = self.resolve_expr(rhs);
-                let strip = match rhs_ty {
-                    Some(ref t) => !t.contains_nil(),
-                    None => false,
-                };
-                return if strip {
+                return if self.assigned_non_nil(rhs) {
                     apply_strip(inner_ty, ValueType::strip_nil)
                 } else {
                     inner_ty

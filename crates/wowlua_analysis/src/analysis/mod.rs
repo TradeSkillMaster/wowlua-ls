@@ -3731,6 +3731,13 @@ pub struct Analysis<'a> {
     pub(super) local_writes: HashMap<(u32, &'a str), upvalues::LocalWrites>,
     pub(super) local_written_names: HashSet<&'a str>,
     pub(super) function_starts: HashMap<ScopeIndex, u32>,
+    // Build-time: per scope, the field chains written in a scope below it since
+    // its own last write to them, each with the number (`field_writes_recorded`
+    // when made) of the earliest such write; an if-chain merge carrying the writes
+    // up settles them (`build_ir::process_pending_field_merges`)
+    pub(super) unsettled_field_writes: HashMap<ScopeIndex, HashMap<NarrowTarget, usize>>,
+    // Build-time: how many field writes `record_field_assignment_narrow` has recorded
+    pub(super) field_writes_recorded: usize,
     // Config
     pub allowed_read_globals: AllowedGlobals,
     pub allowed_write_globals: AllowedGlobals,
@@ -4023,6 +4030,8 @@ impl<'a> Analysis<'a> {
             local_writes: HashMap::default(),
             local_written_names: HashSet::default(),
             function_starts: HashMap::default(),
+            unsettled_field_writes: HashMap::default(),
+            field_writes_recorded: 0,
             allowed_read_globals,
             allowed_write_globals,
             allow_slash_commands,

@@ -164,6 +164,25 @@ function combine(a, b)
 end
 ```
 
+### Assignment
+
+Assigning a value that can't be nil narrows a local or a field; assigning `nil` or a value that may be nil undoes it, and so does assigning the table the field belongs to (`node = node.next`). A field assigned in every branch of an `if`/`else` stays narrowed after the `if`:
+
+```lua
+---@class Panel
+---@field input EditBox?
+local Panel = {}
+
+function Panel:Build(parent)
+    if parent then
+        self.input = CreateFrame("EditBox", nil, parent)
+    else
+        self.input = CreateFrame("EditBox")
+    end
+    self.input:SetText("") -- OK, every branch assigned it
+end
+```
+
 ## Locals assigned in other functions
 
 A function can run after any assignment the file makes to a local declared outside it, so inside it the local has the type of every value the file assigns it. Declaring the local without a value (`local db` or `local db = nil`) doesn't make it nilable; a function that assigns `nil` to it does:

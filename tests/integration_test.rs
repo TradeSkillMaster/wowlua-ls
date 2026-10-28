@@ -7595,6 +7595,29 @@ fn fuzz_resolve_work_limit() {
     assert!(!result, "nested multi-target calls should not exhaust a safety limit");
 }
 
+/// `t.x = t.x or v` reads the field through the previous write's `AssignNarrow`.
+/// The read-only resolver once resolved each narrowing's value with a fresh
+/// cycle set, so an unannotated field re-entered all its (unresolvable) writes
+/// at every narrowing: exponential in the number of writes.
+#[test]
+fn chained_field_write_reads_terminate() {
+    let mut src = String::from("local t = {}\n");
+    for i in 0..12 {
+        src.push_str(&format!("t.x = t.x or Undef{i}\n"));
+    }
+    src.push_str("print(t.x)\n");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (tree, result) = analyze_source(&src);
+        let _ = result.run_diagnostics(&tree);
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_secs(60)).is_ok(),
+        "diagnostics for chained field writes did not finish within 60s",
+    );
+}
+
 fn analyze_source(src: &str) -> (SyntaxTree, AnalysisResult) {
     let tree = wowlua_ls::syntax::parser::parse(src);
     let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());

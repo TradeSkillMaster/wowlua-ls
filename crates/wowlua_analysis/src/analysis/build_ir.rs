@@ -6,7 +6,7 @@ use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
-use super::NarrowTarget;
+use super::{NarrowMap, NarrowTarget};
 use super::{ConditionKind, ExitElse};
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
@@ -59,6 +59,26 @@ struct PendingBranchMerge {
     implicit_else_strip_nil: Vec<(SymbolIndex, bool)>,
     /// End offset of the if-chain: where the merged values take effect.
     chain_end: u32,
+    /// The chain's branch scopes whose block always exits: they never reach the
+    /// code after the chain (`process_pending_field_merges`).
+    exiting_scopes: Vec<ScopeIndex>,
+    /// Field chains a condition proves non-nil on the implicit-else path, where
+    /// every condition was false (`if not t.f then … end`).
+    implicit_else_non_nil_fields: Vec<NarrowTarget>,
+    /// `Analysis::field_writes_recorded` when the chain was reached: the field
+    /// writes numbered from it on are the chain's own (`unsettled_field_writes`).
+    chain_start: usize,
+}
+
+/// What a field chain holds at the end of one path through an if-chain, for
+/// `process_pending_field_merges`.
+enum FieldPathState {
+    /// A guard left it non-nil.
+    NonNil,
+    /// The last value assigned to it.
+    Value(ExprId),
+    /// Nothing narrows it, or it can't be told.
+    Unknown,
 }
 
 /// An if-chain whose conditions narrow the code after it: the leading branches
@@ -206,6 +226,8 @@ impl<'a> Analysis<'a> {
             //
             // Exit narrowings go first: the merge's implicit-else contribution reads
             // the narrowed version, as it did when both ran while lowering the chain.
+            // Field merges go before them, reading the guards from before the chain.
+            self.process_pending_field_merges(scope_idx, &pending_branch_merges);
             self.process_pending_exit_narrowings(scope_idx, &mut pending_exit_narrowings);
             self.process_pending_branch_merges(scope_idx, &mut pending_branch_merges);
 
@@ -670,6 +692,7 @@ impl<'a> Analysis<'a> {
     fn build_stmt_if(&mut self, if_chain: &IfChain<'a>, scope_idx: ScopeIndex, func_id: Option<FunctionIndex>, constructor_of: Option<TableIndex>, stack: &mut Vec<Frame<'a>>, pending_branch_merges: &mut Vec<PendingBranchMerge>) -> Option<PendingExitNarrowing<'a>> {
         let branches = if_chain.if_branches();
         let chain_end = node_range(if_chain.syntax()).1;
+        let chain_start = self.field_writes_recorded;
         // Pre-compute whether the else block always exits (calls error() or
         // returns). Conditions in a chain with a defensive exit-else are
         // suppressed from `redundant-condition` when they evaluate as
@@ -678,6 +701,7 @@ impl<'a> Analysis<'a> {
             .and_then(|eb| eb.block())
             .is_some_and(|b| Self::block_always_exits(&b)));
         let mut branch_scopes: Vec<ScopeIndex> = Vec::new();
+        let mut exiting_scopes: Vec<ScopeIndex> = Vec::new();
         for (i, branch) in branches.iter().enumerate() {
             if i == 0 {
                 // First branch: lower condition in parent scope
@@ -689,6 +713,9 @@ impl<'a> Analysis<'a> {
             if let Some(inner_block) = branch.block() {
                 let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                 branch_scopes.push(new_scope_idx);
+                if Self::block_always_exits(&inner_block) {
+                    exiting_scopes.push(new_scope_idx);
+                }
                 // elseif branches: apply inverse narrowing from ALL preceding
                 // branches' conditions since they must have been false to reach
                 // here, then lower the elseif condition in the narrowed scope
@@ -726,6 +753,9 @@ impl<'a> Analysis<'a> {
             && let Some(inner_block) = else_branch.block() {
                 let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                 branch_scopes.push(new_scope_idx);
+                if Self::block_always_exits(&inner_block) {
+                    exiting_scopes.push(new_scope_idx);
+                }
                 // Apply inverse narrowing from ALL branches' conditions
                 for branch in &branches {
                     if let Some(cond) = branch.expression() {
@@ -796,6 +826,9 @@ impl<'a> Analysis<'a> {
                         has_implicit_else: false,
                         implicit_else_strip_nil: Vec::new(),
                         chain_end,
+                        exiting_scopes: Vec::new(),
+                        implicit_else_non_nil_fields: Vec::new(),
+                        chain_start,
                     });
                 }
             } else {
@@ -806,6 +839,9 @@ impl<'a> Analysis<'a> {
                     has_implicit_else: false,
                     implicit_else_strip_nil: Vec::new(),
                     chain_end,
+                    exiting_scopes: Vec::new(),
+                    implicit_else_non_nil_fields: Vec::new(),
+                    chain_start,
                 });
             }
         } else if !first_branch_exits && !branch_scopes.is_empty() {
@@ -832,6 +868,9 @@ impl<'a> Analysis<'a> {
                 has_implicit_else: true,
                 implicit_else_strip_nil,
                 chain_end,
+                exiting_scopes,
+                implicit_else_non_nil_fields: self.negated_nil_guard_fields(&branches, scope_idx),
+                chain_start,
             });
         } else if first_branch_exits && exiting_prefix_len < branch_scopes.len() {
             // Some branches exit (early-exit guards already applied) but
@@ -847,6 +886,9 @@ impl<'a> Analysis<'a> {
                 has_implicit_else: true,
                 implicit_else_strip_nil: Vec::new(),
                 chain_end,
+                exiting_scopes,
+                implicit_else_non_nil_fields: self.negated_nil_guard_fields(&branches, scope_idx),
+                chain_start,
             });
         }
         exit_narrowing
@@ -904,6 +946,115 @@ impl<'a> Analysis<'a> {
             self.narrowing.gate_new_facts(scope_idx, &facts_before, if_end);
             self.ir.set_hidden_versions(None);
         }
+    }
+
+    /// Carry field writes past the if-chains in `scope_idx` whose branch bodies
+    /// have now been lowered. A write narrows its field chain only in its own
+    /// scope, so a chain every branch assigns would read after the if-chain as if
+    /// never assigned. When every path reaching the code after the if-chain leaves
+    /// the field chain assigned or guarded, record that on `scope_idx`: the paths'
+    /// values as one `Expr::BranchMerge`, which `Expr::AssignNarrow` strips nil for
+    /// only when every value is non-nil, or a guard when every path guards it.
+    fn process_pending_field_merges(&mut self, scope_idx: ScopeIndex, pending: &[PendingBranchMerge]) {
+        for merge in pending.iter().filter(|m| m.parent_scope == scope_idx) {
+            let paths: Vec<ScopeIndex> = merge.branch_scopes.iter().copied()
+                .filter(|bs| !merge.exiting_scopes.contains(bs))
+                .collect();
+            let mut keys: Vec<NarrowTarget> = Vec::new();
+            for bs in &paths {
+                for key in self.narrowing.field_assignment_narrowed.get(bs).into_iter().flat_map(|m| m.keys()) {
+                    if !keys.contains(key) {
+                        keys.push(key.clone());
+                    }
+                }
+            }
+            'keys: for key in keys {
+                let NarrowTarget::Field(sym_idx, chain) = &key else { continue };
+                // Skip a field of a branch's own local, and one a guard narrows after
+                // the chain anyway: lowering prefers a guard to a write.
+                if (!sym_idx.is_external() && merge.branch_scopes.contains(&self.ir.symbols[sym_idx.val()].scope_idx))
+                    || self.is_field_chain_narrowed(*sym_idx, chain, scope_idx)
+                    || self.is_field_falsy_narrowed(*sym_idx, chain, scope_idx)
+                    || self.get_field_type_narrowing(*sym_idx, chain, scope_idx).is_some()
+                    || self.get_field_type_stripping(*sym_idx, chain, scope_idx).is_some()
+                {
+                    continue;
+                }
+                let implicit_else = merge.has_implicit_else.then(|| {
+                    if merge.implicit_else_non_nil_fields.contains(&key) {
+                        FieldPathState::NonNil
+                    } else {
+                        self.inherited_field_state(&key, scope_idx, merge.chain_start)
+                    }
+                });
+                let mut values: Vec<ExprId> = Vec::new();
+                let path_states = paths.iter().map(|&bs| self.field_path_state(&key, bs, scope_idx, merge.chain_start));
+                for state in path_states.chain(implicit_else) {
+                    match state {
+                        FieldPathState::NonNil => {}
+                        FieldPathState::Value(rhs) if values.contains(&rhs) => {}
+                        FieldPathState::Value(rhs) => values.push(rhs),
+                        FieldPathState::Unknown => continue 'keys,
+                    }
+                }
+                match values.len() {
+                    0 => {
+                        // Every path guards it. No guard was visible here, so the
+                        // fact is new: readers after analysis see it from the chain's end.
+                        self.narrowing.narrowed.entry(scope_idx).or_default().insert(key.clone());
+                        self.narrowing.narrow_from_offset.entry(scope_idx).or_default()
+                            .insert((NarrowMap::Narrowed, key.clone()), merge.chain_end);
+                        if let Some(unsettled) = self.unsettled_field_writes.get_mut(&scope_idx) {
+                            unsettled.remove(&key);
+                        }
+                    }
+                    1 => self.record_field_assignment_narrow(key, scope_idx, values[0]),
+                    _ => {
+                        let merged = self.ir.push_expr(Expr::BranchMerge(values));
+                        self.record_field_assignment_narrow(key, scope_idx, merged);
+                    }
+                }
+            }
+        }
+    }
+
+    /// What field chain `key` holds at the end of branch `bs` of an if-chain in
+    /// `parent`, read from the branch scope's own facts. A guard there follows the
+    /// branch's last write to it (a write drops its scope's guards), but nothing
+    /// orders a type guard against a write, nor the branch's facts against a write
+    /// in a scope below it that no merge carried up (`unsettled_field_writes`).
+    fn field_path_state(&self, key: &NarrowTarget, bs: ScopeIndex, parent: ScopeIndex, chain_start: usize) -> FieldPathState {
+        let narrowing = &self.narrowing;
+        let guarded = |map: &HashMap<ScopeIndex, HashSet<NarrowTarget>>| map.get(&bs).is_some_and(|s| s.contains(key));
+        if self.unsettled_field_writes.get(&bs).is_some_and(|writes| writes.contains_key(key)) {
+            FieldPathState::Unknown
+        } else if guarded(&narrowing.narrowed) || guarded(&narrowing.falsy_narrowed) {
+            FieldPathState::NonNil
+        } else if narrowing.type_narrowed.get(&bs).is_some_and(|m| m.contains_key(key))
+            || narrowing.type_stripped.get(&bs).is_some_and(|m| m.contains_key(key))
+        {
+            FieldPathState::Unknown
+        } else if let Some(&rhs) = narrowing.field_assignment_narrowed.get(&bs).and_then(|m| m.get(key)) {
+            FieldPathState::Value(rhs)
+        } else {
+            self.inherited_field_state(key, parent, chain_start)
+        }
+    }
+
+    /// What field chain `key` holds on a path through an if-chain in `parent` that
+    /// leaves it alone: the write the scopes from `parent` out saw before the chain
+    /// started at `chain_start`, unless a write below one of them, made before the
+    /// chain and carried up by no merge, has replaced it since.
+    fn inherited_field_state(&self, key: &NarrowTarget, parent: ScopeIndex, chain_start: usize) -> FieldPathState {
+        for si in self.ir.ancestor_scopes(parent) {
+            if self.unsettled_field_writes.get(&si).and_then(|writes| writes.get(key)).is_some_and(|&at| at < chain_start) {
+                return FieldPathState::Unknown;
+            }
+            if let Some(&rhs) = self.narrowing.field_assignment_narrowed.get(&si).and_then(|m| m.get(key)) {
+                return FieldPathState::Value(rhs);
+            }
+        }
+        FieldPathState::Unknown
     }
 
     fn build_stmt_for_count(&mut self, for_loop: &ForCountLoop<'a>, scope_idx: ScopeIndex, func_id: Option<FunctionIndex>, constructor_of: Option<TableIndex>, stack: &mut Vec<Frame<'a>>) {
@@ -1671,17 +1822,17 @@ impl<'a> Analysis<'a> {
         } else if let Some(expr) = expression {
             self.build_field_value(ctx, target, expr, cached_multi_ret_call, &mut narrow_rhs_expr_id);
         } else if index >= expressions.len() {
-            self.build_field_multi_return(ctx, target, cached_multi_ret_call);
+            self.build_field_multi_return(ctx, target, cached_multi_ret_call, &mut narrow_rhs_expr_id);
         }
         // Narrow the field after assignment so subsequent
-        // accesses don't warn about nil (skip literal nil). The
-        // narrowing is conditional on the RHS resolving to non-nil
-        // — `Expr::AssignNarrow` strips nil only when the recorded
-        // RHS resolves to a non-nil type. Without the RHS expr id
+        // accesses don't warn about nil. The narrowing is
+        // conditional on the RHS resolving to non-nil —
+        // `Expr::AssignNarrow` strips nil only when the recorded
+        // RHS resolves to a non-nil type, so a `nil` write still
+        // replaces an earlier narrowing. Without the RHS expr id
         // (rare branches with no produced IR), no narrowing.
         self.invalidate_and_field_derivations(names, scope_idx);
-        let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
-        if !is_nil_literal && let Some(rhs_id) = narrow_rhs_expr_id {
+        if let Some(rhs_id) = narrow_rhs_expr_id {
             self.record_field_assignment_narrow_rhs(names, scope_idx, rhs_id);
         }
     }
@@ -2334,6 +2485,7 @@ impl<'a> Analysis<'a> {
         ctx: AssignCtx<'a, '_>,
         target: AssignTarget<'a, '_>,
         cached_multi_ret_call: &mut Option<ExprId>,
+        narrow_rhs_expr_id: &mut Option<ExprId>,
     ) {
         let AssignCtx { scope_idx, annotations, trailing_types, .. } = ctx;
         let AssignTarget { ident, index, expressions, names, .. } = target;
@@ -2342,9 +2494,11 @@ impl<'a> Analysis<'a> {
         // Multi-return field assignment (e.g. self._h, self._s, self._l = func())
         // Create a FunctionCall expr with the appropriate ret_index and
         // update the field type so it reflects the function's @return types.
+        let mut slot = None;
         if let Some(Expression::FunctionCall(_)) = expressions.last() {
             let ret_index = index - (expressions.len() - 1);
-            if let Some(expr_id) = cached_multi_ret_call.and_then(|id| self.call_return_slot(id, ret_index))
+            slot = cached_multi_ret_call.and_then(|id| self.call_return_slot(id, ret_index));
+            if let Some(expr_id) = slot
                 && let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
                     && names.len() <= 2 {
                             let raw = trailing_types.get(index).or_else(|| annotations.var_type_at(index)).cloned();
@@ -2384,6 +2538,8 @@ impl<'a> Analysis<'a> {
                             }
                         }
         }
+        // What the write's narrowing reads: the slot, else a nil or a vararg's value.
+        *narrow_rhs_expr_id = Some(slot.unwrap_or_else(|| self.ir.push_expr(Expr::Unknown)));
     }
 
     /// Give a field its write's `---@type` when it declares none yet.
@@ -2517,6 +2673,7 @@ impl<'a> Analysis<'a> {
             // Reassignment breaks any correlated-local group for this symbol.
             self.invalidate_correlated_locals(symbol_idx);
             self.invalidate_guard_implications(symbol_idx);
+            self.forget_root_field_values(symbol_idx, scope_idx);
             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
             let func_idx = FunctionIndex(self.ir.functions.len() - 1);
             self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -2592,6 +2749,7 @@ impl<'a> Analysis<'a> {
             // Reassignment breaks any correlated-local group for this symbol.
             self.invalidate_correlated_locals(symbol_idx);
             self.invalidate_guard_implications(symbol_idx);
+            self.forget_root_field_values(symbol_idx, scope_idx);
             if let Some(expr_id) = type_source {
                 self.ir.set_type_source(symbol_idx, expr_id);
                 // Track multi-return siblings from function calls
