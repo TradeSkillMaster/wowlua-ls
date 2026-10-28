@@ -163,6 +163,7 @@ Nil tracking works with every narrowing pattern:
 - `x = x or default` coalescing
 - Compound `and`/`or` expressions
 - Field-presence narrowing: `if obj.title then` narrows a union to members where `title` is defined
+- Guard functions: `function Foo:HasTarget() return self.target ~= nil end` makes `if foo:HasTarget()` narrow `foo.target`
 - Custom type guard functions via `@type-narrows`
 
 ### Backward parameter inference
@@ -324,7 +325,7 @@ What you gain:
 | Multi-return correlated narrowing | No | Automatic + inferred from function bodies |
 | Builder pattern typing | No | `@builds-field` + `@return built` |
 | Class factory patterns | No | `@defclass` with parameterized parents |
-| Custom type guards | No | `@type-narrows` annotation |
+| Custom type guards | No | Inferred from `return <condition>` bodies, or `@type-narrows` |
 | Diagnostic plugins | No | Custom Lua scripts for project conventions |
 | CLI linting for CI | `--check` writes a report file | `wowlua_ls check` prints diagnostics, exits `1` on findings |
 | Callable tables | Annotate with `@overload` / `@operator call` | Inferred from `setmetatable` + `__call` |

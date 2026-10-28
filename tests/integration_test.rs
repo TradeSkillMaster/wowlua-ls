@@ -3707,6 +3707,15 @@ fn type_narrows() {
 }
 
 #[test]
+fn guard_functions() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/guard-functions.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn isobjecttype_narrows() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/isobjecttype-narrows.lua",
@@ -4516,6 +4525,15 @@ fn crossfile_merge_narrow() {
 fn crossfile_type_narrows() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/type_narrows_crossfile_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_guard_functions() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/guard_functions_user.lua",
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
     });

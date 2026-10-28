@@ -2,6 +2,7 @@ pub mod prescan;
 pub mod build_ir;
 pub mod lower_expression;
 pub mod narrowing;
+pub mod guard_functions;
 pub mod secret_narrowing;
 pub mod secret_context;
 pub mod resolve;

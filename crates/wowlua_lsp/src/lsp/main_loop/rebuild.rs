@@ -44,6 +44,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.returns_enum == y.returns_enum
         && x.stores_into == y.stores_into
         && x.secret == y.secret
+        && x.inferred_guard == y.inferred_guard
         && x.declares_class == y.declares_class
         && x.ctor_method == y.ctor_method
         && x.export_method == y.export_method
@@ -654,5 +655,21 @@ mod tests {
         let guarded = ExternalGlobal { flavor_guard: crate::flavor::FLAVOR_RETAIL, ..plain.clone() };
         assert!(global_semantic_eq(&plain, &plain.clone()));
         assert!(!global_semantic_eq(&plain, &guarded));
+    }
+
+    /// Editing a guard function's `return` condition changes only what it
+    /// proves; the files calling it must still rebuild.
+    #[test]
+    fn global_semantic_eq_compares_inferred_guard() {
+        use crate::types::{GuardFact, GuardFactKind, InferredGuard};
+        let guard = |field: &str| ExternalGlobal {
+            inferred_guard: Some(Box::new(InferredGuard {
+                when_true: vec![GuardFact { param: "self".to_string(), chain: vec![field.to_string()], kind: GuardFactKind::NonNil }],
+                when_false: Vec::new(),
+            })),
+            ..ExternalGlobal::for_test("HasTarget", ExternalGlobalKind::Function)
+        };
+        assert!(global_semantic_eq(&guard("target"), &guard("target")));
+        assert!(!global_semantic_eq(&guard("target"), &guard("label")));
     }
 }

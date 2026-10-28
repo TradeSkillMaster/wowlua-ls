@@ -1215,6 +1215,7 @@ fn finalize_frame(mut ctx: FrameContext, path: &Path, scan: &mut ScanContext) {
             returns_class_name: false,
             returns_enum: false,
             secret: None,
+            inferred_guard: None,
         });
     }
 
@@ -1276,6 +1277,7 @@ fn finalize_frame(mut ctx: FrameContext, path: &Path, scan: &mut ScanContext) {
             returns_class_name: false,
             returns_enum: false,
             secret: None,
+            inferred_guard: None,
         });
     }
 }

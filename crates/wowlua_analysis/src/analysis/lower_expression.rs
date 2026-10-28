@@ -117,6 +117,14 @@ impl<'a> Analysis<'a> {
                         Vec::new()
                     };
                     extra_chain_guards.extend(secret_symbol_guards);
+                    let (guard_call_symbol_guards, guard_call_field_guards) = if is_and_chain {
+                        self.guard_call_chain_guards(lhs, scope_idx, Operator::And)
+                    } else if is_or_chain {
+                        self.guard_call_chain_guards(lhs, scope_idx, Operator::Or)
+                    } else {
+                        Default::default()
+                    };
+                    extra_chain_guards.extend(guard_call_symbol_guards);
                     // Collect flavor-guard masks from `and` chain LHS for temporary scope narrowing.
                     let and_flavor_mask: u8 = if is_and_chain {
                         self.collect_and_chain_flavor_guards(lhs, scope_idx)
@@ -266,6 +274,7 @@ impl<'a> Analysis<'a> {
                         Vec::new()
                     };
                     extra_field_guards.extend(secret_field_guards);
+                    extra_field_guards.extend(guard_call_field_guards);
                     // Temporarily insert field narrowings so RHS sees narrowed types.
                     // We track which entries we inserted so we can remove them after.
                     let mut temp_field_narrows: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = Vec::new();

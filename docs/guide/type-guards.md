@@ -1,6 +1,53 @@
 # Custom Type Guards
 
-wowlua-ls narrows types automatically for built-in patterns like `if x then`, `type(x) == "string"`, and `assert()`. But WoW addons often have their own type-checking functions. The `@type-narrows` annotation lets you teach the LS about them.
+wowlua-ls narrows types automatically for built-in patterns like `if x then`, `type(x) == "string"`, and `assert()`. But WoW addons often have their own type-checking functions. Utility functions that return a condition work as guards without annotations, and the `@type-narrows` annotation covers checks the LS can't see from a function's body.
+
+## Guard functions {#guard-functions}
+
+A function whose body is a single `return <condition>` narrows its arguments at each call site the way the condition would, written in place of the call. For a method, the receiver stands in for `self`:
+
+```lua
+---@type number?
+TableFrame.autoScrollTarget = nil
+
+function TableFrame:IsAutoScrolling()
+    return self.autoScrollTarget ~= nil
+end
+
+function TableFrame:Update()
+    if self:IsAutoScrolling() then
+        local target = self.autoScrollTarget -- number
+    end
+end
+```
+
+The condition can test a parameter or a field chain below one (`self.a.b`) with `~= nil` / `== nil`, truthiness, or `type(x) == "table"`, combined with `not`, `and`, and `or`. The call narrows everywhere the condition would, including the code its `false` result reaches:
+
+```lua
+---@param v any
+local function isTable(v)
+    return type(v) == "table"
+end
+
+---@param data string|table
+local function describe(data)
+    if isTable(data) then
+        return #data -- data is table
+    end
+    return data:upper() -- data is string
+end
+
+function Cache:IsLoaded()
+    return self.items ~= nil and self.index ~= nil
+end
+
+function Cache:Refresh()
+    if not self:IsLoaded() then return end
+    -- self.items and self.index are non-nil from here on
+end
+```
+
+A function with other statements before its `return` is not a guard. Guard functions narrow calls in other files too. Within one file, a guard method on a table that isn't a `@class` narrows only the calls below its definition.
 
 ## Index-based form
 
@@ -96,7 +143,7 @@ The receiver is narrowed in the then-branch of `==` (and the `~=` early-exit / `
 
 ## Where narrowing applies
 
-Custom type guards work in all the same places as built-in narrowing:
+Guard functions and custom type guards work in all the same places as built-in narrowing:
 
 - `if guard() then ... end` (then branch)
 - `if guard() then ... else ... end` (both branches)

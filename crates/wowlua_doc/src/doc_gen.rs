@@ -645,6 +645,7 @@ mod tests {
             stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
+            inferred_guard: None,
         };
         let func_idx = pg.push_ext_function(func);
 

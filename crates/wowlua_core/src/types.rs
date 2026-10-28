@@ -1343,6 +1343,59 @@ pub struct Function {
     /// types themselves (`secret<T>`).
     #[serde(default)]
     pub secret: Option<Box<crate::secrets::SecretMeta>>,
+    /// What a call proves about its arguments when its body is a single
+    /// `return <condition>`. Workspace-only: stub functions have no bodies.
+    #[serde(skip)]
+    pub inferred_guard: Option<Box<InferredGuard>>,
+}
+
+/// What a call to a guard function — one whose body is a single
+/// `return <condition>` — proves about its arguments, by its result:
+/// `if obj:HasTarget()` narrows like `if obj.target ~= nil` when `HasTarget`
+/// returns `self.target ~= nil`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InferredGuard {
+    pub when_true: Vec<GuardFact>,
+    pub when_false: Vec<GuardFact>,
+}
+
+/// `kind` holds for the field `chain` of parameter `param` (`self` for a
+/// method's receiver), or for the parameter itself when `chain` is empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuardFact {
+    pub param: String,
+    pub chain: Vec<String>,
+    pub kind: GuardFactKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GuardFactKind {
+    /// Neither nil nor false (`x`).
+    Truthy,
+    /// nil or false (`not x`).
+    Falsy,
+    /// `x ~= nil`
+    NonNil,
+    /// `x == nil`
+    Nil,
+    /// `type(x) == "<name>"`
+    TypeIs(String),
+    /// `type(x) ~= "<name>"`
+    TypeIsNot(String),
+}
+
+impl GuardFactKind {
+    /// The fact when the condition proving `self` is false instead.
+    pub fn negated(&self) -> Self {
+        match self {
+            Self::Truthy => Self::Falsy,
+            Self::Falsy => Self::Truthy,
+            Self::NonNil => Self::Nil,
+            Self::Nil => Self::NonNil,
+            Self::TypeIs(name) => Self::TypeIsNot(name.clone()),
+            Self::TypeIsNot(name) => Self::TypeIs(name.clone()),
+        }
+    }
 }
 
 /// Utility-type projection referencing a bound generic's function shape.

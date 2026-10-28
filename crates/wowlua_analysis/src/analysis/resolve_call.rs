@@ -4292,6 +4292,7 @@ impl<'a> Analysis<'a> {
                     stores_into: None,
                     requires_constraints: Vec::new(),
                     returns_self_type_args: None,
+                    inferred_guard: None,
                 });
                 in_progress.pop();
                 ValueType::Function(Some(new_func_idx))

@@ -3382,6 +3382,7 @@ impl<'a> Analysis<'a> {
             stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
+            inferred_guard: super::guard_functions::infer_guard(func, inject_self),
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));

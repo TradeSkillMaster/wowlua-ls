@@ -2844,3 +2844,24 @@ local function rootGuardKeepsFieldNil(row)
     --     ^ diag: return-mismatch
 end
 _consume(rootGuardKeepsFieldNil)
+
+-- ── Guard functions ─────────────────────────────────────────────────────
+-- A method whose body is `return self.sub ~= nil` proves `self.sub` non-nil.
+
+---@class NilCheckGuarded
+---@field sub NilCheckSub|nil
+local NilCheckGuarded = {}
+
+function NilCheckGuarded:HasSub()
+    return self.sub ~= nil
+end
+
+function NilCheckGuarded:Read()
+    if self:HasSub() then
+        local _ = self.sub.x
+    end
+    local _ = self.sub.x
+    --                 ^ diag: need-check-nil
+    if not self:HasSub() then return end
+    local _ = self.sub.x
+end

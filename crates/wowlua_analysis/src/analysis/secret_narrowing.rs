@@ -8,14 +8,9 @@ use crate::ast::*;
 use crate::collections::HashMap;
 use crate::syntax::SyntaxKind;
 use crate::types::*;
-use super::narrowing::GuardNarrow;
+use super::narrowing::{chain_operands, FieldGuards, GuardNarrow, SymbolGuards};
 use super::secret_context::SecretContext;
 use super::{Analysis, NarrowTarget};
-
-/// Symbol targets with the narrowing each receives.
-type SymbolGuards = Vec<(SymbolIndex, GuardNarrow)>;
-/// Field-chain targets with the narrowing each receives.
-type FieldGuards = Vec<(SymbolIndex, Vec<String>, GuardNarrow)>;
 
 /// What a guard call's truthiness proves.
 pub(super) enum SecretFact {
@@ -267,34 +262,5 @@ impl<'a> Analysis<'a> {
             }
         }
         (symbols, fields)
-    }
-}
-
-/// The operands of an `op` (`and`/`or`) chain, left to right: `a and b and c` →
-/// `[a, b, c]`. Mirrors the parser's shapes — left-nested chains, parentheses,
-/// and the flat `None[x, And[y, z]]` form it produces for mixed precedence.
-fn chain_operands<'t>(expr: Expression<'t>, op: Operator, out: &mut Vec<Expression<'t>>) {
-    match expr {
-        Expression::GroupedExpression(g) => {
-            if let Some(inner) = g.get_expression() {
-                chain_operands(inner, op, out);
-            }
-        }
-        Expression::BinaryExpression(bin) if bin.kind() == op => {
-            if let [lhs, rhs] = bin.get_terms().as_slice() {
-                chain_operands(*lhs, op, out);
-                out.push(*rhs);
-            }
-        }
-        Expression::BinaryExpression(bin) if bin.kind() == Operator::None => {
-            match bin.get_terms().as_slice() {
-                [lhs, Expression::BinaryExpression(inner)] if inner.kind() == op => {
-                    chain_operands(*lhs, op, out);
-                    out.extend(inner.get_terms());
-                }
-                _ => out.push(expr),
-            }
-        }
-        _ => out.push(expr),
     }
 }

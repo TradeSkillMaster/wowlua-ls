@@ -1692,6 +1692,7 @@ pub struct FnMeta<'a> {
     pub implicit_nil_return: bool,
     pub flavors_mask: u8,
     pub flavor_guard_mask: u8,
+    pub inferred_guard: Option<Box<crate::types::InferredGuard>>,
     pub dummy_node: DefNode,
 }
 
@@ -1735,6 +1736,7 @@ impl<'a> FnMeta<'a> {
             implicit_nil_return: false,
             flavors_mask: 0,
             flavor_guard_mask: 0,
+            inferred_guard: None,
             dummy_node,
         }
     }
@@ -1778,6 +1780,7 @@ impl<'a> FnMeta<'a> {
             implicit_nil_return: g.implicit_nil_return,
             flavors_mask: g.flavors,
             flavor_guard_mask: g.flavor_guard,
+            inferred_guard: g.inferred_guard.clone(),
             dummy_node,
         }
     }
@@ -4984,6 +4987,7 @@ impl PreResolvedGlobals {
             stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
+            inferred_guard: None,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -5025,6 +5029,7 @@ impl PreResolvedGlobals {
             implicit_nil_return,
             flavors_mask,
             flavor_guard_mask,
+            inferred_guard,
             dummy_node,
         } = meta;
         let func_scope_local = ctx.scopes.len();
@@ -5385,6 +5390,7 @@ impl PreResolvedGlobals {
             stores_into: stores_into_raw,
             requires_constraints: requires_raw,
             returns_self_type_args,
+            inferred_guard,
         });
 
         func_idx

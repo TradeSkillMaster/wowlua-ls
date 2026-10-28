@@ -1184,6 +1184,7 @@ impl CtorEntryScan<'_> {
             returns_class_name: false,
             returns_enum: false,
             secret: None,
+            inferred_guard: None,
         }
     }
 }
@@ -1379,6 +1380,7 @@ fn build_func_external(
         returns_class_name: annotations.returns_class_name,
         returns_enum: annotations.returns_enum,
         secret,
+        inferred_guard: crate::analysis::guard_functions::infer_guard(func, is_colon),
     }
 }
 
@@ -2386,6 +2388,7 @@ pub fn scan_file_globals_with_synth(
                                 returns_class_name: false,
                                 returns_enum: false,
                                 secret: None,
+                                inferred_guard: None,
                             });
                             // A constructor's entries: a class's methods, or the global's own
                             // table's entries.
@@ -2638,6 +2641,7 @@ pub fn scan_file_globals_with_synth(
                                 returns_class_name: false,
                                 returns_enum: false,
                                 secret: None,
+                                inferred_guard: None,
                             });
                             match (ctor, &annotations.class) {
                                 (Some(tc), Some(class_name)) => ctor_entries.push(&mut globals, CtorEntries::Methods, class_name, &[], &tc),
@@ -2922,6 +2926,7 @@ pub fn scan_file_globals_with_synth(
                     returns_class_name: false,
                     returns_enum: false,
                     secret: None,
+                    inferred_guard: None,
                 });
                 continue;
             }
@@ -3121,6 +3126,7 @@ pub fn scan_file_globals_with_synth(
                 returns_class_name: false,
                 returns_enum: false,
                 secret: None,
+                inferred_guard: None,
             });
         }
     }
@@ -3549,6 +3555,7 @@ pub fn scan_created_globals(
                 returns_class_name: false,
                 returns_enum: false,
                 secret: None,
+                inferred_guard: None,
             });
         }
     }

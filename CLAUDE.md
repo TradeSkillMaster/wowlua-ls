@@ -40,6 +40,7 @@ A concise map of the source tree. Several files carry deep mechanism notes too l
   - `build_ir.rs` — Phase 1: AST walk, scope/symbol/function/table creation, correlated return inference
   - `lower_expression.rs` — Expression lowering from AST to IR `Expr`: literals, identifiers (`NameRef`, `DotAccess`, `BracketAccess`, `MethodCall`), function calls, binary ops, table constructors, inline `@as` casts
   - `narrowing.rs` — Type narrowing from control flow guards: `GuardNarrow` enum, `OrTermEffect`, flavor narrowing detection, `@flavor-narrows`, type filter/strip for scope-specific refinement
+  - `guard_functions.rs` — guard functions: a body that is a single `return <condition>` yields `InferredGuard` facts about its parameters (syntax-only `infer_guard`, so the workspace scan carries them on `ExternalGlobal::inferred_guard`), applied at call sites through the same leaf helpers the inline conditions use
   - `resolve.rs` — Phase 2: fixpoint type resolution loop, expression resolver, backward param-type inference
   - `resolve_call.rs` — Function call resolution: `CallSiteInfo`, argument count/type checking, return type determination, overload matching, generic binding
   - `secret_narrowing.rs` — `@secret-guard` narrowing (`issecretvalue`/`canaccessvalue`/…): guard facts applied through the `type()`-guard maps. See [ARCHITECTURE.md — Secret values](.claude/ARCHITECTURE.md#secret-values).

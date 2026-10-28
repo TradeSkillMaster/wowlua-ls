@@ -530,6 +530,10 @@ pub struct ExternalGlobal {
     /// `@secret-*` metadata (retail secret values). Rides the stub blob.
     #[serde(default)]
     pub secret: Option<Box<crate::secrets::SecretMeta>>,
+    /// `Function::inferred_guard`. Runtime only — `#[serde(skip)]` (stub
+    /// functions have no bodies), no BLOB_VERSION bump.
+    #[serde(skip)]
+    pub inferred_guard: Option<Box<crate::types::InferredGuard>>,
 }
 
 impl ExternalGlobal {
@@ -591,6 +595,7 @@ impl ExternalGlobal {
             returns_class_name: false,
             returns_enum: false,
             secret: None,
+            inferred_guard: None,
         }
     }
 }
@@ -1636,6 +1641,7 @@ pub fn scan_method_funcall_self_fields(
             returns_class_name: false,
             returns_enum: false,
             secret: None,
+            inferred_guard: None,
         });
     }
     results
