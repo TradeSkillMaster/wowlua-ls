@@ -199,6 +199,40 @@
         </Scripts>
     </Frame>
 
+    <!-- An inline OnLoad script's members: its own, and a child's on its parent. -->
+    <Button name="ScriptedLoadTemplate" virtual="true">
+        <Frames>
+            <Button parentKey="Toggle">
+                <Scripts><OnLoad>self:GetParent().toggle = self;</OnLoad></Scripts>
+            </Button>
+        </Frames>
+        <Scripts>
+            <OnLoad>
+                self.label = "x";
+            </OnLoad>
+        </Scripts>
+    </Button>
+
+    <!-- A script running a global function on the frame. -->
+    <Frame name="CalledLoadTemplate" virtual="true">
+        <Scripts><OnLoad>CalledLoad_Setup(self);</OnLoad></Scripts>
+    </Frame>
+
+    <!-- Each parentArray element's KeyValues, a global one included. -->
+    <Frame name="ArrayKeyValuesTemplate" virtual="true">
+        <Frames>
+            <Frame parentArray="Entries" parentKey="First">
+                <KeyValues>
+                    <KeyValue key="entryID" value="1" type="number"/>
+                    <KeyValue key="classID" value="Enum.ItemClass.Weapon" type="global"/>
+                </KeyValues>
+            </Frame>
+            <Frame parentArray="Entries">
+                <KeyValues><KeyValue key="caption" value="b"/></KeyValues>
+            </Frame>
+        </Frames>
+    </Frame>
+
     <!-- Names that should be filtered out (invalid Lua identifiers) -->
     <Frame name="!InvalidFrame" parent="UIParent" />
     <Texture name="Wood-Tile" virtual="true" />

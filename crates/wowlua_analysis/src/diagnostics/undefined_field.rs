@@ -49,6 +49,25 @@ fn is_closed_record(analysis: &AnalysisResult, idx: TableIndex) -> bool {
         && !t.placeholder
 }
 
+/// A `{field: type}` table from one of this file's own annotations
+/// (`TableInfo::declared_shape`): like a `@class`'s, its fields are all it has,
+/// unless it also has a key or value type.
+fn is_declared_shape(analysis: &AnalysisResult, idx: TableIndex) -> bool {
+    let t = analysis.table(idx);
+    t.declared_shape && !t.fields.is_empty() && t.key_type.is_none() && t.value_type.is_none()
+}
+
+/// Whether a table keyed by `key` can hold an entry named `name`.
+fn key_accepts_name(key: &ValueType, name: &str) -> bool {
+    match key {
+        ValueType::String(None) | ValueType::Any | ValueType::TypeVariable(_) => true,
+        ValueType::String(Some(literal)) => literal == name,
+        ValueType::Union(members) => members.iter().any(|m| key_accepts_name(m, name)),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => key_accepts_name(inner, name),
+        _ => false,
+    }
+}
+
 /// Collect symbols that are pure module-private record tables: a local variable
 /// declared `local NAME = { ... }` directly from a table constructor, with
 /// exactly one definition (never reassigned). The `local`-with-constructor-RHS
@@ -555,7 +574,11 @@ impl DiagnosticPass for UndefinedField {
                         Expr::SymbolRef(sym, _) if analysis.ir.declares_intersection(sym, &table_type));
                     if !declared || !intersection_tables(analysis, &table_type, &mut table_indices) { continue; }
                 }
-                ValueType::Union(_) => {
+                ValueType::Union(members) => {
+                    // An intersection member with a member that can hold any field
+                    // could carry this one.
+                    if members.iter().any(|m| matches!(m, ValueType::Intersection(_))
+                        && !intersection_tables(analysis, m, &mut Vec::new())) { continue; }
                     super::collect_class_indices(&table_type, &mut table_indices);
                     // A `string` union member indexes into the `string` library via its
                     // metatable, so add that library table to the permissive multi-member
@@ -606,6 +629,11 @@ impl DiagnosticPass for UndefinedField {
             // `self` is an open mixin.
             if base_chain_is_open_mixin(analysis, *table) { continue; }
             if table_indices.iter().any(|&idx| analysis.ir.has_field(idx, field)) { continue; }
+            // A table keyed by strings (`table<string, V>`, a class extending one)
+            // has an entry for every name.
+            if table_indices.iter().any(|&idx| {
+                analysis.table(idx).key_type.as_ref().is_some_and(|key| key_accepts_name(key, field))
+            }) { continue; }
             // Inherited field?
             if table_indices.iter().any(|&idx| {
                 analysis.table(idx).parent_classes.iter().any(|&pi| analysis.ir.has_field(pi, field))
@@ -617,9 +645,12 @@ impl DiagnosticPass for UndefinedField {
                     continue;
                 }
             }
-            // Only emit when at least one table is a @class.
-            let Some((named_idx, class_name)) = table_indices.iter()
-                .find_map(|&idx| analysis.table(idx).class_name.clone().map(|n| (idx, n)))
+            // Only emit when at least one table declares its whole field set: a
+            // @class, or a `{field: type}` shape.
+            let class = table_indices.iter()
+                .find_map(|&idx| analysis.table(idx).class_name.clone().map(|n| (idx, n)));
+            let Some(named_idx) = class.as_ref().map(|&(idx, _)| idx)
+                .or_else(|| table_indices.iter().copied().find(|&idx| is_declared_shape(analysis, idx)))
             else {
                 // Closed-record fallback: a plain file-local table whose entire
                 // field set is statically known (the `local private = {}; function
@@ -637,7 +668,7 @@ impl DiagnosticPass for UndefinedField {
             // A field read used as a defensive existence check (`obj.M and
             // obj:M()`, `if obj.F then ... obj:F ... end`) is probing whether the
             // field exists — not a typo — so don't report it as undefined. This is
-            // applied only on the `@class` path: a closed module-private record
+            // not applied on the closed-record path: a closed module-private record
             // has a fully-known field set that can't grow at runtime, so an unknown
             // field there is always a typo, even inside a condition.
             if membership_suppressed.contains(start) { continue; }
@@ -651,11 +682,15 @@ impl DiagnosticPass for UndefinedField {
                     && analysis.ir.library_table_for_type(&ValueType::String(None)) == Some(named_idx))
             {
                 "type 'string'".to_string()
-            } else {
+            } else if matches!(table_type, ValueType::Intersection(_)) {
+                format!("type '{}'", analysis.format_type_depth(&table_type, 1))
+            } else if let Some((_, class_name)) = &class {
                 format!("class '{class_name}'")
+            } else {
+                format!("type '{}'", analysis.format_type_depth(&ValueType::Table(Some(named_idx)), 1))
             };
             // Related info: point to the @class declaration if it's in the current file.
-            let related = analysis.ir.class_def_ranges.get(&class_name)
+            let related = class.as_ref().and_then(|(_, class_name)| analysis.ir.class_def_ranges.get(class_name))
                 .map(|&(cs, ce)| vec![RelatedInfo {
                     file_path: None,
                     start: cs as usize,

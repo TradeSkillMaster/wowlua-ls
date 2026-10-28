@@ -593,6 +593,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             deferred_field_call_ranges: HashMap::default(),
                             enum_call: None,
                             secret_when: Vec::new(),
+                            onload: Default::default(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
@@ -640,6 +641,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 deferred_field_call_ranges: HashMap::default(),
                 enum_call: None,
                 secret_when: Vec::new(),
+                onload: Default::default(),
             });
         }
     }
@@ -952,6 +954,7 @@ fn collect_generated_event_classes(
             deferred_field_call_ranges: HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),
+            onload: Default::default(),
         });
     }
     out

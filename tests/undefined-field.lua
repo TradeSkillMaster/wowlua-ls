@@ -364,6 +364,47 @@ _consume(reassignDeclaredParam)
 ---@type MixinTargetA & table<string, number>
 local mapIsect = nil
 _consume(mapIsect.anyKey)
+---@type any & MixinTargetA
+local anyIsect = nil
+_consume(anyIsect.anything)
+-- ... including inside a union.
+---@type (any & MixinTargetA) | MixinLibC
+local anyIsectUnion = nil
+_consume(anyIsectUnion.anything)
+
+-- A `{field: type}` shape written in an annotation lists all of its fields, as a
+-- @class does.
+---@type {test: boolean}
+local shaped = {test = true}
+_consume(shaped.test)
+_consume(shaped.nonexisting)
+--              ^ diag: undefined-field
+
+---@param opts {name: string, size?: number}
+local function useOpts(opts)
+    _consume(opts.name, opts.size)
+    _consume(opts.color)
+    --            ^ diag: undefined-field
+    _consume(opts.fallback or 1)
+end
+useOpts({name = "x"})
+
+---@return {x: number}
+local function makePoint() return {x = 1} end
+local point = makePoint()
+_consume(point.y)
+--             ^ diag: undefined-field
+
+-- An index entry takes any key of its type.
+---@type {name: string, [string]: any}
+local openShape = {name = "x"}
+_consume(openShape.other)
+
+-- A table the scan typed from a constructor isn't declared: other code may add
+-- to it.
+---@class CtorShapeHolder
+local CtorShapeHolder = { opts = { a = 1 } }
+_consume(CtorShapeHolder.opts.b)
 
 -- ═══════════════════════════════════════════════════════════
 -- Closed-record (module-private table) undefined-field.
@@ -490,6 +531,16 @@ end
 local getBracketDict
 local lateDict = getBracketDict()
 lateDict["entry"] = 1
+-- A string-keyed class has an entry for every name; a number-keyed one doesn't.
+_consume(lateDict.anyKey)
+
+---@class NumberKeyedDict : table<number, string>
+---@field size number
+
+---@type NumberKeyedDict
+local numberKeyed = {}
+_consume(numberKeyed.anyKey)
+--                   ^ diag: undefined-field
 
 -- ═══════════════════════════════════════════════════════════
 -- Membership-test suppression: a field read used as a defensive

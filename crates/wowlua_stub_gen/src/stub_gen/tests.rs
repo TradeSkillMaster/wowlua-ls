@@ -532,7 +532,7 @@ fn template_stubs_merge_branches_and_class_children() {
     let classic_era = tmp.join("classic_era");
     let declared: HashSet<String> = ["DeclaredTemplate", "PreviewTabTemplate_Label"]
         .into_iter().map(String::from).collect();
-    let (lua, found, emitted) = generate_template_stubs(
+    let (lua, found, emitted, _) = generate_template_stubs(
         &[("live", live.as_path()), ("classic_era", classic_era.as_path())],
         &declared,
     );
@@ -578,6 +578,64 @@ fn template_stubs_merge_branches_and_class_children() {
         "",
     ].join("\n");
     assert_eq!(lua, expected);
+}
+
+#[test]
+fn template_onload_members_follow_scripts_and_functions() {
+    let tmp = std::env::temp_dir().join("wowlua-ls-test-template-onload");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dir = tmp.join("live").join("Interface/AddOns/Blizzard_Preview");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("PreviewOnLoad.xml"), r#"<Ui>
+    <Frame name="DeclaredHandlerTemplate" virtual="true">
+        <Scripts><OnLoad function="PreviewHandler_OnLoad"/></Scripts>
+    </Frame>
+    <Button name="PreviewListTemplate" virtual="true">
+        <Frames>
+            <Button parentKey="Toggle">
+                <Scripts><OnLoad>self:GetParent().toggle = self;</OnLoad></Scripts>
+            </Button>
+        </Frames>
+        <Scripts><OnLoad>PreviewList_OnLoad(self); self.ready = true;</OnLoad></Scripts>
+    </Button>
+    <Frame name="PreviewPlainTemplate" virtual="true"/>
+    <Frame name="PreviewMethodTemplate" mixin="PreviewMethodMixin" virtual="true">
+        <Scripts><OnLoad method="OnLoad"/></Scripts>
+    </Frame>
+</Ui>
+"#).unwrap();
+    std::fs::write(dir.join("PreviewOnLoad.lua"), "\
+function PreviewHandler_OnLoad(self)
+    self.Execute = PreviewHandler_Execute
+    self:SetScript(\"OnEvent\", function(self) self.inner = 1 end)
+end
+
+function PreviewList_OnLoad(button, toggleFunc)
+    button.text = button.Text
+    button.toggleFunc = toggleFunc
+end
+
+function PreviewMethodMixin:OnLoad()
+    self.onMouseUp = function() end
+end
+").unwrap();
+    let declared: HashSet<String> = ["DeclaredHandlerTemplate"].into_iter().map(String::from).collect();
+    let live = tmp.join("live");
+    let (_, _, _, members) = generate_template_stubs(&[("live", live.as_path())], &declared);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let mut members: Vec<(String, Vec<String>)> = members.into_iter().collect();
+    members.sort();
+    assert_eq!(members, vec![
+        // A declared template's members too; not a nested function's own `self`.
+        ("DeclaredHandlerTemplate".to_string(), vec!["Execute".to_string()]),
+        // A child's and the script's own, then the called function's on its first
+        // parameter, whatever it's named.
+        ("PreviewListTemplate".to_string(), vec!["toggle".to_string(), "ready".to_string(),
+            "text".to_string(), "toggleFunc".to_string()]),
+        // A mixin method the handler runs.
+        ("PreviewMethodTemplate".to_string(), vec!["onMouseUp".to_string()]),
+    ]);
 }
 
 #[test]

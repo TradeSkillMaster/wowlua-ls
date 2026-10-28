@@ -3,7 +3,7 @@
 -- version, so the addon doesn't target Forever: this file runs on Retail alone
 -- and Retail APIs that Forever lacks don't warn.
 
-C_PvP.HasRandomTrainingGroundWinToday()
+GetPetFoodTypes()
 -- ^ def: external
 
 C_GameRules.GetForeverExperiencePreset()

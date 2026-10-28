@@ -8,4 +8,6 @@ local region = SAVED_STATE.Region
 local keys = SAVED_KEYS.keys
 --                      ^ hover: (field) keys: table
 local main = MAIN_FRAME
---    ^ hover: (local) main: Frame {
+--    ^ hover: (local) main: Frame & { child: Button } {
+local mainChild = MAIN_FRAME.child
+--                           ^ hover: (field) child: Button

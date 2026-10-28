@@ -1707,3 +1707,34 @@ local stubFlatUnitCount = MonthlyActivitiesFrameMixin.GetDesiredUnitCount
 -- The field is the call's object, with the members of the mixins it copies.
 MonthlyActivitiesFrameMixin.TimeLeftFormatter:Format(5)
 --                                            ^ hover: (method) function SecondsFormatterMixin:Format(seconds, abbreviation)
+
+-- ── undefined-field on declared intersection-typed frames ────────────────────
+do
+    --- @type Frame&{test: boolean}
+    local shaped = CreateFrame("Frame")
+    shaped:NonExisting()
+--         ^ diag: undefined-field
+    local test = shaped.test
+--        ^ hover: (local) test: boolean
+    local typo = shaped.nonexisting
+--                      ^ diag: undefined-field
+
+    --- @type Frame&BackdropTemplate
+    local backdrop = CreateFrame("Frame")
+    backdrop:SetBackdrop(nil)
+    backdrop:NonExisting()
+--           ^ diag: undefined-field
+    backdrop.custom = 1
+    local custom = backdrop.custom
+
+    -- What a template's OnLoad handler assigns on the frame: through a function
+    -- (`SecureHandler_OnLoad`), and through a script and a child's script
+    -- (`OptionsListButtonTemplate`).
+    ---@type SecureHandlerBaseTemplate
+    local secure = CreateFrame("Frame", nil, UIParent, "SecureHandlerBaseTemplate")
+    secure:SetFrameRef("target", shaped)
+    secure:Execute("x = 1")
+    ---@type OptionsListButtonTemplate
+    local listButton = CreateFrame("Button", nil, UIParent, "OptionsListButtonTemplate")
+    local listText, listToggle = listButton.text, listButton.toggle
+end

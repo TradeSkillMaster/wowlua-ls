@@ -1,13 +1,13 @@
 # wowlua-ls precomputed stubs
-# Generated: 2026-10-27T12:27:08Z
+# Generated: 2026-10-27T16:48:05Z
 # Source: https://github.com/Ketho/vscode-wow-api.git @ d0b5b51fac4c52c493371b9b18e66ce604ea4326
-# Source: https://github.com/Gethe/wow-ui-source.git @ b9be93797190 (branch: live)
-# Source: https://github.com/Gethe/wow-ui-source.git @ 8165d4cd6e48 (branch: classic_era)
-# Source: https://github.com/Gethe/wow-ui-source.git @ 72cd28b019e5 (branch: classic)
-# Source: https://github.com/Gethe/wow-ui-source.git @ 172a387e3ab8 (branch: forever)
-# Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ 36dd01db2d8fa5086dffda5cbfb3d55f4a70e526 (branch: live)
+# Source: https://github.com/Gethe/wow-ui-source.git @ 15881d522c44 (branch: live)
+# Source: https://github.com/Gethe/wow-ui-source.git @ 4192ac60067f (branch: classic_era)
+# Source: https://github.com/Gethe/wow-ui-source.git @ e5d9b3a22c3f (branch: classic)
+# Source: https://github.com/Gethe/wow-ui-source.git @ ca8368f2f238 (branch: forever)
+# Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ f3b334b33bd19fa6a0250f7922ecfa83db7fe356 (branch: live)
 # Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ 1f1dec331d23927fefe3d50c3d7f6e0915cda96f (branch: classic_era)
 # Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ 877c67e9e0a64b5daae348a7b72b7a64bfaab90f (branch: classic)
-# Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ c5a49d394564f20c508c71014d6f60d9cd240c71 (branch: forever)
-# Symbols: 172403, Functions: 61712, Tables: 32804
+# Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ d1ee569878094270c0ad8d8b00de0762158fd578 (branch: forever)
+# Symbols: 172533, Functions: 61733, Tables: 33047
 # Embedded source files: 2883

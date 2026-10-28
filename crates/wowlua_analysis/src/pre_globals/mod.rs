@@ -1008,6 +1008,24 @@ fn merge_ctor_fields(g: &crate::annotations::ExternalGlobal, table_idx: TableInd
     merge_table_fields(table_idx, &fields, ctx.tables, ctx.exprs, ctx.number_literals, ctx.string_literals, ctx.ctor_entries, ctx.nested_calls);
 }
 
+/// Flag the class of an XML frame whose `<OnLoad>` runs a global function
+/// (`ClassDecl::onload`) `open_mixin`: the build can't follow the function to the
+/// members it assigns on the frame, so `undefined-field` stays permissive about
+/// them, as for a `CreateFromMixins` class. Shared by both build paths.
+fn mark_scripted_frames_open(
+    tables: &mut LayeredVec<TableInfo>,
+    classes: &HashMap<String, TableIndex>,
+    class_decls: &[ClassDecl],
+) {
+    for decl in class_decls {
+        if decl.onload.functions.is_empty() { continue; }
+        let Some(&idx) = classes.get(&decl.name) else { continue };
+        if !tables[idx.ext_offset()].open_mixin {
+            tables[idx.ext_offset()].open_mixin = true;
+        }
+    }
+}
+
 /// Link `Derived = CreateFromMixins(Base, …)` globals into the class inheritance
 /// graph. Shared by both build paths — `BuildContext::build` (from-scratch stub
 /// compile) and `BuildOnStubsContext::build_on_stubs` (workspace-incremental) —
@@ -1031,8 +1049,7 @@ fn apply_mixin_parent_inheritance(
         if g.mixin_parents.is_empty() { continue; }
         let Some(&child_idx) = classes.get(&g.name) else { continue };
         // Mark every CreateFromMixins-derived class as an open mixin so
-        // `undefined-field` stays permissive about untracked runtime fields
-        // (matches the intersection policy for `Frame & Template` instances).
+        // `undefined-field` stays permissive about untracked runtime fields.
         // Done regardless of whether the bases resolve — the class is dynamic
         // either way.
         tables[child_idx.ext_offset()].open_mixin = true;
@@ -3996,6 +4013,7 @@ impl PreResolvedGlobals {
         shared::drop_untyped_ctor_entries_typed_by_ancestors(
             external_classes, &ctx.classes, &mut ctx.tables, &ctx.declared_class_fields, &mut ctx.field_locations,
         );
+        mark_scripted_frames_open(&mut ctx.tables, &ctx.classes, external_classes);
         ctx.settle_instance_tables();
         ctx.propagate_override_overloads();
         ctx.mark_callable_classes(callable_classes);
@@ -5411,6 +5429,7 @@ mod tests {
             deferred_field_call_ranges: crate::collections::HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),
+            onload: Default::default(),
         }
     }
 

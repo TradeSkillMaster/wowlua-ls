@@ -394,6 +394,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
                     deferred_field_call_ranges: HashMap::default(),
                     enum_call: None,
                     secret_when: Vec::new(),
+                    onload: Default::default(),
                 });
             }
     }

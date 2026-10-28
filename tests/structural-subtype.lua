@@ -333,3 +333,21 @@ useOptTagged({ kind = "item", id = 1 })
 --           ^ diag: type-mismatch ~wrong type for field: 'kind' (expected `"spell"?`, got `"item"`)
 useOptTagged({ kind = "spell", id = 1 })
 useOptTagged({ id = 1 })
+
+-- An intersection parameter: the literal must satisfy every class in it, and a
+-- field the function writes through it isn't required of a caller's literal.
+---@class IsectLeft
+---@field a number
+
+---@class IsectRight
+---@field b number
+
+---@param v IsectLeft & IsectRight
+local function takesBoth(v) v.extra = 3 end
+--                            ^ diag: inject-field
+
+takesBoth({ a = 1, b = 2 })
+takesBoth({ a = "x", b = 2 })
+--        ^ diag: type-mismatch ~wrong type for field: 'a'
+takesBoth({ a = 1 })
+--        ^ diag: missing-fields ~missing required field 'b' in class 'IsectRight'

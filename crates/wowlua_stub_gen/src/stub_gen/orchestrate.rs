@@ -671,7 +671,8 @@ pub fn regenerate_stubs() {
         template_branches.push(("live", retail_ui_dir.as_path()));
     }
     template_branches.extend(classic_ui_branches.iter().map(|(branch, dir)| (*branch, dir.as_path())));
-    let (templates_lua, templates_found, templates_emitted) = generate_template_stubs(&template_branches, &declared_classes);
+    let (templates_lua, templates_found, templates_emitted, template_onload_members) =
+        generate_template_stubs(&template_branches, &declared_classes);
     log::info!("  FrameXML templates: {templates_found} found, {templates_emitted} emitted");
     if templates_found < MIN_FRAMEXML_TEMPLATES {
         source_errors.push(format!("FrameXML templates: {templates_found} (expected ≥{MIN_FRAMEXML_TEMPLATES})"));
@@ -765,6 +766,7 @@ pub fn regenerate_stubs() {
         // populated by C++ (e.g. TooltipUtil.SurfaceArgs) that are absent from
         // APIDocumentationGenerated and vendor stubs.
         log::info!("Discovering runtime fields from wow-ui-source...");
+        let onload_fields = undeclared_members(&template_onload_members, &pre_globals_arc);
         let discovered_fields = discover_runtime_fields(
             &retail_ui_dir,
             pre_globals_arc,
@@ -778,7 +780,7 @@ pub fn regenerate_stubs() {
         std::fs::write(&inferred_returns_path, &inferred_returns_lua).unwrap();
         override_set.insert(inferred_returns_path);
 
-        let inferred_fields_lua = generate_inferred_field_stubs(&discovered_fields);
+        let inferred_fields_lua = generate_inferred_field_stubs(&discovered_fields, &onload_fields);
         let inferred_fields_path = gen_dir.join("InferredFields.lua");
         std::fs::write(&inferred_fields_path, &inferred_fields_lua).unwrap();
         // NOT added to override_set: InferredFields uses partial `@class`

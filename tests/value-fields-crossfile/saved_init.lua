@@ -36,7 +36,8 @@ CreateFrame("Frame"):SetScript("OnEvent", function()
     UpdateKeys()
 end)
 
--- A function body's write makes no table of a global assigned a call.
+-- A function body's write makes no table of a global assigned a call: other
+-- files read the call's type, with the field.
 MAIN_FRAME = CreateFrame("Frame")
 local function AddChild()
     MAIN_FRAME.child = CreateFrame("Button")

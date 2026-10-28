@@ -141,16 +141,19 @@ struct TemplateClass {
 /// highest priority first. A template defined more than once (on several branches,
 /// or in several flavors' directories of one) gets the union of its parents and
 /// fields, the first definition giving a field's type. Returns the stub text, the
-/// number of distinct templates found, and the number emitted.
+/// number of distinct templates found, the number emitted, and every template's
+/// [`OnLoad members`](template_onload_members), declared or not.
 pub(in crate::stub_gen) fn generate_template_stubs(
     branches: &[(&str, &Path)],
     declared_classes: &HashSet<String>,
-) -> (String, usize, usize) {
+) -> (String, usize, usize, HashMap<String, Vec<String>>) {
     use rayon::prelude::*;
 
     let mut found: HashSet<String> = HashSet::default();
     // name → (class, link to its first definition)
     let mut templates: HashMap<String, (TemplateClass, String)> = HashMap::default();
+    // name → (its OnLoad handlers, its parents, whose methods `method=` handlers run)
+    let mut onload: HashMap<String, (crate::annotations::OnLoadScripts, Vec<String>)> = HashMap::default();
     for &(branch, clone_dir) in branches {
         let mut xml_files = Vec::new();
         collect_xml_paths(&clone_dir.join("Interface"), &mut xml_files);
@@ -161,6 +164,18 @@ pub(in crate::stub_gen) fn generate_template_stubs(
             .collect();
         for (class, source) in per_file.into_iter().flatten() {
             found.insert(class.name.clone());
+            if class.onload != crate::annotations::OnLoadScripts::default() {
+                let (scripts, parents) = onload.entry(class.name.clone()).or_default();
+                let merge = |into: &mut Vec<String>, from: &[String]| {
+                    for name in from {
+                        if !into.contains(name) { into.push(name.clone()); }
+                    }
+                };
+                merge(&mut scripts.fields, &class.onload.fields);
+                merge(&mut scripts.functions, &class.onload.functions);
+                merge(&mut scripts.methods, &class.onload.methods);
+                merge(parents, &class.parents);
+            }
             // A virtual font is a global font object, typed `Font` as one.
             if declared_classes.contains(&class.name) || class.parents.first().is_some_and(|p| p == "Font") {
                 continue;
@@ -198,7 +213,130 @@ pub(in crate::stub_gen) fn generate_template_stubs(
         out.push(format!("---[Source]({source})"));
         push_template_class(&mut out, name, template, &mut taken);
     }
-    (out.join("\n"), found.len(), names.len())
+    let members = template_onload_members(branches, &onload);
+    (out.join("\n"), found.len(), names.len(), members)
+}
+
+/// The members each template's `<OnLoad>` handler assigns on the frame: its
+/// scripts' own (`self.x = ...`, a child's `self:GetParent().x = ...`) and those of
+/// the global functions (`function="F"`, or `F(self)` in a script) and mixin
+/// methods (`method="M"`, defined `function Mixin:M()`) it runs on the frame, which
+/// the template's XML can't declare.
+fn template_onload_members(
+    branches: &[(&str, &Path)],
+    onload: &HashMap<String, (crate::annotations::OnLoadScripts, Vec<String>)>,
+) -> HashMap<String, Vec<String>> {
+    let mut wanted: HashSet<String> = HashSet::default();
+    for (scripts, parents) in onload.values() {
+        wanted.extend(scripts.functions.iter().cloned());
+        for method in &scripts.methods {
+            wanted.extend(parents.iter().map(|parent| format!("{parent}:{method}")));
+        }
+    }
+    let assigned = function_param_members(branches, &wanted);
+    onload.iter().filter_map(|(template, (scripts, parents))| {
+        let mut members = scripts.fields.clone();
+        let methods = scripts.methods.iter()
+            .flat_map(|method| parents.iter().map(move |parent| format!("{parent}:{method}")));
+        for function in scripts.functions.iter().cloned().chain(methods) {
+            for field in assigned.get(&function).into_iter().flatten() {
+                if !members.contains(field) { members.push(field.clone()); }
+            }
+        }
+        (!members.is_empty()).then(|| (template.clone(), members))
+    }).collect()
+}
+
+/// The fields each function in `names` — a global `F`, or a method `P:M` — assigns
+/// on its first parameter (`function F(self) self.x = ... end`; a method's implicit
+/// `self`), from its wow-ui-source definitions on every branch. A nested function,
+/// whose parameters may shadow it, is skipped.
+fn function_param_members(branches: &[(&str, &Path)], names: &HashSet<String>) -> HashMap<String, Vec<String>> {
+    use crate::syntax::syntax_kind::SyntaxKind;
+    use crate::syntax::{NodeOrToken, SyntaxNode};
+    use rayon::prelude::*;
+    if names.is_empty() {
+        return HashMap::default();
+    }
+    let definition = regex_lite::Regex::new(r"(?m)^function\s+([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?)\s*\(").unwrap();
+    let mut lua_files = Vec::new();
+    for &(_, clone_dir) in branches {
+        collect_lua_paths(&clone_dir.join("Interface"), &mut lua_files);
+    }
+    lua_files.sort();
+    let per_file: Vec<Vec<(String, Vec<String>)>> = lua_files.par_iter().map(|path| {
+        let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+        if !definition.captures_iter(&text).any(|c| names.contains(&c[1])) {
+            return Vec::new();
+        }
+        let tree = crate::syntax::parser::parse(&text);
+        let root = SyntaxNode::new_root(&tree);
+        let names_of = |n: &SyntaxNode<'_>| -> Vec<String> {
+            n.children_with_tokens().filter_map(|c| match c {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
+                _ => None,
+            }).collect()
+        };
+        let mut out = Vec::new();
+        for function in root.children().filter(|n| n.kind() == SyntaxKind::FunctionDefinition) {
+            let tokens = |n: &SyntaxNode<'_>| -> Vec<SyntaxKind> {
+                n.children_with_tokens().filter_map(|c| match c {
+                    NodeOrToken::Token(t) if !t.kind().is_trivia() => Some(t.kind()),
+                    _ => None,
+                }).collect()
+            };
+            if tokens(&function).contains(&SyntaxKind::LocalKeyword) { continue; }
+            // `function F(p, ...)`, or a method `function P:M(...)`, whose name is a
+            // `P:M` access and whose first parameter is the implicit `self`.
+            let method = function.children().find(|c| c.kind() == SyntaxKind::DotAccess);
+            let (name, param) = match (names_of(&function).as_slice(), method) {
+                ([name], None) => {
+                    let Some(param) = function.children().find(|c| c.kind() == SyntaxKind::ParameterList)
+                        .and_then(|params| params.children_with_tokens().find_map(|c| match c {
+                            NodeOrToken::Token(t) if t.kind() == SyntaxKind::Parameter => Some(t.text().to_string()),
+                            _ => None,
+                        })) else { continue };
+                    (name.clone(), param)
+                }
+                ([], Some(access)) if tokens(&access) == [SyntaxKind::Name, SyntaxKind::Colon, SyntaxKind::Name] => {
+                    let [owner, method] = names_of(&access).try_into().unwrap_or_default();
+                    (format!("{owner}:{method}"), "self".to_string())
+                }
+                _ => continue,
+            };
+            if !names.contains(&name) { continue; }
+            let Some(body) = function.children().find(|c| c.kind() == SyntaxKind::Block) else { continue };
+            let mut fields = Vec::new();
+            let mut stack = vec![body];
+            while let Some(node) = stack.pop() {
+                if node.kind() == SyntaxKind::VariableList {
+                    for target in node.children().filter(|n| n.kind() == SyntaxKind::DotAccess) {
+                        let receiver = target.children().next()
+                            .filter(|r| r.kind() == SyntaxKind::NameRef && r.first_token().is_some_and(|t| t.text() == param));
+                        if let (Some(_), Some(field)) = (receiver, names_of(&target).pop())
+                            && !fields.contains(&field)
+                        {
+                            fields.push(field);
+                        }
+                    }
+                }
+                let children: Vec<SyntaxNode<'_>> = node.children()
+                    .filter(|c| c.kind() != SyntaxKind::FunctionDefinition)
+                    .collect();
+                stack.extend(children.into_iter().rev());
+            }
+            out.push((name, fields));
+        }
+        out
+    }).collect();
+    let mut members: HashMap<String, Vec<String>> = HashMap::default();
+    for (name, fields) in per_file.into_iter().flatten() {
+        let entry = members.entry(name).or_default();
+        for field in fields {
+            if !entry.contains(&field) { entry.push(field); }
+        }
+    }
+    members
 }
 
 

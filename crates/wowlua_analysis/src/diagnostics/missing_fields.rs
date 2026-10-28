@@ -230,7 +230,13 @@ impl DiagnosticPass for MissingFields {
         // (covers nested constructors in table<K,V>, function args, bracket assignments)
         for (&ctor_idx, class_indices) in &analysis.ir.tc_expected_class {
             if ctor_idx.is_external() { continue; }
-            check_missing_fields_union(analysis, ctor_idx, class_indices, diags);
+            if analysis.ir.tc_intersection_constructors.contains(&ctor_idx) {
+                for &class_idx in class_indices {
+                    check_missing_fields(analysis, ctor_idx, class_idx, diags);
+                }
+            } else {
+                check_missing_fields_union(analysis, ctor_idx, class_indices, diags);
+            }
         }
     }
 }

@@ -1,10 +1,9 @@
 -- Cross-file frame-factory return test: definitions
 -- A factory function that creates a Frame and injects extra fields on the
 -- instance, then returns it. The injected fields (`DropDown`, `Label`) are a
--- per-file overlay on the external `Frame` class and can't be carried across
--- files, so the cross-file lift must treat the return as a concrete instance
--- that may hold untracked runtime fields — otherwise accessing the injected
--- fields at the call site would falsely report `undefined-field`.
+-- per-file overlay on the external `Frame` class, so the cross-file lift carries
+-- them on the returned instance (`Frame & { DropDown: … }`), where they hover,
+-- complete and go to their definition.
 -- Requires: --with-stubs
 
 local addonName, ns = ...
@@ -55,3 +54,34 @@ function ns.Components.GetAliased(parent)
     f2.Aliased = CreateFrame("Frame", nil, parent)
     return frame
 end
+
+-- A frame created from a template carries what is written through it too.
+function ns.Components.GetTemplated(parent)
+    local frame = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    frame.Caption = "Title"
+    function frame:Refresh() end
+    return frame
+end
+
+-- So does one a local helper of this file builds.
+local function BuildDialog(parent)
+    local dialog = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    function dialog:Update() end
+    return dialog
+end
+
+function ns.Components.GetDialog(parent)
+    local dialog = BuildDialog(parent)
+    return dialog
+end
+
+-- A named frame's global is the frame the local its call initializes holds: with
+-- what is written through the local, or the class the local is declared.
+local named = CreateFrame("Frame", "FactoryNamedFrame", UIParent, "BackdropTemplate")
+named.state = 1
+function named:Open() end
+
+---@class FactoryOptionsFrame : Frame
+---@field title string
+local options = CreateFrame("Frame", "FactoryOptionsGlobal", UIParent, "BackdropTemplate")
+function options:Refresh() end

@@ -254,3 +254,32 @@ function HandlerFrame_OnLoad(self) end
 -- Handler functions NOT referenced in XML should still trigger create-global
 function UnreferencedHandler_OnClick(self) end
 -- ^ diag: create-global
+
+-- An inline OnLoad script's members exist on the frame; a typo doesn't.
+---@type ScriptedLoadTemplate
+local scripted = CreateFrame("Button", nil, UIParent, "ScriptedLoadTemplate")
+local scriptedLabel, scriptedToggle = scripted.label, scripted.toggle
+local scriptedTypo = scripted.labl
+--                            ^ diag: undefined-field
+
+-- A handler the build can't follow (`function=`, or a function the script runs
+-- on the frame) may add any member.
+---@type HandlerTestFrame
+local handled = CreateFrame("Frame", nil, UIParent, "HandlerTestFrame")
+local fromHandler = handled.anything
+---@type CalledLoadTemplate
+local called = CreateFrame("Frame", nil, UIParent, "CalledLoadTemplate")
+local fromCall = called.anything
+
+-- The elements of a parentArray carry every element's KeyValues, a global one
+-- as `any`.
+---@type ArrayKeyValuesTemplate
+local holder = CreateFrame("Frame", nil, UIParent, "ArrayKeyValuesTemplate")
+for _, entry in ipairs(holder.Entries) do
+    local entryID = entry.entryID
+    --    ^ hover: (local) entryID: number
+    local entryCaption = entry.caption
+    --    ^ hover: (local) entryCaption: string
+end
+local firstClassID = holder.First.classID
+--    ^ hover: (local) firstClassID: any

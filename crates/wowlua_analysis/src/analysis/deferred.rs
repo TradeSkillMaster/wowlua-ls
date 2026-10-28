@@ -35,8 +35,7 @@
 //! returned instance's own fields, each type resolved and lifted to ext space,
 //! and each field's definition location carried for go-to-definition). The shape
 //! makes the injected fields resolve, complete, hover, and go-to-define
-//! cross-file, and the intersection marks the value as a concrete instance so
-//! `undefined-field` doesn't fire on them downstream.
+//! cross-file, so `undefined-field` doesn't fire on them downstream.
 //!
 //! The same lazy-harvest mechanism upgrades a cross-file `@class` *field* whose
 //! coarse scan type decayed to a **placeholder** — either `any` (a runtime
@@ -1552,10 +1551,12 @@ fn harvest_sigs(
                     let returns = result
                         .inferred_return_types(local)
                         .into_iter()
-                        .map(|t| {
+                        .enumerate()
+                        .map(|(slot, t)| {
                             let lifted = lift_local_type_to_ext_with(&t, ir, ext, result, path, globals);
-                            if contains_any(&lifted) { ValueType::Any }
-                            else { wrap_overlay_shape(&t, lifted, result, ext, &local.rets, path, globals) }
+                            if contains_any(&lifted) { return ValueType::Any; }
+                            let holders = returned_holders(result, FunctionIndex(local_idx), slot);
+                            wrap_overlay_shape(&t, lifted, result, ext, &holders, path, globals)
                         })
                         .collect();
                     // Lift the engine-synthesized overloads (precise correlated
@@ -1596,10 +1597,28 @@ fn harvest_call_globals(
     let mut harvested: HashMap<SymbolIndex, Option<ValueType>> = HashMap::default();
     for &sym_idx in ext.deferred_call_globals_by_path.get(path).into_iter().flatten() {
         let Some(dcg) = ext.deferred_call_globals.get(&sym_idx) else { continue };
-        let resolved = call_type_at(result, root, dcg.call_offset, |call| {
+        let resolved = call_at(result, root, dcg.call_offset, |call| {
             call_defines_global(call, dcg, ext.creates_global_specs())
         })
-        .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, path, globals))
+        .and_then(|call| {
+            let narrowed = ir.narrowed_calls.get(&dcg.call_offset).copied().unwrap_or(call);
+            let mut ty = result.resolved_expr_cache_get(narrowed).cloned()?;
+            // The global is the object the local the call initializes holds: typed
+            // as that local is declared (`---@class Panel: Frame`), and carrying
+            // what the file writes through it (`function panel:Refresh()`).
+            let mut holders = HashSet::default();
+            if let Some((local, ver)) = local_initialized_by(ir, call) {
+                let version = &ir.sym(local).versions[ver];
+                if version.original_type_source.is_some()
+                    && let Some(declared) = &version.resolved_type
+                {
+                    ty = declared.clone();
+                }
+                holders.insert(local);
+            }
+            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, globals);
+            Some(wrap_overlay_shape(&ty, lifted, result, ext, &holders, path, globals))
+        })
         .filter(|t| !contains_any(t));
         harvested.insert(sym_idx, resolved);
     }
@@ -1642,6 +1661,18 @@ fn call_type_at(
     offset: u32,
     accepts: impl Fn(&crate::ast::FunctionCall<'_>) -> bool,
 ) -> Option<ValueType> {
+    let call = call_at(result, root, offset, accepts)?;
+    let narrowed = result.ir.narrowed_calls.get(&offset).copied().unwrap_or(call);
+    result.resolved_expr_cache_get(narrowed).cloned()
+}
+
+/// The call expression [`call_type_at`] reads the type of.
+fn call_at(
+    result: &crate::analysis::AnalysisResult,
+    root: crate::syntax::SyntaxNode<'_>,
+    offset: u32,
+    accepts: impl Fn(&crate::ast::FunctionCall<'_>) -> bool,
+) -> Option<ExprId> {
     use crate::ast::{AstNode, FunctionCall};
     let token = root.token_at_offset(crate::syntax::TextSize::from(offset)).right_biased()?;
     result
@@ -1657,10 +1688,17 @@ fn call_type_at(
                 (u32::from(r.start()), u32::from(r.end())) == range && accepts(&call)
             })
         })
-        .and_then(|(eid, _)| {
-            let narrowed = result.ir.narrowed_calls.get(&offset).copied().unwrap_or(eid);
-            result.resolved_expr_cache_get(narrowed).cloned()
-        })
+        .map(|(eid, _)| eid)
+}
+
+/// The local a `local x = <call>` statement binds to the value of `call`, with
+/// the version it initializes.
+fn local_initialized_by(ir: &Ir, call: ExprId) -> Option<(SymbolIndex, usize)> {
+    ir.local_symbols().find_map(|(sym_idx, sym)| {
+        sym.versions.iter()
+            .position(|v| v.original_type_source.or(v.type_source) == Some(call))
+            .map(|ver| (sym_idx, ver))
+    })
 }
 
 /// Whether `call` still defines `dcg`'s global — creates it, is the value
@@ -1994,27 +2032,35 @@ impl CarriedFields {
     }
 
     /// `ty & { field: T, ... }` for the carried fields the external class
-    /// instance `ty` doesn't already declare — the class member of the
-    /// intersection handles those, and overriding one could mask an inherited
-    /// type. An instance already carrying its own fields (`Class & { ... }`, see
-    /// `lift_instance`) gets the ones it lacks added to them. `ty` unchanged when
-    /// none remain or it isn't an external instance.
+    /// instance `ty` doesn't already declare — its class members handle those,
+    /// and overriding one could mask an inherited type. `ty` is a class or an
+    /// intersection of classes (`Frame & Template`); one already carrying its own
+    /// fields (`Class & { ... }`, see `lift_instance`) gets the ones it lacks added
+    /// to them. `ty` unchanged when none remain or it isn't an external instance.
     fn onto(self, ty: ValueType, ext: &PreResolvedGlobals) -> ValueType {
-        let (idx, own) = match &ty {
-            ValueType::Table(Some(idx)) => (*idx, None),
-            ValueType::Intersection(members) => match members.as_slice() {
-                [ValueType::Table(Some(idx)), ValueType::TableShape(own)] if own.value_type.is_none() => (*idx, Some(own)),
-                _ => return ty,
-            },
+        let members: &[ValueType] = match &ty {
+            ValueType::Table(Some(_)) => std::slice::from_ref(&ty),
+            ValueType::Intersection(members) => members,
             _ => return ty,
         };
-        if !idx.is_external() {
+        let mut classes: Vec<TableIndex> = Vec::new();
+        let mut own: Option<&crate::types::TableShape> = None;
+        for member in members {
+            match member {
+                ValueType::Table(Some(idx)) if idx.is_external() => classes.push(*idx),
+                ValueType::TableShape(shape) if shape.value_type.is_none() && own.is_none() => own = Some(shape),
+                _ => return ty,
+            }
+        }
+        if classes.is_empty() {
             return ty;
         }
         let mut fields: Vec<(String, ValueType)> = Vec::new();
         let mut field_defs: Vec<(String, crate::types::ExternalLocation)> = Vec::new();
         for (name, (mut tys, loc)) in self.0 {
-            if ext_class_declares(ext, idx, &name) || own.is_some_and(|own| own.field(&name).is_some()) {
+            if classes.iter().any(|&idx| ext_class_declares(ext, idx, &name))
+                || own.is_some_and(|own| own.field(&name).is_some())
+            {
                 continue;
             }
             let field_ty = if tys.len() == 1 { tys.pop().unwrap() } else { ValueType::make_union(tys) };
@@ -2029,7 +2075,9 @@ impl CarriedFields {
             field_defs.extend(own.field_defs.iter().cloned());
         }
         let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
-        ValueType::Intersection(vec![ValueType::Table(Some(idx)), ValueType::TableShape(Box::new(shape))])
+        let mut members: Vec<ValueType> = classes.into_iter().map(|idx| ValueType::Table(Some(idx))).collect();
+        members.push(ValueType::TableShape(Box::new(shape)));
+        ValueType::Intersection(members)
     }
 }
 
@@ -2195,76 +2243,125 @@ fn resolve_alias_root(ir: &Ir, mut sym: SymbolIndex) -> SymbolIndex {
     sym
 }
 
+/// The locals the value a function returns in `slot` may be held in, each
+/// resolved to its alias root ([`resolve_alias_root`]): the variable a `return`
+/// statement names and, through a call to a function of this file (returned
+/// directly or initializing such a local), the locals that function returns, so a
+/// member written on a frame inside a local helper reaches the factory returning
+/// its result.
+fn returned_holders(result: &crate::analysis::AnalysisResult, func: FunctionIndex, slot: usize) -> HashSet<SymbolIndex> {
+    let mut holders = HashSet::default();
+    collect_returned_holders(result, func, slot, &mut holders, &mut HashSet::default());
+    holders
+}
+
+fn collect_returned_holders(
+    result: &crate::analysis::AnalysisResult,
+    func: FunctionIndex,
+    slot: usize,
+    holders: &mut HashSet<SymbolIndex>,
+    visited: &mut HashSet<FunctionIndex>,
+) {
+    use crate::types::SymbolIdentifier;
+    if !visited.insert(func) {
+        return;
+    }
+    let ir = &result.ir;
+    for &ret in &ir.func(func).rets {
+        let sym = ir.sym(ret);
+        if !matches!(sym.id, SymbolIdentifier::FunctionRet(_, s) if s == slot) {
+            continue;
+        }
+        // One version per `return` statement; `@as` keeps the uncast value.
+        for v in &sym.versions {
+            if let Some(src) = v.original_type_source.or(v.type_source) {
+                collect_value_holders(result, src, holders, visited);
+            }
+        }
+    }
+}
+
+/// The holders of the value `expr` evaluates to (see [`returned_holders`]).
+fn collect_value_holders(
+    result: &crate::analysis::AnalysisResult,
+    expr: ExprId,
+    holders: &mut HashSet<SymbolIndex>,
+    visited: &mut HashSet<FunctionIndex>,
+) {
+    let ir = &result.ir;
+    let mut source = Some(expr);
+    if let Some(root) = ir.find_root_symbol(expr).map(|s| resolve_alias_root(ir, s)) {
+        holders.insert(root);
+        source = (!root.is_external()).then(|| ir.sym(root).versions.first()).flatten()
+            .and_then(|v| v.original_type_source.or(v.type_source));
+    }
+    let Some(mut e) = source else { return };
+    while let Expr::Grouped(inner) | Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::AssignNarrow { inner, .. } = ir.expr(e) {
+        e = *inner;
+    }
+    if let Expr::FunctionCall { func, ret_index, .. } = ir.expr(e)
+        && let Some(ValueType::Function(Some(callee))) = result.resolve_expr_type(*func)
+        && !callee.is_external()
+    {
+        collect_returned_holders(result, callee, *ret_index, holders, visited);
+    }
+}
+
 /// When a deferred function returns an external class instance that had fields
 /// injected on it (`frame.DropDown = ...`, `function frame:SetValue()`), carry
 /// those fields cross-file by intersecting the lifted class with an inline
 /// `TableShape` of the injected fields. Each field's type is resolved at its own
 /// assignment site and lifted to ext space, under the [`CarriedFields`] site
 /// policy. The shape also carries each field's source location (`field_defs`)
-/// so go-to-definition on the injected field jumps back here. `orig` is the pre-lift return type; `lifted` is its
-/// ext-space lift (a `Table(Some(ext_class))`); `ret_syms` are the function's
-/// return slot symbols and `def_path` its defining file. Returns `lifted`
-/// unchanged when there are no carryable fields.
+/// so go-to-definition on the injected field jumps back here. `orig` is the
+/// pre-lift type — an external class, or an intersection with one (a frame
+/// created from a template, `Frame & Template`); `lifted` is its ext-space lift;
+/// `holders` are the locals the value is held in ([`returned_holders`]) and
+/// `def_path` its defining file. Returns `lifted` unchanged when there are no
+/// carryable fields.
 ///
 /// **Per-*instance* narrowing.** The fields come from the per-assignment
-/// `field_assignments` log, filtered to those written to one of *this* factory's
-/// returned variables (`return holder` → the `holder` local, recovered from each
-/// `FunctionRet` slot's type source). This is deliberately *not* read from
-/// `ir.overlay_fields`, which is keyed by the shared external class index and so
-/// aggregates every same-classed instance's fields — and merged types — across
-/// the whole file (e.g. every `CreateFrame("Frame")` factory's fields landing on
-/// one `Frame` overlay). Per-instance attribution gives the returned value only
-/// its own fields, each with its own assignment's precise type.
+/// `field_assignments` log, filtered to those written through one of the
+/// holders. This is deliberately *not* read from `ir.overlay_fields`, which is
+/// keyed by the shared external class index and so aggregates every same-classed
+/// instance's fields — and merged types — across the whole file (e.g. every
+/// `CreateFrame("Frame")` factory's fields landing on one `Frame` overlay).
+/// Per-instance attribution gives the value only its own fields, each with its
+/// own assignment's precise type.
 fn wrap_overlay_shape(
     orig: &ValueType,
     lifted: ValueType,
     result: &crate::analysis::AnalysisResult,
     ext: &PreResolvedGlobals,
-    ret_syms: &[SymbolIndex],
+    holders: &HashSet<SymbolIndex>,
     def_path: &Path,
     globals: &GlobalTables,
 ) -> ValueType {
-    let ValueType::Table(Some(idx)) = orig else { return lifted };
-    if !idx.is_external() {
+    // The tables a write through the value lands on: its class, or the members of
+    // its intersection (an external class's overlay takes a frame's writes).
+    let tables: Vec<TableIndex> = match orig {
+        ValueType::Table(Some(idx)) => vec![*idx],
+        ValueType::Intersection(members) => members.iter().filter_map(|m| match m {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            _ => None,
+        }).collect(),
+        _ => return lifted,
+    };
+    if holders.is_empty() || !tables.iter().any(|idx| idx.is_external()) {
         return lifted;
     }
     let ir = &result.ir;
 
-    // Narrow to the *returned* instance. The per-file overlay (`overlay_fields`)
-    // is keyed by the shared external class index, so it aggregates every
-    // same-classed instance's injected fields — and types — across the whole file
-    // (e.g. every `CreateFrame("Frame")` factory's fields land on one `Frame`
-    // overlay). Instead, read the per-assignment `field_assignments` log and keep
-    // only the fields written to one of *this* factory's returned symbols
-    // (`return holder`). Each field's type comes from its own assignment site
-    // (`resolve_expr_type`), not the merged overlay union, so a method like
-    // `SetValue` defined differently in several factories shows only this one's
-    // signature. The first site provides the go-to-definition location.
-    // `rets` holds synthetic `FunctionRet` slot symbols; map each back to the
-    // *returned variable* (`return frame` → the `frame` local) via its type
-    // source, then to that variable's ultimate alias root (see
-    // `resolve_alias_root`), so it can be matched against the field assignments'
-    // receivers. A return with no single root symbol (e.g. `return CreateFrame(...)`)
-    // yields nothing, leaving the value its bare class.
-    let ret_var_syms: HashSet<SymbolIndex> = ret_syms
-        .iter()
-        .filter_map(|&rs| ir.sym(rs).versions.first().and_then(|v| v.type_source))
-        .filter_map(|src| ir.find_root_symbol(src))
-        .map(|s| resolve_alias_root(ir, s))
-        .collect();
-    if ret_var_syms.is_empty() {
-        return lifted;
-    }
-
+    // Each field's type comes from its own assignment site (`resolve_expr_type`),
+    // not the merged overlay union, so a method like `SetValue` defined
+    // differently in several factories shows only this one's signature. The first
+    // site provides the go-to-definition location. Receivers are matched through
+    // simple local aliases on both sides (`local f2 = frame; f2.X = …`).
     let mut carried = CarriedFields::default();
     for fa in &ir.field_assignments {
-        if fa.table_idx != *idx {
-            continue;
-        }
-        // Match the field's receiver against a returned instance, resolving simple
-        // local aliases on both sides (`local f2 = frame; f2.X = …`) so a field
-        // injected through an alias of the returned frame is still carried.
-        if !fa.root_symbol.is_some_and(|s| ret_var_syms.contains(&resolve_alias_root(ir, s))) {
+        if !tables.contains(&fa.table_idx)
+            || !fa.root_symbol.is_some_and(|s| holders.contains(&resolve_alias_root(ir, s)))
+        {
             continue;
         }
         let Some(ty) = result.resolve_expr_type(fa.actual_expr) else { continue };

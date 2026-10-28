@@ -1523,11 +1523,18 @@ pub struct TableInfo {
     /// dynamic, runtime-field-receiving instance (it gets fields/children attached
     /// at runtime — e.g. via an XML template's `parentKey` children or `Mixin()`
     /// at frame creation), so `undefined-field` treats it permissively, exactly
-    /// like a top-level `Frame & Template` intersection. Set during the
+    /// like an inferred top-level `Frame & Template` intersection. Set during the
     /// cross-file mixin-parent inheritance pass; runtime-only (`#[serde(skip)]`),
     /// so no blob version bump.
     #[serde(skip)]
     pub open_mixin: bool,
+    /// True for an anonymous table materialized from a `{field: type}` literal in
+    /// one of the analyzed file's own annotations, which declares its whole field
+    /// set the way a `@class` does, so `undefined-field` checks it. Never set on a
+    /// table literal a scan synthesized from a constructor. Runtime-only
+    /// (`#[serde(skip)]`), so no blob version bump.
+    #[serde(skip)]
+    pub declared_shape: bool,
 }
 
 impl TableInfo {

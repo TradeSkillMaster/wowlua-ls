@@ -63,3 +63,26 @@ local configured = ns.Components.GetConfigured(nil)
 --    ^ hover: (local) configured: Frame & { Config: { height: number, width: number } } {
 local cfg = configured.Config
 --                     ^ hover: (field) Config: { height: number, width: number }  def: external
+
+-- A factory returning a frame created from a template carries what it writes.
+local templated = ns.Components.GetTemplated(nil)
+templated:Refresh()
+--        ^ def: external
+templated:SetBackdrop(nil)
+local caption = templated.Caption
+--    ^ hover: (local) caption: string
+
+-- ... as does one returning a local helper's frame.
+local dialog = ns.Components.GetDialog(nil)
+dialog:Update()
+--     ^ def: external
+
+-- A named frame's global.
+FactoryNamedFrame:Open()
+--                ^ def: external
+_G["FactoryNamedFrame"]:Open()
+local namedState = FactoryNamedFrame.state
+--    ^ hover: (local) namedState: number
+FactoryOptionsGlobal:Refresh()
+local optionsTitle = FactoryOptionsGlobal.title
+--    ^ hover: (local) optionsTitle: string

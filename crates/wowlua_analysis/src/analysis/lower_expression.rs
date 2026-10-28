@@ -22,7 +22,7 @@ impl<'a> Analysis<'a> {
     pub(super) fn lower_expression_with_original(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> (ExprId, Option<ExprId>) {
         let expr_id = self.lower_expression_inner(expression, scope_idx);
         if let Some(as_type) = Self::extract_inline_as(expression.syntax())
-            && let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
+            && let Some(vt) = self.resolve_declared_annotation_gen(&as_type, &[]) {
                 return (self.ir.push_expr(Expr::Literal(vt)), Some(expr_id));
             }
         (expr_id, None)
@@ -745,7 +745,7 @@ impl<'a> Analysis<'a> {
                             let annotation_type_raw = inline_type.clone();
                             let inline_is_lateinit = annotation_type_raw.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
                             let annotation = inline_type
-                                .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
+                                .and_then(|at| self.resolve_declared_annotation_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
                             // Widen a bare boolean-literal field value to the generic
                             // `boolean`, mirroring how numeric/string literals are already
@@ -1425,7 +1425,7 @@ impl<'a> Analysis<'a> {
 
             // Check for @as annotation on the identifier
             if let Some(as_type) = Self::extract_inline_as(ident.syntax())
-                && let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
+                && let Some(vt) = self.resolve_declared_annotation_gen(&as_type, &[]) {
                     current = self.ir.push_expr(Expr::Literal(vt));
                 }
 

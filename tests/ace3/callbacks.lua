@@ -22,6 +22,16 @@ Addon:ScheduleTimer("OnTypo", 1)
 
 local db = LibStub("AceDB-3.0"):New("MyTimerAddonDB")
 
+-- The database object's own fields: its callback registry, and the parent and
+-- namespaces a namespace links through.
+local dbCallbacks = db.callbacks
+--    ^ hover: (local) dbCallbacks: CallbackHandlerRegistry {
+db.callbacks:Fire("OnProfileChanged", db, "Default")
+local dbParent = db.parent
+--    ^ hover: (local) dbParent: AceDBObject-3.0?
+local dbChildren = db.children
+--    ^ hover: (local) dbChildren: table<string, AceDBObject-3.0>?
+
 db.RegisterCallback(Addon, "OnProfileChanged", "OnTick")
 --                                               ^ def: local 12:10
 db.RegisterCallback(Addon, "OnProfileReset")

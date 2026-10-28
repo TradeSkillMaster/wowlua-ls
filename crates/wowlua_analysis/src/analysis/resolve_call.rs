@@ -868,10 +868,10 @@ impl<'a> Analysis<'a> {
             // the mixin's own fields and producing false `undefined-field` on the
             // object's pre-existing methods. As a last resort, bind a still-unbound
             // narrowed generic to `any` so the result stays a top-level intersection
-            // (which `undefined-field` treats as a concrete instance carrying
-            // untracked runtime fields). Runs *after* the constraint fallback so a
-            // constrained narrowed generic (`@generic T: Frame`) keeps its more
-            // precise bound (`Frame & ...M`) rather than degrading to `any & ...M`.
+            // (whose `any` member keeps `undefined-field` from checking it). Runs
+            // *after* the constraint fallback so a constrained narrowed generic
+            // (`@generic T: Frame`) keeps its more precise bound (`Frame & ...M`)
+            // rather than degrading to `any & ...M`.
             if let Some(narrow_idx) = self.func(func_idx).narrows_arg
                 && let Some(ValueType::TypeVariable(name)) = self.ir
                     .param_decl_type(self.ir.func(func_idx), (narrow_idx - 1) + self_offset).cloned()
@@ -4888,6 +4888,7 @@ impl<'a> Analysis<'a> {
     pub(super) fn infer_table_constructor_field_params(&mut self) -> bool {
         // Phase 1: Collect (class_table_idx, constructor_table_idx) pairs
         let mut tc_pairs: Vec<(TableIndex, TableIndex)> = Vec::new();
+        let mut intersection_ctors: Vec<TableIndex> = Vec::new();
 
         // Case 1: @type X on a local variable
         for (&sym_idx, expected_type) in &self.ir.symbol_type_annotations {
@@ -4902,6 +4903,9 @@ impl<'a> Analysis<'a> {
                 if tc_expr.is_external() { continue; }
                 if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(tc_expr) {
                     if ctor_idx.is_external() { continue; }
+                    if expects_intersection(expected_type) {
+                        intersection_ctors.push(ctor_idx);
+                    }
                     for &class_idx in &class_indices {
                         tc_pairs.push((class_idx, ctor_idx));
                     }
@@ -4923,6 +4927,9 @@ impl<'a> Analysis<'a> {
                     // of the expected class (methods required), not just match its
                     // data fields. See `Ir::tc_arg_constructors`.
                     self.ir.tc_arg_constructors.insert(ctor_idx);
+                    if expects_intersection(expected_type) {
+                        intersection_ctors.push(ctor_idx);
+                    }
                     for &class_idx in &class_indices {
                         tc_pairs.push((class_idx, ctor_idx));
                     }
@@ -5061,6 +5068,7 @@ impl<'a> Analysis<'a> {
         for &(class_idx, ctor_idx) in &tc_pairs {
             self.ir.tc_expected_class.entry(ctor_idx).or_default().push(class_idx);
         }
+        self.ir.tc_intersection_constructors.extend(intersection_ctors);
         // Deduplicate class lists (same class can appear from multiple code paths)
         for classes in self.ir.tc_expected_class.values_mut() {
             classes.sort_unstable();
@@ -5460,12 +5468,25 @@ fn extract_table_idx_from_type(vt: &ValueType) -> Option<TableIndex> {
 fn extract_all_table_indices_from_type(vt: &ValueType, out: &mut Vec<TableIndex>) {
     match vt {
         ValueType::Table(Some(idx)) => out.push(*idx),
-        ValueType::Union(parts) => {
+        ValueType::Union(parts) | ValueType::Intersection(parts) => {
             for p in parts {
                 extract_all_table_indices_from_type(p, out);
             }
         }
         _ => {}
+    }
+}
+
+/// Whether a constructor expected to be `vt` must satisfy every class in it: `vt`
+/// is an intersection (or an optional one, `(A & B)?`).
+fn expects_intersection(vt: &ValueType) -> bool {
+    match vt {
+        ValueType::Intersection(_) => true,
+        ValueType::Union(parts) => {
+            let mut non_nil = parts.iter().filter(|p| !matches!(p, ValueType::Nil));
+            matches!((non_nil.next(), non_nil.next()), (Some(ValueType::Intersection(_)), None))
+        }
+        _ => false,
     }
 }
 

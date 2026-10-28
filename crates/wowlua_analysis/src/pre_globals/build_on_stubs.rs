@@ -12,7 +12,7 @@ use super::{
     resolve_funcall_chain, resolve_funcall_function, bound_call_return, resolve_field_ref_chain_from, GlobalLookupCtx,
     populate_table_fields, merge_table_fields, merge_ctor_fields, CtorFieldsCtx,
     FnBuildCtx, FnMeta, DeepPathCtx,
-    apply_mixin_parent_inheritance,
+    apply_mixin_parent_inheritance, mark_scripted_frames_open,
     call_field_writes, call_field_method_table, keep_call_field_methods, settle_instance_tables, shadows_instance_member, lookup_field_with_parents,
     ctor_function_fields, method_replaces_placeholder, merge_walked_fields,
 };
@@ -1910,6 +1910,7 @@ impl PreResolvedGlobals {
         super::shared::drop_untyped_ctor_entries_typed_by_ancestors(
             ws_classes, &ctx.classes, &mut ctx.tables, &ctx.declared_class_fields, &mut ctx.field_locations,
         );
+        mark_scripted_frames_open(&mut ctx.tables, &ctx.classes, ws_classes);
         ctx.settle_instance_tables();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals, &class_field_paths);

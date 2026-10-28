@@ -197,7 +197,7 @@ impl<'a> Analysis<'a> {
                 // `@return Name` / `fun(): Name` positions. Not registered in the
                 // regular aliases map because tuples don't have a single ValueType.
                 self.ir.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
-            } else if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
+            } else if let Some(vt) = self.resolve_declared_annotation(&alias.typ) {
                 if matches!(&vt, ValueType::Function(_)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
@@ -224,6 +224,9 @@ impl<'a> Analysis<'a> {
         for (class_i, class) in scan.classes.iter().enumerate() {
             let table_idx = class_table_indices[class_i];
             for (field_name, annotation_type, visibility) in &class.fields {
+                // A field the scan typed from its constructor value isn't declared.
+                let declared = class.declared_field_names.contains(field_name)
+                    || class.typed_ctor_entries.contains(field_name);
                 // Handle index signatures: @field [string] Type, @field [number] Type,
                 // or @field [K] V where K is a class type param
                 if field_name.starts_with('[') && field_name.ends_with(']') {
@@ -235,7 +238,7 @@ impl<'a> Analysis<'a> {
                     if is_string || is_number || is_type_param {
                         let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx.val()].class_type_params.iter()
                             .map(|tp: &String| (tp.clone(), None)).collect();
-                        if let Some(vt) = self.resolve_annotation_type_mut_gen(annotation_type, &gen_context) {
+                        if let Some(vt) = self.with_declared_shapes(declared, |a| a.resolve_annotation_type_mut_gen(annotation_type, &gen_context)) {
                             if is_string {
                                 self.ir.tables[table_idx.val()].key_type = Some(ValueType::String(None));
                             } else if is_number {
@@ -253,7 +256,7 @@ impl<'a> Analysis<'a> {
                 // the workspace build (`shared::populate_class_fields`).
                 let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx.val()].class_type_params.iter()
                     .map(|tp| (tp.clone(), None)).collect();
-                if let Some(vt) = self.resolve_annotation_type_mut_gen(annotation_type, &gen_context) {
+                if let Some(vt) = self.with_declared_shapes(declared, |a| a.resolve_annotation_type_mut_gen(annotation_type, &gen_context)) {
                     let annotation_text = match (&vt, annotation_type) {
                         (ValueType::Function(_), AnnotationType::Simple(s)) if s.starts_with("fun(") => Some(s.clone()),
                         (ValueType::Function(_), AnnotationType::Fun(..)) => Some(crate::annotations::format_annotation_type(annotation_type)),
@@ -1808,6 +1811,28 @@ impl<'a> Analysis<'a> {
         crate::annotations::resolve_annotation_type(at, generics, &self.ir.classes, &self.ir.aliases)
     }
 
+    /// [`Self::resolve_annotation_type_mut`] for an annotation the file's author
+    /// wrote: a `{field: type}` literal in it lists its table's whole field set, as
+    /// a `@class` does (`TableInfo::declared_shape`). Not for a type a scan
+    /// synthesized from a constructor, which lists only the fields it saw.
+    fn resolve_declared_annotation(&mut self, at: &AnnotationType) -> Option<ValueType> {
+        self.with_declared_shapes(true, |a| a.resolve_annotation_type_mut(at))
+    }
+
+    /// [`Self::resolve_declared_annotation`] with generic type parameters.
+    pub(super) fn resolve_declared_annotation_gen(&mut self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
+        self.with_declared_shapes(true, |a| a.resolve_annotation_type_mut_gen(at, generics))
+    }
+
+    /// Run `resolve` with the `{field: type}` literals it materializes declared or
+    /// not (see [`Self::resolve_declared_annotation`]).
+    fn with_declared_shapes<T>(&mut self, declared: bool, resolve: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.declaring_shapes, declared);
+        let out = resolve(self);
+        self.declaring_shapes = outer;
+        out
+    }
+
     /// The type an annotation gives a value in this file, wherever it is written
     /// (`@type`, `@param`, `@return`, `@field`, a `table<K, V>` class parent, an
     /// `@alias` body, …): creates the `TableInfo`/`Function` entries the structure
@@ -1919,7 +1944,7 @@ impl<'a> Analysis<'a> {
         generics: &[(String, Option<String>)],
     ) -> ValueType {
         let table_idx = TableIndex(self.ir.tables.len());
-        self.ir.tables.push(TableInfo::default());
+        self.ir.tables.push(TableInfo { declared_shape: self.declaring_shapes, ..TableInfo::default() });
         for (name, field_ann) in fields {
             if let Some(vt) = self.resolve_annotation_type_mut_gen(field_ann, generics) {
                 if crate::annotations::is_index_entry(name) {

@@ -828,6 +828,10 @@ pub struct Ir {
     /// the strict counterpart of the lenient `@type`/assignment contexts, which
     /// keep the construct-then-Mixin idiom working.
     pub tc_arg_constructors: crate::collections::HashSet<TableIndex>,
+    /// Subset of `tc_expected_class` keys expected to be an intersection
+    /// (`---@param v A & B`): the constructor must satisfy every class it lists,
+    /// not one of them as for a union.
+    pub tc_intersection_constructors: crate::collections::HashSet<TableIndex>,
     /// Table constructor → the `@class` table its fields were merged into
     /// (`---@class Foo` / `local Foo = { … }`), recorded by
     /// `merge_runtime_fields_into_class`. Find-references/rename use it to tie a
@@ -3716,6 +3720,9 @@ pub struct Analysis<'a> {
     // (if/elseif/else, loop body), so a write in it may not be the one a later
     // read sees. Set per statement alongside `current_func_id`.
     pub(super) stmt_is_conditional: bool,
+    // Set while resolving an annotation the file's author wrote, so a `{...}`
+    // literal in it materializes as a declared shape (see `resolve_declared_annotation`)
+    pub(super) declaring_shapes: bool,
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(NodeId, ScopeIndex, Option<FunctionIndex>)>,
     // Build-time: the plain writes to each local, the names they write, and each
@@ -3955,6 +3962,7 @@ impl<'a> Analysis<'a> {
                 synthesized_overload_funcs: HashSet::default(),
                 tc_expected_class: HashMap::default(),
                 tc_arg_constructors: crate::collections::HashSet::default(),
+                tc_intersection_constructors: crate::collections::HashSet::default(),
                 ctor_merged_class: HashMap::default(),
                 field_annotation_owner: HashMap::default(),
                 ctor_placeholder_fields: crate::collections::HashSet::default(),
@@ -4009,6 +4017,7 @@ impl<'a> Analysis<'a> {
             sym_ref_sites: HashMap::default(),
             current_func_id: None,
             stmt_is_conditional: false,
+            declaring_shapes: false,
             pending_blocks: Vec::new(),
             local_writes: HashMap::default(),
             local_written_names: HashSet::default(),
@@ -4566,6 +4575,18 @@ pub fn structural_mismatch_details_impl(
                 }
             }
             return best;
+        }
+        // An intersection (`A & B`): the literal must satisfy each class member.
+        (ValueType::Table(Some(a)), ValueType::Intersection(members)) => {
+            if ir.table(*a).class_name.is_some() { return None; }
+            let details: Vec<StructuralMismatchDetail> = members.iter()
+                .filter_map(|m| match m {
+                    ValueType::Table(Some(b)) if ir.table(*b).class_name.is_some() => Some(*b),
+                    _ => None,
+                })
+                .flat_map(|b| check_fields_impl(ir, resolved_expr_cache, *a, b))
+                .collect();
+            return (!details.is_empty()).then_some(details);
         }
         _ => return None,
     };

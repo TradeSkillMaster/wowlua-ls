@@ -610,6 +610,24 @@ pub struct ClassDecl {
     /// reads.
     #[serde(default)]
     pub secret_when: Vec<String>,
+    /// What an XML frame's `<OnLoad>` handler adds to it. Workspace-only (not in
+    /// the stub blob).
+    #[serde(skip)]
+    pub onload: OnLoadScripts,
+}
+
+/// What an XML frame's `<OnLoad>` handler does that its markup can't declare: the
+/// global functions it runs on the frame (`function="F"`, or `F(self)` in a
+/// script), the methods of its mixins it runs (`method="M"`), and the members its
+/// scripts assign (`self.x = ...`, or a child's `self:GetParent().x = ...`), which
+/// are also among the class's `fields`. stub_gen follows the functions and methods
+/// through wow-ui-source; a workspace build, which can't follow a function,
+/// treats a frame running one as open (its mixins' methods are scanned already).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OnLoadScripts {
+    pub functions: Vec<String>,
+    pub methods: Vec<String>,
+    pub fields: Vec<String>,
 }
 
 impl ClassDecl {
@@ -691,6 +709,7 @@ impl ClassDecl {
             deferred_field_call_ranges: HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),
+            onload: OnLoadScripts::default(),
         }
     }
 
@@ -1663,7 +1682,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect(), onload: Default::default() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {

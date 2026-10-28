@@ -501,7 +501,7 @@ impl<'a> Analysis<'a> {
                                 })
                         }).or_else(|| trailing_types.first().cloned());
                         if let Some(inline_at) = inline_at
-                            && let Some(vt) = self.resolve_annotation_type_mut_gen(&inline_at, &[])
+                            && let Some(vt) = self.resolve_declared_annotation_gen(&inline_at, &[])
                         {
                             let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                             self.ir.set_type_source(symbol_idx, expr_id);
@@ -1379,7 +1379,7 @@ impl<'a> Analysis<'a> {
                             }
                         });
                     if let Some(ref at) = inline_at
-                        && let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) {
+                        && let Some(vt) = self.resolve_declared_annotation_gen(at, &[]) {
                         let sym_idx = self.ir.insert_symbol(
                             SymbolIdentifier::FileReturn, scope_idx, node,
                         );
@@ -2030,7 +2030,7 @@ impl<'a> Analysis<'a> {
         let inline_annotation_text = inline_type.as_ref()
             .map(crate::annotations::format_annotation_type);
         let inline_annotation = inline_type.as_ref()
-            .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
+            .and_then(|at| self.resolve_declared_annotation_gen(at, &[]));
         // Only keep annotation_text when annotation resolved successfully;
         // otherwise hover would show an unresolved type while the type checker
         // falls back to the expression type, creating a misleading display.
@@ -2348,7 +2348,7 @@ impl<'a> Analysis<'a> {
                 && let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
                     && names.len() <= 2 {
                             let raw = trailing_types.get(index).or_else(|| annotations.var_type_at(index)).cloned();
-                            let annotation = raw.as_ref().and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
+                            let annotation = raw.as_ref().and_then(|at| self.resolve_declared_annotation_gen(at, &[]));
                             // Like `build_field_value`, keep the text only for a resolved annotation.
                             let text = raw.as_ref().filter(|_| annotation.is_some())
                                 .map(crate::annotations::format_annotation_type);
@@ -3480,7 +3480,7 @@ impl<'a> Analysis<'a> {
             }
             // Positional `@param x params<F>` is rejected — `params<F>` only
             // fits in the vararg slot. `returns<F>` in positional is allowed.
-            let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
+            let resolved_vt = self.resolve_declared_annotation_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None).
             // A repeated name (`function(_, _)`) annotates its first occurrence.
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
@@ -3588,7 +3588,7 @@ impl<'a> Analysis<'a> {
                     }
                     let (return_vts, return_raws, labels, synthesized) =
                         crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                            self.resolve_annotation_type_mut_gen(at, generics)
+                            self.resolve_declared_annotation_gen(at, generics)
                         });
                     // Create FunctionRet symbols per column; set_type_source needs
                     // an expr node, so push the literal for each column's vt.
@@ -3731,7 +3731,7 @@ impl<'a> Analysis<'a> {
                     // `any` or expand at call sites via `return_projections`) and a stray
                     // tuple-form entry (mixed tuple/legacy `@return`, already flagged
                     // `malformed-annotation`) — neither is a real return slot to count.
-                    let resolved_vt = self.resolve_annotation_type_mut_gen(ret_annotation, generics);
+                    let resolved_vt = self.resolve_declared_annotation_gen(ret_annotation, generics);
                     let allow_placeholder = !is_projection && !tuple_form_flags[i];
                     if let Some(vt) = resolved_vt.or_else(|| allow_placeholder.then_some(ValueType::Any)) {
                         let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
@@ -3819,7 +3819,7 @@ impl<'a> Analysis<'a> {
                     let params = sig.params.iter().map(|p| {
                         crate::types::ResolvedOverloadParam {
                             name: p.name.clone(),
-                            typ: self.resolve_annotation_type_mut_gen(&p.typ, generics),
+                            typ: self.resolve_declared_annotation_gen(&p.typ, generics),
                             optional: p.optional,
                         }
                     }).collect();
@@ -3831,7 +3831,7 @@ impl<'a> Analysis<'a> {
                     // dropped when resolution returned None, desyncing the vectors.
                     let (returns, returns_raw): (Vec<ValueType>, Vec<crate::annotations::AnnotationType>) =
                         non_self_returns.iter()
-                            .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics)
+                            .filter_map(|at| self.resolve_declared_annotation_gen(at, generics)
                                 .map(|vt| (vt, (*at).clone())))
                             .unzip();
                     let has_vararg_tail = matches!(
@@ -4039,7 +4039,7 @@ impl<'a> Analysis<'a> {
             };
             if sym_idx.is_external() { continue; }
             let ann_type = crate::annotations::parse_type(type_str);
-            let Some(cast_vt) = self.resolve_annotation_type_mut_gen(&ann_type, &[]) else { continue };
+            let Some(cast_vt) = self.resolve_declared_annotation_gen(&ann_type, &[]) else { continue };
             match mode {
                 CastMode::Replace => {
                     self.push_type_narrowed_version(sym_idx, cast_vt, scope_idx);
@@ -4268,14 +4268,14 @@ impl<'a> Analysis<'a> {
 
     /// Apply a preceding `---@type` annotation to a `local` name.
     fn apply_local_var_type(&mut self, symbol_idx: SymbolIndex, at: &AnnotationType) {
-        let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) else { return };
+        let Some(vt) = self.resolve_declared_annotation_gen(at, &[]) else { return };
         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
         self.ir.set_type_source(symbol_idx, expr_id);
         // Store resolved type args for parameterized class annotations
         // (e.g. @type Future<number> → type_args = [Number])
         if let AnnotationType::Parameterized(_param_class_name, type_arg_annotations) = at {
             let type_args: Vec<ValueType> = type_arg_annotations.iter()
-                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &[]))
+                .filter_map(|ta| self.resolve_declared_annotation_gen(ta, &[]))
                 .collect();
             if !type_args.is_empty()
                 && let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut()

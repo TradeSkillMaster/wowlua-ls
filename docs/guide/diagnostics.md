@@ -321,6 +321,16 @@ local p = {}
 print(p.level) -- undefined-field
 ```
 
+An anonymous table shape in an annotation lists all of its fields, so it is
+checked the same way:
+
+```lua
+---@param opts {name: string, size?: number}
+local function create(opts)
+    print(opts.color) -- undefined-field
+end
+```
+
 A field read used as a **defensive existence check** is not flagged - it is
 probing whether the field exists, not assuming it does. This covers the left
 operand of `and`/`or`, the condition of an `if`/`while`, and the access that such

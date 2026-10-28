@@ -40,6 +40,9 @@ function AceDB:New(tbl, defaults, defaultProfile) end
 ---@field keys table<string, string> The key used for each database section.
 ---@field sv table The raw saved-variables table backing this database.
 ---@field defaults AceDB.Schema Cache of the defaults table.
+---@field callbacks CallbackHandlerRegistry The registry the database fires its events through (`OnProfileChanged`, `OnDatabaseReset`, …).
+---@field parent? AceDBObject-3.0 The database a namespace was registered on. `nil` on a root database.
+---@field children? table<string, AceDBObject-3.0> The namespaces registered on this database, keyed by name. `nil` until the first `RegisterNamespace`.
 local DBObjectLib = {}
 
 --- Copies a named profile into the current profile, overwriting any conflicting settings.

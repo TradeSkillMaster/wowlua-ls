@@ -2,7 +2,7 @@
 -- the addon ships a MyAddon_Camelot.toc, which Forever prefers, so this file
 -- runs on Retail alone.
 
-C_PvP.HasRandomTrainingGroundWinToday()
+GetPetFoodTypes()
 -- ^ def: external
 
 C_GameRules.GetForeverExperiencePreset()

@@ -2,8 +2,9 @@ use crate::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::annotations::{
-    AnnotationType, ClassDecl, ExternalGlobal, ExternalGlobalKind, FieldValueKind, Visibility,
+    AnnotationType, ClassDecl, ExternalGlobal, ExternalGlobalKind, FieldValueKind, OnLoadScripts, Visibility,
 };
+use crate::syntax::syntax_kind::SyntaxKind;
 
 /// Result of scanning a single XML file.
 pub struct XmlScanResult {
@@ -201,6 +202,10 @@ struct FrameContext {
     /// on its parent. Used to enrich the parent's field type with nested fields
     /// when the frame is finalized without a name.
     parent_key: Option<String>,
+    /// The `parentArray` attribute value: likewise, for the array's elements.
+    parent_array: Option<String>,
+    /// What the frame's `<OnLoad>` handler adds to it.
+    onload: OnLoadScripts,
 }
 
 /// Stack entry for tracking nesting during XML parsing.
@@ -213,6 +218,8 @@ struct StackEntry {
     resolved_name: Option<String>,
     /// Frame context (only present for frame-like elements).
     frame: Option<FrameContext>,
+    /// An `<OnLoad>` handler element, whose text is the handler's script.
+    onload: bool,
 }
 
 /// Extract an attribute value from a quick-xml `BytesStart` event.
@@ -316,10 +323,7 @@ pub fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                     // via finalize_frame, and the nested fields are registered as
                     // fields on that class. The parent's field type already points
                     // to the named class, so field lookup finds them naturally.
-                    if frame_ctx.name.is_none()
-                        && !frame_ctx.fields.is_empty()
-                        && frame_ctx.parent_key.is_some()
-                    {
+                    if frame_ctx.name.is_none() {
                         enrich_parent_field_with_nested(
                             &mut ctx.stack,
                             &frame_ctx,
@@ -344,6 +348,9 @@ pub fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                 if text.contains("Mixin") {
                     record_inline_mixins(&mut ctx.stack, &mut ctx.xml_bound_names, &text);
                 }
+                if ctx.stack.last().is_some_and(|entry| entry.onload) && text.contains("self") {
+                    record_onload_script(&mut ctx.stack, &text);
+                }
             }
             Ok(Event::CData(ref e)) => {
                 if script_depth > 0 {
@@ -352,6 +359,9 @@ pub fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                 let text = String::from_utf8_lossy(e.as_ref());
                 if text.contains("Mixin") {
                     record_inline_mixins(&mut ctx.stack, &mut ctx.xml_bound_names, &text);
+                }
+                if ctx.stack.last().is_some_and(|entry| entry.onload) && text.contains("self") {
+                    record_onload_script(&mut ctx.stack, &text);
                 }
             }
             Ok(Event::Eof) => break,
@@ -387,11 +397,26 @@ fn process_open_tag(
         return;
     }
 
+    if tag_name == "OnLoad"
+        && let Some(method) = get_attr(e, b"method")
+        && is_valid_global_name(&method)
+        && let Some(frame) = nearest_frame(&mut ctx.stack, 0)
+        && !frame.onload.methods.contains(&method)
+    {
+        frame.onload.methods.push(method);
+    }
+
     // Extract handler function names from <On* function="..."> script handler elements
     if tag_name.starts_with("On")
         && let Some(handler) = get_attr(e, b"function")
         && is_valid_global_name(&handler)
     {
+        if tag_name == "OnLoad"
+            && let Some(frame) = nearest_frame(&mut ctx.stack, 0)
+            && !frame.onload.functions.contains(&handler)
+        {
+            frame.onload.functions.push(handler.clone());
+        }
         ctx.xml_bound_names.insert(handler);
     }
 
@@ -423,6 +448,7 @@ fn process_open_tag(
                 is_virtual: false,
                 resolved_name: None,
                 frame: None,
+                onload: tag_name == "OnLoad",
             });
         }
     }
@@ -507,6 +533,8 @@ fn handle_frame_element(
         def_end: tag_start,
         global_key_values: Vec::new(),
         parent_key: parent_key_attr,
+        parent_array: parent_array_attr,
+        onload: OnLoadScripts::default(),
     };
 
     stack.push(StackEntry {
@@ -514,6 +542,7 @@ fn handle_frame_element(
         is_virtual,
         resolved_name: resolved_name.clone(),
         frame: Some(frame_ctx),
+        onload: false,
     });
 }
 
@@ -747,10 +776,19 @@ fn enrich_parent_field_with_nested(
     stack: &mut [StackEntry],
     child_ctx: &FrameContext,
 ) {
-    let parent_key = match &child_ctx.parent_key {
-        Some(pk) => pk.as_str(),
-        None => return,
-    };
+    // The child's own members: its parentKey children and KeyValues — a
+    // `type="global"` one as `any`, since a global's type isn't known here.
+    let mut table_fields: Vec<(String, AnnotationType)> = child_ctx.fields.iter()
+        .map(|(name, ty, _)| (name.clone(), ty.clone()))
+        .collect();
+    for (key, _, _) in &child_ctx.global_key_values {
+        if !table_fields.iter().any(|(n, _)| n == key) {
+            table_fields.push((key.clone(), AnnotationType::Simple("any".to_string())));
+        }
+    }
+    if table_fields.is_empty() {
+        return;
+    }
 
     // Find the nearest frame ancestor (the parent).
     let Some(parent_frame) = stack.iter_mut().rev()
@@ -759,26 +797,39 @@ fn enrich_parent_field_with_nested(
         return;
     };
 
-    // Find the parentKey field on the parent.
-    let Some(field) = parent_frame.fields.iter_mut()
-        .find(|(name, _, _)| name == parent_key)
-    else {
-        return;
-    };
-
-    // Build a table literal from the child's nested fields.
-    let table_fields: Vec<(String, AnnotationType)> = child_ctx.fields.iter()
-        .map(|(name, ty, _)| (name.clone(), ty.clone()))
-        .collect();
-
-    if table_fields.is_empty() {
-        return;
+    if let Some(parent_key) = &child_ctx.parent_key
+        && let Some(field) = parent_frame.fields.iter_mut().find(|(name, _, _)| name == parent_key)
+    {
+        // Enrich: original_type & {nested fields...}
+        field.1 = intersect_with(&field.1, AnnotationType::TableLiteral(table_fields.clone()));
     }
+    // Each element of a `parentArray` has its own KeyValues; the elements' type
+    // carries every element's.
+    if let Some(parent_array) = &child_ctx.parent_array
+        && let Some(field) = parent_frame.fields.iter_mut().find(|(name, _, _)| name == parent_array)
+        && let AnnotationType::Array(element) = &mut field.1
+    {
+        **element = with_shape_fields(element, table_fields);
+    }
+}
 
-    let table_literal = AnnotationType::TableLiteral(table_fields);
-
-    // Enrich: original_type & {nested fields...}
-    field.1 = intersect_with(&field.1, table_literal);
+/// `base` with `fields` added to its trailing table literal member, or appended
+/// as one; a field it already has keeps its type.
+fn with_shape_fields(base: &AnnotationType, fields: Vec<(String, AnnotationType)>) -> AnnotationType {
+    if let AnnotationType::Intersection(members) = base
+        && let Some(AnnotationType::TableLiteral(existing)) = members.last()
+    {
+        let mut merged = existing.clone();
+        for (name, ty) in fields {
+            if !merged.iter().any(|(n, _)| *n == name) {
+                merged.push((name, ty));
+            }
+        }
+        let mut members = members.clone();
+        *members.last_mut().unwrap() = AnnotationType::TableLiteral(merged);
+        return AnnotationType::Intersection(members);
+    }
+    intersect_with(base, AnnotationType::TableLiteral(fields))
 }
 
 /// Append `extra` to an annotation type as an intersection member.
@@ -901,6 +952,78 @@ fn record_inline_mixins(stack: &mut [StackEntry], bound: &mut HashSet<String>, t
     }
 }
 
+/// The frame context `skip` frames up the stack from its top: 0 for the
+/// innermost frame, 1 for the frame enclosing it.
+fn nearest_frame(stack: &mut [StackEntry], skip: usize) -> Option<&mut FrameContext> {
+    stack.iter_mut().rev().filter_map(|e| e.frame.as_mut()).nth(skip)
+}
+
+/// Record what an inline `<OnLoad>` script does to its frame (see
+/// [`OnLoadScripts`]): `self.x = ...` adds member `x` to the frame and
+/// `self:GetParent().x = ...` to the frame enclosing it, both typed `any`, and
+/// `F(self, ...)` runs global function `F` on it (`Mixin`, whose mixins the frame
+/// takes as parents, aside).
+fn record_onload_script(stack: &mut [StackEntry], text: &str) {
+    let tree = crate::syntax::parser::parse(text);
+    let root = crate::syntax::SyntaxNode::new_root(&tree);
+    let is_self = |n: &crate::syntax::SyntaxNode<'_>| n.kind() == SyntaxKind::NameRef && n.first_token().is_some_and(|t| t.text() == "self");
+    let last_name = |n: &crate::syntax::SyntaxNode<'_>| n.children_with_tokens().filter_map(|c| match c {
+        crate::syntax::NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
+        _ => None,
+    }).last();
+    let (mut own, mut parent, mut functions) = (Vec::new(), Vec::new(), Vec::new());
+    for node in root.descendants() {
+        match node.kind() {
+            SyntaxKind::VariableList => {
+                for target in node.children().filter(|n| n.kind() == SyntaxKind::DotAccess) {
+                    let (Some(base), Some(field)) = (target.children().next(), last_name(&target)) else { continue };
+                    if is_self(&base) {
+                        own.push(field);
+                    } else if base.kind() == SyntaxKind::MethodCall
+                        && base.children().next().is_some_and(|r| is_self(&r))
+                        && last_name(&base).as_deref() == Some("GetParent")
+                        && base.children().find(|c| c.kind() == SyntaxKind::ArgumentList)
+                            .is_some_and(|args| args.children().next().is_none())
+                    {
+                        parent.push(field);
+                    }
+                }
+            }
+            SyntaxKind::FunctionCall => {
+                let mut children = node.children();
+                if let (Some(callee), Some(args)) = (children.next(), children.next())
+                    && callee.kind() == SyntaxKind::NameRef
+                    && args.kind() == SyntaxKind::ArgumentList
+                    && args.children().next().is_some_and(|a| is_self(&a))
+                    && let Some(name) = last_name(&callee)
+                    && name != "Mixin"
+                {
+                    functions.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (skip, fields) in [(0, own), (1, parent)] {
+        let Some(frame) = nearest_frame(stack, skip) else { continue };
+        for field in fields {
+            if !frame.fields.iter().any(|(n, _, _)| *n == field) {
+                frame.fields.push((field.clone(), AnnotationType::Simple("any".to_string()), Visibility::Public));
+            }
+            if !frame.onload.fields.contains(&field) {
+                frame.onload.fields.push(field);
+            }
+        }
+    }
+    if let Some(frame) = nearest_frame(stack, 0) {
+        for function in functions {
+            if !frame.onload.functions.contains(&function) {
+                frame.onload.functions.push(function);
+            }
+        }
+    }
+}
+
 /// Build a slim `ClassDecl` that augments a `mixin=` table with the frame's base
 /// element type as a parent (so `self:SetSize()` etc. resolve) plus any parentKey
 /// fields. The frame's *name* is irrelevant — the augment is keyed by the mixin
@@ -940,6 +1063,7 @@ fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> Cla
         deferred_field_call_ranges: HashMap::default(),
         enum_call: None,
         secret_when: Vec::new(),
+        onload: Default::default(),
     }
 }
 
@@ -1027,6 +1151,7 @@ fn finalize_frame(mut ctx: FrameContext, path: &Path, scan: &mut ScanContext) {
         deferred_field_call_ranges: HashMap::default(),
         enum_call: None,
         secret_when: Vec::new(),
+        onload: ctx.onload,
     };
     scan.classes.push(class_decl);
 
@@ -1629,6 +1754,87 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0].1, AnnotationType::Array(inner)
             if matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "Frame")));
+    }
+
+    #[test]
+    fn parent_array_elements_carry_their_key_values() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="MyFrame" virtual="true">
+                    <Frames>
+                        <Frame parentArray="Items" parentKey="First">
+                            <KeyValues>
+                                <KeyValue key="itemID" value="5" type="number"/>
+                                <KeyValue key="classID" value="Enum.ItemClass.Weapon" type="global"/>
+                            </KeyValues>
+                        </Frame>
+                        <Frame parentArray="Items">
+                            <KeyValues><KeyValue key="label" value="b"/></KeyValues>
+                        </Frame>
+                    </Frames>
+                </Frame>
+            </Ui>
+        "#);
+        let c = &r.classes[0];
+        let field = |name: &str| &c.fields.iter().find(|(n, _, _)| n == name).unwrap().1;
+        let shape = |t: &AnnotationType| match t {
+            AnnotationType::Intersection(members) => match members.last() {
+                Some(AnnotationType::TableLiteral(fields)) => fields.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        // Every element's KeyValues, a `type="global"` one included.
+        let AnnotationType::Array(element) = field("Items") else { panic!("Items: {:?}", field("Items")) };
+        assert_eq!(shape(element), ["itemID", "classID", "label"]);
+        assert_eq!(shape(field("First")), ["itemID", "classID"]);
+    }
+
+    #[test]
+    fn onload_scripts_add_members_and_record_functions() {
+        let r = scan(r#"
+            <Ui>
+                <Button name="ScriptedTemplate" virtual="true">
+                    <Frames>
+                        <Button parentKey="Toggle">
+                            <Scripts><OnLoad>self:GetParent().toggle = self;</OnLoad></Scripts>
+                        </Button>
+                    </Frames>
+                    <Scripts>
+                        <OnLoad>
+                            Scripted_OnLoad(self, 1);
+                            Mixin(self, ScriptedMixin);
+                            self.label = "x"
+                            local other = {}; other.notSelf = 1
+                        </OnLoad>
+                        <OnShow>self.shown = true</OnShow>
+                    </Scripts>
+                </Button>
+                <Frame name="HandlerTemplate" virtual="true">
+                    <Scripts><OnLoad function="Handler_OnLoad"/></Scripts>
+                </Frame>
+            </Ui>
+        "#);
+        let class = |name: &str| r.classes.iter().find(|c| c.name == name).unwrap();
+        let scripted = class("ScriptedTemplate");
+        // A child's `self:GetParent()` member and the script's own; another handler's aren't.
+        assert_eq!(scripted.onload.fields, ["toggle", "label"]);
+        assert!(scripted.fields.iter().any(|(n, t, _)| n == "toggle" && matches!(t, AnnotationType::Simple(s) if s == "any")));
+        assert!(!scripted.fields.iter().any(|(n, _, _)| n == "shown" || n == "notSelf"));
+        // `Mixin` gives the frame its mixins instead.
+        assert_eq!(scripted.onload.functions, ["Scripted_OnLoad"]);
+        assert!(scripted.parents.contains(&"ScriptedMixin".to_string()));
+        assert_eq!(class("HandlerTemplate").onload.functions, ["Handler_OnLoad"]);
+        assert!(class("HandlerTemplate").onload.methods.is_empty());
+        let methods = scan(r#"
+            <Ui>
+                <Frame name="MethodTemplate" mixin="MethodMixin" virtual="true">
+                    <Scripts><OnLoad method="OnLoad"/></Scripts>
+                </Frame>
+            </Ui>
+        "#);
+        assert_eq!(methods.classes[0].onload.methods, ["OnLoad"]);
+        assert!(methods.classes[0].onload.functions.is_empty());
     }
 
     #[test]

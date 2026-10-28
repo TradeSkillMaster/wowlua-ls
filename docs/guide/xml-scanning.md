@@ -14,6 +14,7 @@ When wowlua-ls scans an XML file, it extracts:
 - **`KeyValue` elements** become fields with their declared types (`string`, the default, `number`, `boolean`, and `int` as `number`). With `type="global"`, the field takes the type of the global it names (e.g. `value="MyAddon.FormatName"`)
 - **`inherits`, `mixin`, and `secureMixin`** attributes populate the parent class chain. Each mixin table also picks up the element type and `parentKey` children of the frames that use it, named or not
 - **`Mixin(self, MyMixin)`** calls in a frame's inline `<OnLoad>` handler count the same as a `mixin` attribute
+- **Fields an inline `<OnLoad>` handler sets** (`self.label = "x"`, or `self:GetParent().toggle = self` in a child's handler) become fields of the frame. A frame whose `<OnLoad>` runs a function (`<OnLoad function="MyAddon_OnLoad"/>`, or `MyAddon_Setup(self)` in the handler) can be given any field there, so `undefined-field` doesn't check reads on it
 - **Mixin names and handler functions** (`<OnClick function="MyAddon_OnClick"/>`) are allowed globals: defining or reading them in Lua doesn't trigger `create-global` or `undefined-global`
 
 ## Example
@@ -107,6 +108,8 @@ Child frames with `parentArray` create array-typed fields:
 local list
 list.Items  -- Frame[]
 ```
+
+The elements carry the `KeyValue`s and `parentKey` children of every element in the array, so `<Frame parentArray="Items"><KeyValues><KeyValue key="index" value="1" type="number"/></KeyValues></Frame>` makes `list.Items` a `(Frame & {index: number})[]`.
 
 ### Supported element types
 
