@@ -154,3 +154,34 @@ local function test_local_trailing(t)
         --    ^ hover: (local) v: number
     end
 end
+
+-- ── Field-chain receiver ─────────────────────────────────────────────────────
+-- The field the method is called on is narrowed, not the variable it's read
+-- through.
+
+---@class RegionHolder
+---@field region Region
+local RegionHolder = {}
+
+function RegionHolder:test_field_receiver()
+    if self.region:GetObjectType() == "FontString" then
+        local s = self.region:GetText()
+        --    ^ hover: (local) s: string
+        --                    ^ hover: (method) function FontString:GetText()
+    end
+end
+
+-- ── Function read off an untyped table ───────────────────────────────────────
+-- `util.GetObjectType` is whatever `util` holds; the widget method only shares
+-- its name, so nothing is narrowed.
+
+---@class CountedRegionItem
+---@field count number
+
+---@param item CountedRegionItem
+local function test_untyped_table_call(util, item)
+    if util.GetObjectType(item) == "Button" then
+        local c = item.count
+        --    ^ hover: (local) c: number
+    end
+end

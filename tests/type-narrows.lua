@@ -250,6 +250,7 @@ local Creature = {}
 
 ---@class Canine : Creature
 ---@field breed string
+---@field tag string?
 
 ---@type-narrows Feline
 ---@return boolean
@@ -418,5 +419,129 @@ local function test_forin_method_style_class_arg()
             local x = k
             --    ^ hover: (local) x: Dog
         end
+    end
+end
+
+-- ── Field-chain receivers and arguments ─────────────────────────────────────
+-- A guard called on a field (`self.pet:IsCanine()`) narrows that field, not the
+-- variable it's read through: `self` keeps its own fields.
+
+---@class Kennel
+---@field pet Creature
+---@field animal Animal
+---@field kind AnimalKind
+---@field label string
+---@field stray Creature?
+local Kennel = {}
+
+---@class Shelter
+---@field kennel Kennel
+local Shelter = {}
+
+function Kennel:testFieldReceiver()
+    if self.pet:IsCanine() then
+        local b = self.pet.breed
+        --                 ^ hover: (field) breed: string  def: local
+        local p = self.pet
+        --    ^ hover: (local) p: Canine
+        local l = self.label
+        --    ^ hover: (local) l: string
+    end
+    local outside = self.pet.breed
+    --                       ^ diag: undefined-field
+end
+
+function Kennel:testFieldReceiverEarlyExit()
+    if not self.pet:IsCanine() then return end
+    local p = self.pet
+    --    ^ hover: (local) p: Canine
+end
+
+function Kennel:testFieldReceiverAssert()
+    assert(self.pet:IsFeline())
+    local i = self.pet.indoor
+    --                 ^ hover: (field) indoor: boolean
+end
+
+function Shelter:testDeepFieldReceiver()
+    if self.kennel.pet:IsFeline() then
+        local p = self.kennel.pet
+        --    ^ hover: (local) p: Feline
+    end
+end
+
+-- A guard on a field of the narrowed field reads through the narrowing.
+function Kennel:testNestedGuardThroughNarrowedField()
+    if self.pet:IsCanine() then
+        if self.pet.tag then
+            local t = self.pet.tag
+            --    ^ hover: (local) t: string
+        end
+    end
+end
+
+-- An optional field: the call only runs when it holds the table.
+function Kennel:testOptionalFieldReceiver()
+    if self.stray and self.stray:IsCanine() then
+        local s = self.stray
+        --    ^ hover: (local) s: Canine
+    end
+    if self.stray:IsFeline() then
+        local i = self.stray.indoor
+        --                   ^ hover: (field) indoor: boolean
+        local s = self.stray
+        --    ^ hover: (local) s: Feline
+    end
+end
+
+-- Index-based form: the receiver (`0`) and an argument can be field chains too.
+function Kennel:testFieldReceiverIndexBased()
+    if self.kind:isInstanceOf(Dog) then
+        local k = self.kind
+        --    ^ hover: (local) k: Dog
+    end
+end
+
+function Kennel:testFieldArgument()
+    if TypeChecker.IsType(self.animal, "Dog") then
+        local a = self.animal
+        --    ^ hover: (local) a: Dog
+    end
+end
+
+-- A dot call passes `self` as the first argument, which is what's narrowed; in
+-- the index-based form the other positions count from a colon call's.
+function Kennel:testDotCallReceiver()
+    if Creature.IsCanine(self.pet) then
+        local p = self.pet
+        --    ^ hover: (local) p: Canine
+    end
+    if AnimalKind.isInstanceOf(self.kind, Dog) then
+        local k = self.kind
+        --    ^ hover: (local) k: Dog
+    end
+end
+
+-- A receiver read through a call result is no variable: the local `pet` only
+-- shares the field's name.
+---@return Kennel
+local function getKennel() return Kennel end
+
+---@param pet Creature
+local function testCallResultReceiver(pet)
+    if getKennel().pet:IsCanine() then
+        local p = pet
+        --    ^ hover: (local) p: Creature
+    end
+end
+
+-- An element read through a dynamic index names no fixed field, and the table
+-- holding it isn't what the guard tested.
+---@param pets Creature[]
+---@param i integer
+local function testDynamicIndexReceiver(pets, i)
+    if pets[i]:IsCanine() then
+        local all = pets
+        --    ^ hover: (local) all: Creature[]
     end
 end

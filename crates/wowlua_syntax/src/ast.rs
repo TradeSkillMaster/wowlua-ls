@@ -268,6 +268,24 @@ impl<'a> Identifier<'a> {
             .is_some_and(|c| !c.kind().is_identifier())
     }
 
+    /// Returns true when this is a name followed only by `.field` / `[key]`
+    /// accesses (`a`, `a.b[1].c`). A call or parenthesized expression anywhere
+    /// along the chain (`f().c`, `(a).b.c`) makes it false: [`names`](Self::names)
+    /// skips those, so it would name a chain rooted at the wrong variable.
+    pub fn is_name_chain(&self) -> bool {
+        let mut node = self.node;
+        loop {
+            match node.kind() {
+                SyntaxKind::NameRef => return true,
+                SyntaxKind::DotAccess | SyntaxKind::BracketAccess => {
+                    let Some(base) = node.children().next() else { return false };
+                    node = base;
+                }
+                _ => return false,
+            }
+        }
+    }
+
     pub fn is_call_to_self(&self) -> bool {
         // Check this node and any nested identifier nodes for a Colon token
         self.node.children_with_tokens().any(|n|

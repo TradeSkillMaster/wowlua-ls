@@ -1025,7 +1025,11 @@ impl AnalysisResult {
         } else {
             return None;
         };
-        Some(table_idx)
+        match self.field_chain_narrowing_at(node, scope_offset) {
+            Some(guard) => Self::extract_table_idx(
+                &ValueType::Table(Some(table_idx)).filter_type_with(guard, &|idx| self.table(idx).enum_kind)),
+            None => Some(table_idx),
+        }
     }
 
     /// The element type `t[k]` reads off the bracket receiver `node`: its
@@ -1119,9 +1123,31 @@ impl AnalysisResult {
                 let fi = indices.iter().find_map(|&idx| self.get_field(idx, &name))?;
                 current_type = self.resolve_field_type(fi)?;
             }
+            if let Some(guard) = self.field_chain_narrowing_at(ancestor, scope_offset) {
+                current_type = current_type.filter_type_with(guard, &|idx| self.table(idx).enum_kind);
+            }
         }
 
         Some(current_type)
+    }
+
+    /// The type a guard narrows the field chain `node` reads to at `scope_offset`
+    /// (`self.pet` after `if self.pet:IsDog() then`), which the fixpoint applies
+    /// to the chain's reads as a `TypeFilter` (`lower_dot_access`).
+    fn field_chain_narrowing_at(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<&ValueType> {
+        let ident = crate::ast::Identifier::cast(*node)?;
+        if !ident.is_name_chain() || ident.has_complex_dynamic_bracket() {
+            return None;
+        }
+        let names = ident.names_with_brackets();
+        let (root, chain) = names.split_first()?;
+        if chain.is_empty() {
+            return None;
+        }
+        let offset = u32::from(scope_offset);
+        let scope_idx = self.scope_at_offset(scope_offset)?;
+        let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root.clone()), scope_idx, offset)?;
+        self.get_field_type_narrowing_at(symbol_idx, chain, scope_idx, offset)
     }
 
     /// Resolve a receiver (identifier, funcall, grouped expression, or string literal)

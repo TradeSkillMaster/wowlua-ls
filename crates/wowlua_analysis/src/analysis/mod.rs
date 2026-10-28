@@ -2377,7 +2377,8 @@ impl Ir {
                 }
                 Expr::Grouped(inner) |
                 Expr::StripNil(inner) |
-                Expr::StripFalsy(inner) => {
+                Expr::StripFalsy(inner) |
+                Expr::TypeFilter(inner, _) => {
                     current = *inner;
                 }
                 Expr::AssignNarrow { inner, .. } => {

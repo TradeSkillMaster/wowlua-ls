@@ -756,10 +756,10 @@ impl<'a> Analysis<'a> {
                     // recv to Class (then-branch `==` / else-branch `~=`). The inverse
                     // can't cleanly subtract a class, so only the positive direction.
                     if is_positive_class_eq
-                        && let Some((sym_idx, class_name)) =
+                        && let Some((target, class_name)) =
                             self.extract_returns_class_name_guard(lhs, rhs, parent_scope)
                     {
-                        self.apply_type_narrows(sym_idx, &class_name, target_scope);
+                        self.apply_type_narrows(target, &class_name, target_scope);
                     }
                 }
     }
@@ -770,10 +770,10 @@ impl<'a> Analysis<'a> {
                     self.apply_secret_fact(fact, target_scope, false);
                     return;
                 }
-                if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, parent_scope) {
+                if let Some((target, class_name)) = self.extract_type_narrows_guard(call, parent_scope) {
                     // @type-narrows only narrows in then-branch (no else-branch semantic)
                     if is_then_branch {
-                        self.apply_type_narrows(sym_idx, &class_name, target_scope);
+                        self.apply_type_narrows(target, &class_name, target_scope);
                     }
                 } else if let Some((sym_idx, true_type, false_type)) = self.extract_bool_discriminator(call, parent_scope) {
                     let narrowed = if is_then_branch { true_type } else { false_type };
@@ -975,8 +975,8 @@ impl<'a> Analysis<'a> {
                         self.narrow_field_truthy(&names, scope_idx, scope_idx);
                     }
                 } else if let Some(Expression::FunctionCall(call)) = terms.first() {
-                    if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
-                        self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                    if let Some((target, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
+                        self.apply_type_narrows(target, &class_name, scope_idx);
                     } else if let Some((sym_idx, true_type, _)) = self.extract_bool_discriminator(call, scope_idx) {
                         // `if not x:IsSubRow() then return end` → x is the true-branch after
                         self.narrowing.type_narrowed.entry(scope_idx).or_default()
@@ -1095,10 +1095,10 @@ impl<'a> Analysis<'a> {
                     // `if recv:GetObjectType() ~= "Class" then return end` → recv IS Class
                     // after the guard. (`==` would mean recv is NOT Class, no clean narrowing.)
                     if is_neq
-                        && let Some((sym_idx, class_name)) =
+                        && let Some((target, class_name)) =
                             self.extract_returns_class_name_guard(lhs, rhs, scope_idx)
                     {
-                        self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                        self.apply_type_narrows(target, &class_name, scope_idx);
                     }
                 }
             }
@@ -1541,17 +1541,17 @@ impl<'a> Analysis<'a> {
                             }
                     // assert(recv:GetObjectType() == "Class") → recv IS Class.
                     if is_eq
-                        && let Some((sym_idx, class_name)) =
+                        && let Some((target, class_name)) =
                             self.extract_returns_class_name_guard(lhs, rhs, scope_idx)
                     {
-                        self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                        self.apply_type_narrows(target, &class_name, scope_idx);
                     }
                 }
             }
             Expression::FunctionCall(call) => {
                 // assert(obj:IsCat()) — type-narrows guard inside assert
-                if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
-                    self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                if let Some((target, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
+                    self.apply_type_narrows(target, &class_name, scope_idx);
                 } else if let Some((sym_idx, true_type, _)) = self.extract_bool_discriminator(call, scope_idx) {
                     // assert(x:IsSubRow()) — literal-bool union discrimination
                     self.narrowing.type_narrowed.entry(scope_idx).or_default()
@@ -3683,6 +3683,11 @@ impl<'a> Analysis<'a> {
     /// receivers. Searches the whole class universe, so guards it can't match (e.g.
     /// `@secret-guard`) use [`Self::resolve_call_function_by_path`] instead.
     fn unique_narrowing_method(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
+        // A dot call (`util.GetObjectType(x)`) reads a function off a table, which
+        // a class method only shares the name with.
+        if call.syntax().kind() != SyntaxKind::MethodCall {
+            return None;
+        }
         let names = call.identifier()?.names();
         let [receiver, method] = names.as_slice() else { return None };
         self.sym(self.get_symbol(&SymbolIdentifier::Name(receiver.clone()), scope)?).versions.last()?;
@@ -3742,6 +3747,12 @@ impl<'a> Analysis<'a> {
             match field_expr {
                 Expr::TableConstructor(ti) => current_table = *ti,
                 Expr::Literal(ValueType::Table(Some(ti))) => current_table = *ti,
+                // An optional field (`---@field pet Creature?`): a call through it
+                // only runs when it holds the table.
+                Expr::Literal(vt @ ValueType::Union(_)) => match vt.strip_nil() {
+                    ValueType::Table(Some(ti)) => current_table = ti,
+                    _ => return None,
+                },
                 _ => return None,
             }
         }
@@ -3752,18 +3763,16 @@ impl<'a> Analysis<'a> {
     /// When one side of an equality comparison is a method call whose callee is
     /// annotated `@returns-class-name` (the method returns its receiver's runtime
     /// class name) and the other side is a class-name string literal, return
-    /// `(receiver_symbol, class_name)`. Order-independent.
+    /// `(receiver, class_name)`. Order-independent.
     ///
-    /// The receiver must be a plain single-name method call (`recv:m()`); deeper
-    /// field-chain receivers (`a.b:m()`) are not narrowed here. The class-existence
-    /// check is deferred to `apply_type_narrows`, which no-ops on an unknown class
-    /// (graceful degradation, matching the `@type-narrows` path).
+    /// The class-existence check is deferred to `apply_type_narrows`, which no-ops
+    /// on an unknown class (graceful degradation, matching the `@type-narrows` path).
     fn extract_returns_class_name_guard(
         &self,
         lhs: &Expression<'_>,
         rhs: &Expression<'_>,
         scope: ScopeIndex,
-    ) -> Option<(SymbolIndex, String)> {
+    ) -> Option<(NarrowTarget, String)> {
         let (call, other) = match (lhs, rhs) {
             (Expression::FunctionCall(c), o) => (c, o),
             (o, Expression::FunctionCall(c)) => (c, o),
@@ -3775,40 +3784,33 @@ impl<'a> Analysis<'a> {
         // The callee method must carry `@returns-class-name`.
         let func_idx = self.try_resolve_call_function(call, scope)?;
         if !self.func(func_idx).returns_class_name { return None; }
-        // Receiver is the first name of a `recv:method()` call (exactly receiver + method).
-        let names = call.identifier()?.names();
-        if names.len() != 2 { return None; }
-        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
-        Some((sym_idx, class_name))
+        Some((self.self_arg_target(call, scope)?, class_name))
     }
 
     /// Extract type guard info from a function call with `@type-narrows`.
-    /// Returns `(symbol_to_narrow, class_name)` if the callee is a type guard function.
-    fn extract_type_narrows_guard(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<(SymbolIndex, String)> {
+    /// Returns `(target_to_narrow, class_name)` if the callee is a type guard function.
+    fn extract_type_narrows_guard(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<(NarrowTarget, String)> {
         let func_idx = self.try_resolve_call_function(call, scope)?;
         let func = self.func(func_idx);
 
         // Check for @type-narrows ClassName (method-style: self → ClassName)
         if let Some(ref class_name) = func.type_narrows_class {
-            let ident = call.identifier()?;
-            let names = ident.names();
-            if names.is_empty() { return None; }
-            // Target is the receiver (self) — first name in identifier for colon calls
-            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
-            return Some((sym_idx, class_name.clone()));
+            return Some((self.self_arg_target(call, scope)?, class_name.clone()));
         }
 
         // Check for @type-narrows <target_param> <classname_param> (index-based)
         let (target_idx, classname_idx) = func.type_narrows?;
 
         let args = call.arguments()?.expressions();
-        let ident = call.identifier()?;
+        // `0` names `self`, so the positions count from a colon call's arguments:
+        // a dot call passes `self` first, shifting the rest by one.
+        let shift = usize::from(target_idx == 0 && call.syntax().kind() != SyntaxKind::MethodCall);
 
         // Extract class name at classname_idx (1-based). Accepts either a string
         // literal (`x:IsType("Foo")`) or a bare identifier naming a known class
         // (`x:__isa(Foo)`, where `Foo` is the class table itself).
         if classname_idx == 0 { return None; } // classname can't be self
-        let class_arg = args.get(classname_idx - 1)?;
+        let class_arg = args.get(classname_idx - 1 + shift)?;
         let class_name = match class_arg {
             Expression::Literal(lit) => {
                 let s = lit.get_string()?;
@@ -3827,33 +3829,46 @@ impl<'a> Analysis<'a> {
             _ => return None,
         };
 
-        // Extract target symbol
-        let sym_idx = if target_idx == 0 {
-            // Target is the receiver (self) — for colon calls, first name in identifier
-            let names = ident.names();
-            if names.is_empty() { return None; }
-            self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?
+        let target = if target_idx == 0 {
+            self.self_arg_target(call, scope)?
         } else {
             // Target is a call-site argument (1-based)
-            let target_arg = args.get(target_idx - 1)?;
-            if let Expression::Identifier(target_ident) = target_arg {
-                let target_names = target_ident.names();
-                if target_names.len() == 1 {
-                    self.get_symbol(&SymbolIdentifier::Name(target_names[0].clone()), scope)?
-                } else {
-                    return None;
-                }
-            } else {
-                return None;
-            }
+            self.narrow_target_of(args.get(target_idx - 1)?, scope)?
         };
 
-        Some((sym_idx, class_name))
+        Some((target, class_name))
     }
 
-    /// Apply type-narrows narrowing: record scope-level narrowing (version is pushed lazily).
-    /// Returns true if narrowing was applied.
-    fn apply_type_narrows(&mut self, sym_idx: SymbolIndex, class_name: &str, scope: ScopeIndex) -> bool {
+    /// The value a call binds to `self`, as a narrowing target: the receiver of
+    /// `recv:m()` (`a.b` in `a.b:m()`), or the first argument of `T.m(recv)`.
+    fn self_arg_target(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<NarrowTarget> {
+        let recv = if call.syntax().kind() == SyntaxKind::MethodCall {
+            call.syntax().children().next().and_then(Expression::cast)?
+        } else {
+            call.arguments()?.expressions().into_iter().next()?
+        };
+        self.narrow_target_of(&recv, scope)
+    }
+
+    /// The variable (`x`) or static field chain rooted at one (`x.y[1]`) that
+    /// `expr` reads, as a narrowing target; `None` for any other expression.
+    pub(super) fn narrow_target_of(&self, expr: &Expression<'_>, scope: ScopeIndex) -> Option<NarrowTarget> {
+        let Expression::Identifier(ident) = expr else { return None };
+        if !ident.is_name_chain() || ident.has_any_dynamic_bracket() {
+            return None;
+        }
+        let names = ident.names_with_brackets();
+        let sym = self.get_symbol(&SymbolIdentifier::Name(names.first()?.clone()), scope)?;
+        Some(if names.len() == 1 {
+            NarrowTarget::Symbol(sym)
+        } else {
+            NarrowTarget::Field(sym, names[1..].to_vec())
+        })
+    }
+
+    /// Apply type-narrows narrowing: record scope-level narrowing of `target` to
+    /// `class_name`. Returns true if narrowing was applied.
+    fn apply_type_narrows(&mut self, target: NarrowTarget, class_name: &str, scope: ScopeIndex) -> bool {
         let table_idx = if let Some(&ti) = self.ir.classes.get(class_name) {
             ti
         } else if let Some(&ti) = self.ir.ext.classes.get(class_name) {
@@ -3862,12 +3877,13 @@ impl<'a> Analysis<'a> {
             return false;
         };
         let narrowed = ValueType::Table(Some(table_idx));
-        // Don't push a version eagerly — due to LIFO block processing, sibling
-        // branches can add versions that bury this one.  Instead, the version is
-        // pushed lazily when the symbol is actually referenced within the scope
-        // (see `get_version_for_name` in the Identifier handler).
+        // Don't push a symbol version eagerly — due to LIFO block processing,
+        // sibling branches can add versions that bury this one.  Instead, the
+        // version is pushed lazily when the symbol is actually referenced within
+        // the scope (see `lower_name_ref`); a field chain's reads are wrapped in a
+        // `TypeFilter` (see `lower_dot_access`).
         self.narrowing.type_narrowed.entry(scope).or_default()
-            .insert(NarrowTarget::Symbol(sym_idx), narrowed);
+            .insert(target, narrowed);
         true
     }
 

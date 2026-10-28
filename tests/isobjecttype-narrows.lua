@@ -95,3 +95,31 @@ local function test_editbox_narrow(frame)
         --    ^ hover: (local) x: EditBox
     end
 end
+
+-- ── Method called with a dot ─────────────────────────────────────────────────
+-- `self` is the first argument, and the class name the second.
+
+---@param frame Frame
+---@param methods Frame
+local function test_dot_call(frame, methods)
+    if not methods.IsObjectType(frame, "Button") then return end
+    local x = frame
+    --    ^ hover: (local) x: Button
+    local m = methods
+    --    ^ hover: (local) m: Frame
+end
+
+-- ── Function read off an untyped table ───────────────────────────────────────
+-- `util.IsObjectType` is whatever `util` holds; the widget method only shares
+-- its name, so nothing is narrowed.
+
+---@class CountedFrameItem
+---@field count number
+
+---@param item CountedFrameItem
+local function test_untyped_table_call(util, item)
+    if util.IsObjectType(item, "Button") then
+        local c = item.count
+        --    ^ hover: (local) c: number
+    end
+end

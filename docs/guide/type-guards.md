@@ -151,6 +151,8 @@ Guard functions and custom type guards work in all the same places as built-in n
 - `assert(guard())` (rest of function)
 - `guard() and expr` / `guard() or expr` (short-circuit)
 
+The narrowed value can be a field as well as a local: `if self.pet:IsDog() then` narrows `self.pet` and leaves `self` as it was. A method called with a dot (`Animal.IsDog(pet)`) narrows the value passed as `self`.
+
 ## In-place argument narrowing (`@narrows-arg`) {#narrows-arg}
 
 `@narrows-arg N` narrows the Nth argument's type to the function's return type when the call is a bare statement (not assigned to a variable). This is useful for functions that mutate a value in-place, like WoW's `Mixin()`:

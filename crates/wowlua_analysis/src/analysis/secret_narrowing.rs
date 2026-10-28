@@ -177,7 +177,7 @@ impl<'a> Analysis<'a> {
         } else {
             std::slice::from_ref(args.get(pos)?)
         };
-        let targets = guarded.iter().map(|arg| self.secret_narrow_target(arg, scope)).collect();
+        let targets = guarded.iter().map(|arg| self.narrow_target_of(arg, scope)).collect();
         Some((guard.kind, targets))
     }
 
@@ -200,20 +200,6 @@ impl<'a> Analysis<'a> {
 
     pub(super) fn param_position(&self, func_idx: FunctionIndex, param: &str, is_method_call: bool) -> Option<usize> {
         self.ir.param_position(func_idx, param, is_method_call)
-    }
-
-    fn secret_narrow_target(&self, arg: &Expression<'_>, scope: ScopeIndex) -> Option<NarrowTarget> {
-        let Expression::Identifier(ident) = arg else { return None };
-        if ident.has_any_dynamic_bracket() {
-            return None;
-        }
-        let names = ident.names_with_brackets();
-        let sym = self.get_symbol(&SymbolIdentifier::Name(names.first()?.clone()), scope)?;
-        Some(if names.len() == 1 {
-            NarrowTarget::Symbol(sym)
-        } else {
-            NarrowTarget::Field(sym, names[1..].to_vec())
-        })
     }
 
     /// Apply a fact to the scope a guard selects (`if` then/else, `assert`), or
