@@ -4551,10 +4551,10 @@ impl<'a> Analysis<'a> {
 
                     if candidate_args.is_empty() { continue; }
 
-                    let signatures = self.collect_backward_inference_signatures(
-                        func_idx, is_method_call, args.len());
                     let candidate_positions: HashSet<usize> = candidate_args.iter()
                         .map(|(i, _)| *i).collect();
+                    let signatures = self.collect_backward_inference_signatures(
+                        func_idx, is_method_call, args.len(), &candidate_positions);
 
                     let receiver_generic_subs: HashMap<String, ValueType> = if is_method_call {
                         self.bind_receiver_type_args(func_idx, func)
@@ -4822,11 +4822,16 @@ impl<'a> Analysis<'a> {
         true
     }
 
+    /// The callee's signatures as a call site reads them. Only `candidate_positions`
+    /// and params that can bind a generic are filled in: the call reads nothing
+    /// else, and copying every param type made each `CreateFrame` call copy its
+    /// `template` param's thousands of names.
     fn collect_backward_inference_signatures(
         &mut self,
         func_idx: FunctionIndex,
         is_method_call: bool,
         n_args: usize,
+        candidate_positions: &crate::collections::HashSet<usize>,
     ) -> Vec<BackwardInferenceSignature> {
         use crate::annotations::AnnotationType;
 
@@ -4836,7 +4841,6 @@ impl<'a> Analysis<'a> {
         let param_args = called.args.clone();
         let called_args_len = called.args.len();
         let is_vararg_primary = called.is_vararg;
-        let overloads = called.overloads.clone();
         let primary_self_offset = if is_method_call && called_args_len > 0 { 1 } else { 0 };
 
         let mut out: Vec<BackwardInferenceSignature> = Vec::new();
@@ -4857,7 +4861,15 @@ impl<'a> Analysis<'a> {
         if primary_arity_ok {
             let params: Vec<Option<BackwardInferenceSigParam>> = param_args.iter()
                 .skip(primary_self_offset)
-                .map(|&sym_idx| {
+                .enumerate()
+                .map(|(i, &sym_idx)| {
+                    if !candidate_positions.contains(&i)
+                        && self.sym(sym_idx).versions.first()
+                            .and_then(|v| v.resolved_type.as_ref())
+                            .is_some_and(|t| !strips_to_generic_binder(t))
+                    {
+                        return None;
+                    }
                     let vt = self.param_symbol_resolved_type(sym_idx)?;
                     build_sig_param(vt)
                 })
@@ -4865,16 +4877,17 @@ impl<'a> Analysis<'a> {
             out.push(BackwardInferenceSignature { params });
         }
 
-        for overload in &overloads {
+        for overload in &self.ir.func(func_idx).overloads {
             if overload.is_return_only { continue; }
             let off = if overload.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
             let non_self_params = &overload.params[off..];
             let required = non_self_params.iter().filter(|p| !p.optional).count();
             let total = non_self_params.len();
             if n_args < required || n_args > total { continue; }
-            let params: Vec<Option<BackwardInferenceSigParam>> = non_self_params.iter().map(|p| {
-                let vt = p.typ.clone()?;
-                let vt = if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
+            let params: Vec<Option<BackwardInferenceSigParam>> = non_self_params.iter().enumerate().map(|(i, p)| {
+                let vt = p.typ.as_ref()?;
+                if !candidate_positions.contains(&i) && !strips_to_generic_binder(vt) { return None; }
+                let vt = if p.optional { ValueType::union(vt.clone(), ValueType::Nil) } else { vt.clone() };
                 build_sig_param(vt)
             }).collect();
             out.push(BackwardInferenceSignature { params });
@@ -5370,6 +5383,29 @@ fn build_sig_param(vt: ValueType) -> Option<BackwardInferenceSigParam> {
     }
 }
 
+/// Whether `build_sig_param(vt)` can be a type the backward-inference call site
+/// binds a generic through: a `TypeVariable`, or a class table whose value type
+/// may be one. Stripping `nil` leaves a union unless every other member is the
+/// same type.
+fn strips_to_generic_binder(vt: &ValueType) -> bool {
+    fn lone_member<'a>(t: &'a ValueType, lone: &mut Option<&'a ValueType>) -> bool {
+        match t {
+            ValueType::Union(members) => members.iter().all(|m| lone_member(m, lone)),
+            ValueType::Nil => true,
+            t => match lone {
+                Some(l) => *l == t,
+                None => {
+                    *lone = Some(t);
+                    true
+                }
+            },
+        }
+    }
+    let mut lone = None;
+    lone_member(vt, &mut lone)
+        && lone.is_some_and(|t| matches!(t, ValueType::TypeVariable(_) | ValueType::Table(Some(_))))
+}
+
 struct BackwardInferenceSignature {
     params: Vec<Option<BackwardInferenceSigParam>>,
 }
@@ -5498,5 +5534,44 @@ fn extract_function_idx_from_type(vt: Option<&ValueType>) -> Option<FunctionInde
             if let ValueType::Function(Some(idx)) = p { Some(*idx) } else { None }
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A signature param skipped as unable to bind a generic must never be one
+    /// once `build_sig_param` strips its `nil`.
+    #[test]
+    fn skipped_signature_params_never_bind_generics() {
+        let t = || ValueType::TypeVariable("T".into());
+        let class = || ValueType::Table(Some(TableIndex(7)));
+        let frame = || ValueType::String(Some("Frame".into()));
+        let cases = [
+            t(),
+            class(),
+            ValueType::union(t(), ValueType::Nil),
+            ValueType::Union(vec![t(), t(), ValueType::Nil]),
+            ValueType::Union(vec![ValueType::Union(vec![class(), ValueType::Nil]), ValueType::Nil]),
+            ValueType::Union(vec![class(), ValueType::Table(None), ValueType::Nil]),
+            ValueType::Union(vec![t(), ValueType::secret_of(t()), ValueType::Nil]),
+            ValueType::Union(vec![t(), ValueType::Any, ValueType::Nil]),
+            // `CreateFrame`'s `template?: \`Tp\` | Template`.
+            ValueType::Union(vec![t(), frame(), ValueType::String(Some("Button".into())), ValueType::Nil]),
+            ValueType::Union(vec![t(), frame()]),
+            ValueType::Nil,
+            ValueType::Union(vec![]),
+            ValueType::Any,
+            ValueType::Table(None),
+            frame(),
+        ];
+        for vt in cases {
+            let binds = build_sig_param(vt.clone())
+                .is_some_and(|p| matches!(p.ty, ValueType::TypeVariable(_) | ValueType::Table(Some(_))));
+            assert!(!binds || strips_to_generic_binder(&vt), "skipped a binder: {vt:?}");
+        }
+        let template = ValueType::Union(vec![t(), frame(), ValueType::String(Some("Button".into())), ValueType::Nil]);
+        assert!(!strips_to_generic_binder(&template));
     }
 }

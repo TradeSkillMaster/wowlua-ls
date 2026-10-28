@@ -869,12 +869,7 @@ impl ValueType {
                 other => flat.push(other),
             }
         }
-        let mut deduped = Vec::new();
-        for t in flat {
-            if !deduped.contains(&t) {
-                deduped.push(t);
-            }
-        }
+        let mut deduped = dedup_union_members(flat);
         // Any subsumes all types except Nil (preserve Nil so `any?` remains
         // distinguishable from `any` for optionality checks via `contains_nil()`).
         if deduped.contains(&ValueType::Any) {
@@ -1011,6 +1006,54 @@ impl ValueType {
     pub fn callable_or_unknown() -> ValueType {
         ValueType::Intersection(vec![ValueType::Function(None), ValueType::Table(None)])
     }
+}
+
+/// Drop repeated union members, keeping each one's first occurrence in order.
+/// Aliases that enumerate every template, event or CVar name run to thousands of
+/// members, and comparing each against all kept ones made every `strip_nil` or
+/// `T?` of such a type quadratic: the bulk of a file's analysis whenever it calls
+/// `CreateFrame` (`template?: Template`) many times. So past a few members,
+/// literal, class and function members are matched through a set.
+fn dedup_union_members(flat: Vec<ValueType>) -> Vec<ValueType> {
+    if flat.len() <= 16 {
+        let mut deduped = Vec::with_capacity(flat.len());
+        for t in flat {
+            if !deduped.contains(&t) {
+                deduped.push(t);
+            }
+        }
+        return deduped;
+    }
+    #[derive(PartialEq, Eq, Hash)]
+    enum Key<'a> {
+        String(&'a str),
+        Number(&'a str),
+        Table(TableIndex),
+        Function(FunctionIndex),
+    }
+    let mut keep = Vec::with_capacity(flat.len());
+    {
+        let mut seen: HashSet<Key> = HashSet::with_capacity_and_hasher(flat.len(), Default::default());
+        let mut others: Vec<&ValueType> = Vec::new();
+        for t in &flat {
+            let key = match t {
+                ValueType::String(Some(s)) => Some(Key::String(s)),
+                ValueType::NumberLiteral(s) => Some(Key::Number(s)),
+                ValueType::Table(Some(idx)) => Some(Key::Table(*idx)),
+                ValueType::Function(Some(idx)) => Some(Key::Function(*idx)),
+                _ => None,
+            };
+            keep.push(match key {
+                Some(key) => seen.insert(key),
+                None if others.contains(&t) => false,
+                None => {
+                    others.push(t);
+                    true
+                }
+            });
+        }
+    }
+    flat.into_iter().zip(keep).filter_map(|(t, keep)| keep.then_some(t)).collect()
 }
 
 /// Normalize a deduplicated union member list in place: `true | false` →
@@ -1881,4 +1924,58 @@ pub struct DeferredSiblingNarrowing {
     pub siblings: Vec<(usize, SymbolIndex)>,
     pub scope: ScopeIndex,
     pub narrowed: Vec<(usize, NarrowKind)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pairwise dedup `dedup_union_members` keeps for short lists.
+    fn dedup_pairwise(flat: Vec<ValueType>) -> Vec<ValueType> {
+        let mut deduped = Vec::new();
+        for t in flat {
+            if !deduped.contains(&t) {
+                deduped.push(t);
+            }
+        }
+        deduped
+    }
+
+    #[test]
+    fn long_union_dedup_matches_pairwise() {
+        let members = [
+            ValueType::String(Some("a".into())),
+            ValueType::String(Some("b".into())),
+            ValueType::String(None),
+            ValueType::NumberLiteral("1".into()),
+            ValueType::NumberLiteral("a".into()),
+            ValueType::Table(Some(TableIndex(1))),
+            ValueType::Table(Some(TableIndex(2))),
+            ValueType::Table(None),
+            ValueType::Function(Some(FunctionIndex(1))),
+            ValueType::Function(None),
+            ValueType::TypeVariable("a".into()),
+            ValueType::Boolean(Some(true)),
+            ValueType::Nil,
+            ValueType::Secret(Box::new(ValueType::String(Some("a".into())))),
+            ValueType::OpaqueAlias("Id".into(), Box::new(ValueType::Number)),
+            ValueType::Intersection(vec![ValueType::Table(Some(TableIndex(1))), ValueType::Function(None)]),
+            ValueType::TableShape(Box::new(TableShape::new(vec![("a".into(), ValueType::Number)]))),
+        ];
+        // Each member three times, rotated so repeats land far from each other.
+        let flat: Vec<ValueType> = (0..3)
+            .flat_map(|round| members.iter().cycle().skip(round * 5).take(members.len()).cloned())
+            .collect();
+        assert_eq!(dedup_union_members(flat.clone()), dedup_pairwise(flat));
+    }
+
+    #[test]
+    fn stripping_nil_from_a_huge_literal_union_is_linear() {
+        let names = (0..50_000).map(|i| ValueType::String(Some(format!("Template{i}"))));
+        let optional = ValueType::Union(names.chain([ValueType::Nil]).collect());
+        let started = std::time::Instant::now();
+        let stripped = optional.strip_nil();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(matches!(&stripped, ValueType::Union(m) if m.len() == 50_000 && !m.contains(&ValueType::Nil)));
+    }
 }

@@ -1330,75 +1330,23 @@ fn main_loop(
             last_dirty_at = Some(Instant::now());
         }
 
-        // Phase 2: Re-analyze dirty documents that have pending requests
-        // so responses use an Analysis that matches the current text.
-        // URIs are deduplicated via HashSet so each dirty document is
-        // re-analyzed at most once per loop iteration regardless of how
-        // many requests reference it (typically 3-4: semanticTokens,
-        // codeLens, inlayHint, completion).
-        //
-        // Only trigger this hot-path re-analysis when a request truly
-        // needs current-text analysis. Completion and signatureHelp need
-        // it because the user just typed a trigger character and expects
-        // results reflecting that character. Other requests (hover,
-        // semanticTokens, inlayHint, codeLens, diagnostic) serve from
-        // cached analysis built on the previous text version — positions
-        // are consistent because doc.text/tree/analysis haven't been
-        // updated yet (didChange stores edits in pending_text only).
-        // Phase 4's debounced cycle brings everything up to date.
+        // Phase 2: Re-analyze the document of each completion or signatureHelp
+        // request, so the response reflects the trigger character the user just
+        // typed. A document is analyzed at most once per loop iteration: the first
+        // such request consumes its pending text, and the batch's other requests
+        // on it then read the fresh analysis too. Requests on other documents
+        // (hover, semanticTokens, inlayHint, codeLens, diagnostic) serve from
+        // cached analysis built on the previous text version — positions are
+        // consistent because doc.text/tree/analysis haven't been updated yet
+        // (didChange stores edits in pending_text only). Phase 4's debounced
+        // cycle brings everything up to date.
         //
         // Skip the workspace rebuild on this hot path — it costs ~200ms on
         // large projects (e.g. 1000+ classes / 5000+ globals) and blocks
         // the completion response. Keep `dirty=true` so Phase 4's debounced
         // cycle still runs `maybe_rebuild_workspace` and marks other docs dirty
         // once the user pauses typing.
-        if !requests.is_empty() {
-            let needs_fresh_analysis = requests.iter().any(|req| {
-                matches!(req.method.as_str(),
-                    "textDocument/completion" | "textDocument/signatureHelp"
-                )
-            });
-
-            if needs_fresh_analysis {
-                let request_uris: HashSet<String> = requests.iter()
-                    .filter_map(|req| {
-                        let params: serde_json::Value = serde_json::from_value(req.params.clone()).ok()?;
-                        params.get("textDocument")
-                            .and_then(|td| td.get("uri"))
-                            .and_then(|u| u.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .collect();
-                for uri_str in &request_uris {
-                    // Only re-analyze when there is genuinely new text (pending_text
-                    // from a didChange in this batch). If the document is dirty but
-                    // pending_text is None, Phase 2 already analyzed the current text
-                    // in a previous iteration — reanalyzing would be redundant and
-                    // adds ~20ms latency that widens the keystroke race window.
-                    if let Some(doc) = documents.get(uri_str)
-                        && doc.toc.is_none()
-                        && let Some(text) = doc.pending_text.as_ref()
-                    {
-                        let text = text.clone();
-                        if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
-                            let tree = parse_lua(&text);
-                            // Do not publish diagnostics here: this is a hot-path re-analysis
-                            // triggered by an interactive request (hover/completion) while the
-                            // document is still dirty. Publishing partial-state diagnostics mid-
-                            // keystroke causes flickering warnings. Phase 4's debounced cycle
-                            // publishes diagnostics once the user pauses.
-                            let _wg = watchdog::WorkGuard::new(format!("analyze (interactive) {uri_str}"));
-                            let result = Some(analyze_lua_parsed(
-                                &uri, &ws.pre_globals, &ws.configs, &tree,
-                            ));
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
-                        }
-                    }
-                }
-            } else {
-                log::debug!("Phase 2: skipped re-analysis ({} non-interactive requests)", requests.len());
-            }
-        }
+        analyze_current_text_for(&requests, &mut documents, &ws);
 
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
@@ -1470,8 +1418,9 @@ fn main_loop(
             // workspace a Full rebuild marks every OPEN document dirty, so editing
             // one file froze hover/code-actions for seconds while all the others
             // were re-analyzed. Chunking bounds that stall to roughly one chunk's
-            // analysis time: between chunks the editor's hover/completion/code-action
-            // requests are served from the still-consistent cached analysis.
+            // analysis time: between chunks `drain_pending_requests` applies the
+            // edits that arrived and answers the editor's requests, a completion
+            // from its document's latest text.
             // ~400ms per chunk at ~100ms/file; keeps drain latency sub-second
             const BATCH_CHUNK: usize = 4;
             let did_batch = if dirty_uris.len() >= 3 {
@@ -1480,10 +1429,8 @@ fn main_loop(
                 for chunk in dirty_uris.chunks(BATCH_CHUNK) {
                     // Serve any requests that arrived since the last chunk so the
                     // editor stays responsive instead of waiting out the whole batch.
-                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, &client);
-                    if shutdown { return Ok(()); }
-                    for not in drained {
-                        handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
+                    if drain_pending_requests(&connection, &mut documents, &mut ws, &client, &mut progress_counter, &bg, &mut last_dirty_at) {
+                        return Ok(());
                     }
                     // A notification may have triggered a workspace rebuild,
                     // bumping ws_generation and rebuilding pre_globals. Already-
@@ -1526,20 +1473,13 @@ fn main_loop(
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in &dirty_uris {
-                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, &client);
-                    if shutdown { return Ok(()); }
-                    if !drained.is_empty() {
-                        for not in drained {
-                            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
-                        }
-                        if documents.get(uri_str).is_some_and(|d| d.dirty) {
-                        } else {
-                            continue;
-                        }
+                    if drain_pending_requests(&connection, &mut documents, &mut ws, &client, &mut progress_counter, &bg, &mut last_dirty_at) {
+                        return Ok(());
                     }
 
                     // Remove the document to take ownership of tree/analysis
                     // (SyntaxTree doesn't impl Clone). We always re-insert below.
+                    // A drained message may have closed it or left it clean.
                     let Some(doc) = documents.remove(uri_str) else { continue };
                     if !doc.dirty {
                         documents.insert(uri_str.clone(), doc);
@@ -1859,31 +1799,71 @@ fn send_refresh_requests(
     }
 }
 
-/// Drain pending messages, handle requests immediately using the current
-/// cached Analysis, and return any notifications for later processing.
-/// Returns `(notifications, should_shutdown)`.
+/// Handle the messages that arrived while Phase 4 re-analyzes files, so the
+/// editor isn't kept waiting for the whole cycle. Like a main-loop batch: each
+/// notification is applied as it is read, then Phase 2 runs for the requests and
+/// they are answered — a completion typed meanwhile from the text its edit left.
+/// An applied `didChange` restarts the debounce. Returns whether the client asked
+/// to shut down.
 fn drain_pending_requests(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     client: &ClientSupport,
-) -> (Vec<Notification>, bool) {
-    let mut pending_notifications = Vec::new();
+    progress_counter: &mut i32,
+    bg: &BackgroundChannels,
+    last_dirty_at: &mut Option<Instant>,
+) -> bool {
+    let mut requests = Vec::new();
     for msg in connection.receiver.try_iter() {
         match msg {
-            Message::Request(req) => {
-                if req.method == "shutdown" {
-                    let resp = Response::new_ok(req.id, ());
-                    let _ = connection.sender.send(Message::Response(resp));
-                    return (pending_notifications, true);
-                }
-                handle_request(connection, documents, ws, req, client);
+            Message::Request(req) if req.method == "shutdown" => {
+                let _ = connection.sender.send(Message::Response(Response::new_ok(req.id, ())));
+                return true;
             }
-            Message::Notification(not) => pending_notifications.push(not),
+            Message::Request(req) => requests.push(req),
+            Message::Notification(not) => {
+                if not.method == "textDocument/didChange" {
+                    *last_dirty_at = Some(Instant::now());
+                }
+                handle_notification(connection, documents, ws, not, &None, client, progress_counter, bg);
+            }
             Message::Response(_) => {}
         }
     }
-    (pending_notifications, false)
+    analyze_current_text_for(&requests, documents, ws);
+    for req in requests {
+        handle_request(connection, documents, ws, req, client);
+    }
+    false
+}
+
+/// Phase 2: analyze the unapplied text (`pending_text`) of the document each
+/// completion or signatureHelp request reads, since they answer the trigger
+/// character the user just typed. Every other request is served from the
+/// analysis of the previous text until Phase 4 catches up. The documents stay
+/// dirty: Phase 4 still rebuilds the workspace and publishes diagnostics once
+/// typing pauses. Publishing here, mid-keystroke, would make warnings flicker,
+/// and skipping the rebuild keeps it off the completion's latency.
+fn analyze_current_text_for(requests: &[Request], documents: &mut HashMap<String, Document>, ws: &WorkspaceState) {
+    for req in requests {
+        if !matches!(req.method.as_str(), "textDocument/completion" | "textDocument/signatureHelp") {
+            continue;
+        }
+        let Some(uri_str) = req.params.get("textDocument")
+            .and_then(|td| td.get("uri"))
+            .and_then(|uri| uri.as_str())
+        else { continue };
+        // No pending text once its current text has been analyzed.
+        let Some(doc) = documents.get(uri_str) else { continue };
+        if doc.toc.is_some() { continue; }
+        let Some(text) = doc.pending_text.clone() else { continue };
+        let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
+        let tree = parse_lua(&text);
+        let _wg = watchdog::WorkGuard::new(format!("analyze (interactive) {uri_str}"));
+        let analysis = Some(analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree));
+        documents.insert(uri_str.to_string(), Document { text, pending_text: None, analysis, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
+    }
 }
 
 fn send_response(connection: &Connection, id: RequestId, result: &impl serde::Serialize) {
@@ -3910,6 +3890,72 @@ mod tests {
             !ws.edited_uris.contains(&path),
             "didClose must remove the edited flag so it can't permanently poison the batch",
         );
+    }
+
+    /// Phase 4 serves the messages that arrive between the files it re-analyzes.
+    /// A completion queued behind a `didChange` must be answered from that edit's
+    /// text, not from the analysis of the text before it, and a notification
+    /// between them (the client cancelling an earlier completion) must not hold
+    /// it back until the next file.
+    #[test]
+    fn completion_drained_behind_an_edit_sees_the_edit() {
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let (server, client) = Connection::memory();
+        let client_support = ClientSupport::default();
+        let bg = BackgroundChannels {
+            stub_tx: crossbeam_channel::unbounded().0,
+            wake_tx: crossbeam_channel::unbounded().0,
+            stub_open_counter: AtomicU64::new(0),
+        };
+        let mut progress_counter = 0i32;
+
+        let uri: lsp_types::Uri = "file:///project/f.lua".parse().unwrap();
+        let text = "local settings = { alpha = 1 }\n";
+        let tree = parse_lua(text);
+        let analysis = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(uri.to_string(), Document {
+            text: text.to_string(), pending_text: None, analysis: Some(analysis), tree: Some(tree),
+            toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation,
+            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
+        });
+
+        client.sender.send(Message::Notification(Notification::new(
+            "textDocument/didChange".to_string(),
+            serde_json::json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [{
+                    "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 0 } },
+                    "text": "settings.",
+                }],
+            }),
+        ))).unwrap();
+        client.sender.send(Message::Notification(Notification::new(
+            "$/cancelRequest".to_string(),
+            serde_json::json!({ "id": 0 }),
+        ))).unwrap();
+        client.sender.send(Message::Request(Request::new(
+            RequestId::from(1),
+            "textDocument/completion".to_string(),
+            serde_json::json!({ "textDocument": { "uri": uri }, "position": { "line": 1, "character": 9 } }),
+        ))).unwrap();
+
+        let mut last_dirty_at = None;
+        let shutdown = drain_pending_requests(
+            &server, &mut documents, &mut ws, &client_support, &mut progress_counter, &bg, &mut last_dirty_at,
+        );
+        assert!(!shutdown);
+        assert!(last_dirty_at.is_some(), "the drained edit restarts the debounce");
+
+        let result = client.receiver.try_iter()
+            .find_map(|msg| match msg {
+                Message::Response(resp) if resp.id == RequestId::from(1) => resp.result,
+                _ => None,
+            })
+            .expect("the completion is answered");
+        let items = result.get("items").unwrap_or(&result).as_array().cloned().unwrap_or_default();
+        let labels: Vec<&str> = items.iter().filter_map(|item| item.get("label")?.as_str()).collect();
+        assert!(labels.contains(&"alpha"), "completion must read the edited text: {labels:?}");
     }
 
     /// The mechanism the batch-routing guard above depends on: the deferred cross-file
