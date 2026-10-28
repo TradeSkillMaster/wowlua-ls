@@ -1738,3 +1738,15 @@ do
     local listButton = CreateFrame("Button", nil, UIParent, "OptionsListButtonTemplate")
     local listText, listToggle = listButton.text, listButton.toggle
 end
+
+-- A frame field typed with a back-reference to its widget, on a constructor that
+-- returns its untyped table: the table holds a frame whose `obj` is the table.
+---@class RetWidget
+---@field frame Frame & {obj: RetWidget}
+
+---@return RetWidget
+local function RetWidgetConstructor()
+    local widget = { frame = CreateFrame("Button", nil, UIParent) }
+    widget.frame.obj = widget
+    return widget
+end

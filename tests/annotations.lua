@@ -1156,6 +1156,68 @@ local function testIntersection(x)
     --    ^ hover: (local) itag: string
 end
 
+-- A class instance passes for an anonymous table shape when it has the shape's
+-- fields (own or inherited); an optional one may be absent
+---@class ShapeTagged : IntersBase
+---@field tag string
+
+---@class ShapeExtra : ShapeTagged
+---@field extra boolean
+
+---@class ShapeWrongTag : IntersBase
+---@field tag number
+
+---@param x {id: number, tag: string}
+local function needsTag(x) return x end
+
+---@param x {id: number, tag?: string}
+local function mayHaveTag(x) return x end
+
+---@param tagged ShapeTagged
+---@param extra ShapeExtra
+---@param base IntersBase
+---@param wrong ShapeWrongTag
+local function passShapes(tagged, extra, base, wrong)
+    needsTag(tagged)
+    testIntersection(extra)
+    testIntersection(tagged)
+--                   ^ diag: type-mismatch
+    mayHaveTag(tagged)
+    mayHaveTag(base)
+    needsTag(base)
+--           ^ diag: type-mismatch
+    mayHaveTag(wrong)
+--             ^ diag: type-mismatch
+end
+
+-- Classes and shapes naming each other: a check that reaches itself holds, and a
+-- field missing along the way still fails
+---@class CycD
+---@field f {x: CycD}
+
+---@class CycC
+---@field x {f: CycC}
+
+---@class CycE
+---@field f {x: CycE, n: number}
+
+---@class CycF
+---@field x {f: CycF}
+
+---@param d {x: CycD}
+local function takesCycD(d) return d end
+
+---@param e {x: CycE}
+local function takesCycE(e) return e end
+
+---@param c CycC
+---@param f CycF
+local function passCycles(c, f)
+    takesCycD(c)
+    takesCycE(f)
+--            ^ diag: type-mismatch
+end
+
 -- Regression: @type annotation on assignment should override inferred type
 local SENTINEL_VAL = {}
 

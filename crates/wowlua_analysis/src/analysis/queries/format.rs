@@ -221,7 +221,7 @@ fn enrich_class_field_from_local(
 
 /// Shared implementation for read-only expression type resolution.
 /// Both `Analysis::resolve_expr_type` and `AnalysisResult::resolve_expr_type` delegate here.
-pub(super) fn resolve_expr_type_impl(
+pub(crate) fn resolve_expr_type_impl(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
     expr_id: ExprId,

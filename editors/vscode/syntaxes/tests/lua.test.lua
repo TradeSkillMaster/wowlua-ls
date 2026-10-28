@@ -405,6 +405,28 @@ goto myLabel
 --                  ^^ keyword.operator.lua
 --                    ^^^^^^ support.type.lua
 
+-- Annotation: anonymous table literal as an intersection member in @field
+---@field frame Frame&{obj: self}?
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^^ entity.name.variable.lua
+--              ^^^^^ support.type.lua
+--                   ^^ keyword.operator.lua
+--                     ^^^ support.type.lua
+--                        ^ keyword.operator.lua
+--                          ^^^^ support.type.lua
+--                              ^^ keyword.operator.lua
+
+-- Annotation: anonymous table literal after a spaced operator, then a description
+---@param f Frame & {obj: self} the frame
+--        ^ entity.name.variable.lua
+--          ^^^^^ support.type.lua
+--                ^ keyword.operator.lua
+--                  ^ keyword.operator.lua
+--                   ^^^ support.type.lua
+--                        ^^^^ support.type.lua
+--                            ^ keyword.operator.lua
+--                              ^^^^^^^^^ comment.block.documentation.lua
+
 -- Annotation: @correlated
 ---@correlated itemString, duration, buyout
 -- ^^^^^^^^^^^ storage.type.annotation.lua

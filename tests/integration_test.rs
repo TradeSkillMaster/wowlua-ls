@@ -3064,6 +3064,12 @@ fn class_redeclared_ctor() {
         with_stubs: true,
         scan_dir: Some("tests/class-redeclared-ctor"),
     });
+    // Its frames come from the stubs.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-redeclared-ctor/widget.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-redeclared-ctor"),
+    });
 }
 
 #[test]

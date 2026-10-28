@@ -4439,6 +4439,16 @@ pub fn is_table_subtype_impl(
                         && (av.is_assignable_to(bv) || is_table_subtype_impl(ir, resolved_expr_cache, av, bv));
                 }
             }
+            // A class instance structurally matches an anonymous table shape
+            // (`Frame & {obj: T}`) when it has each of the shape's fields — its own,
+            // an ancestor's, or one this file writes onto it — with an assignable
+            // type. An optional field may be absent.
+            if at.class_name.is_some() && bt.class_name.is_none()
+                && bt.key_type.is_none() && bt.value_type.is_none() && !bt.fields.is_empty()
+                && class_matches_shape_impl(ir, resolved_expr_cache, *a, *b)
+            {
+                return true;
+            }
             if at.class_name.is_none() && bt.class_name.is_none() {
                 if bt.key_type.is_none() && bt.value_type.is_none()
                     && !bt.fields.values().any(|f| f.annotation_type_raw.is_some()) {
@@ -4543,6 +4553,56 @@ pub fn fields_structurally_match_impl(
     expected_idx: TableIndex,
 ) -> bool {
     check_fields_impl(ir, resolved_expr_cache, actual_idx, expected_idx).is_empty()
+}
+
+thread_local! {
+    /// The [`class_matches_shape_impl`] checks running on this thread, by IR (the
+    /// indices are per file).
+    static SHAPE_CHECKS: std::cell::RefCell<HashSet<(*const Ir, TableIndex, TableIndex)>> =
+        std::cell::RefCell::new(HashSet::default());
+}
+
+/// Removes its [`SHAPE_CHECKS`] entry on drop, including on unwind.
+struct ShapeCheck((*const Ir, TableIndex, TableIndex));
+
+impl Drop for ShapeCheck {
+    fn drop(&mut self) {
+        SHAPE_CHECKS.with(|checks| checks.borrow_mut().remove(&self.0));
+    }
+}
+
+/// Whether instances of class `class_idx` have every field the anonymous shape
+/// `shape_idx` declares (see `is_table_subtype_impl`).
+fn class_matches_shape_impl(
+    ir: &Ir,
+    resolved_expr_cache: &[Option<ValueType>],
+    class_idx: TableIndex,
+    shape_idx: TableIndex,
+) -> bool {
+    // The fields' types can lead back to this same check (a class and a shape that
+    // name each other): one already running holds, as for any recursive type.
+    let key = (std::ptr::from_ref(ir), class_idx, shape_idx);
+    if !SHAPE_CHECKS.with(|checks| checks.borrow_mut().insert(key)) {
+        return true;
+    }
+    let _running = ShapeCheck(key);
+    let resolve = |expr| queries::resolve_expr_type_impl(ir, resolved_expr_cache, expr, &mut HashSet::default(), 0);
+    ir.table(shape_idx).fields.iter().all(|(name, expected)| {
+        let Some(expected_type) = expected.annotation.clone().or_else(|| resolve(expected.expr)) else { return true };
+        let optional = expected.lateinit || expected_type.contains_nil();
+        let fits = |t: &ValueType| t.is_assignable_to(&expected_type)
+            || is_table_subtype_impl(ir, resolved_expr_cache, t, &expected_type);
+        match ir.get_field(class_idx, name) {
+            Some(actual) => match &actual.annotation {
+                Some(declared) => fits(declared),
+                // A field this file writes (`frame.obj = widget`) holds whichever of
+                // its values the instance was given, if any.
+                None => optional || std::iter::once(actual.expr).chain(actual.extra_exprs.iter().copied())
+                    .any(|e| resolve(e).is_none_or(|t| fits(&t))),
+            },
+            None => optional,
+        }
+    })
 }
 
 pub fn structural_mismatch_details_impl(

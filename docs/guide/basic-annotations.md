@@ -223,6 +223,18 @@ end
 
 Optional fields use `?` before the colon: `verbose?`. They allow `nil`.
 
+A class instance matches a shape when it has each of the shape's required fields with a matching type: fields its class declares or inherits, or ones the file assigns to it. A frame field typed with a back-reference to its widget accepts the frame the widget is built from:
+
+```lua
+---@class MyWidget
+---@field frame Frame & {obj: MyWidget}
+
+local frame = CreateFrame("Button")
+---@type MyWidget
+local widget = { frame = frame }
+frame.obj = widget
+```
+
 ### Function types
 
 Function types describe callable values:

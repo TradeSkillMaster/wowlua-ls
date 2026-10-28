@@ -691,7 +691,7 @@
                   "name": "keyword.operator.lua"
                 }
               },
-              "end": "(\\>)([\\[\\]\\?\\!]*)((?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?|(?=[\\n@#])",
+              "end": "(\\>)([\\[\\]\\?\\!]*)((?:\\s*[|&]\\s*(?:(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}[\\[\\]?!]*))*)(?:\\s+(.+))?|(?=[\\n@#])",
               "endCaptures": {
                 "1": {
                   "name": "keyword.operator.lua"
@@ -731,7 +731,25 @@
               }
             },
             {
-              "comment": "@param with type containing {…} anonymous table literal",
+              "comment": "@param with simple/union type and optional description (allows spaces around | and &, ...M variadic generic types, and {…} table literal members with one level of brace nesting)",
+              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}[\\[\\]?!]*)(?:\\s*[|&]\\s*(?:(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}[\\[\\]?!]*))*)(?:\\s+(.+))?",
+              "captures": {
+                "1": {
+                  "name": "entity.name.variable.lua"
+                },
+                "2": {
+                  "name": "keyword.operator.lua"
+                },
+                "3": {
+                  "name": "support.type.lua"
+                },
+                "4": {
+                  "name": "comment.block.documentation.lua"
+                }
+              }
+            },
+            {
+              "comment": "@param with type containing a {…} table literal nested deeper than the simple/union rule matches",
               "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+(?=[^\\s]*\\{)",
               "beginCaptures": {
                 "1": {
@@ -755,24 +773,6 @@
                   "include": "#emmydoc.type"
                 }
               ]
-            },
-            {
-              "comment": "@param with simple/union type and optional description (allows spaces around | and &, and ...M variadic generic types)",
-              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
-              "captures": {
-                "1": {
-                  "name": "entity.name.variable.lua"
-                },
-                "2": {
-                  "name": "keyword.operator.lua"
-                },
-                "3": {
-                  "name": "support.type.lua"
-                },
-                "4": {
-                  "name": "comment.block.documentation.lua"
-                }
-              }
             },
             {
               "comment": "@param with name only (no type typed yet) — keeps the name highlighted while the user is mid-typing the type. Optional `?` is only valid on the named form, not on the `...` vararg form.",
@@ -1283,7 +1283,7 @@
               "name": "keyword.operator.lua"
             }
           },
-          "end": "(\\>)([\\[\\]\\?\\!]*)((?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?|(?=[\\n#])",
+          "end": "(\\>)([\\[\\]\\?\\!]*)((?:\\s*[|&]\\s*(?:(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}[\\[\\]?!]*))*)(?:\\s+(.+))?|(?=[\\n#])",
           "endCaptures": {
             "1": {
               "name": "keyword.operator.lua"
@@ -1317,20 +1317,8 @@
           }
         },
         {
-          "comment": "{…} table literal type with description (one level of brace nesting)",
-          "match": "\\s+(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})(?:\\s+(.+))?",
-          "captures": {
-            "1": {
-              "name": "support.type.lua"
-            },
-            "2": {
-              "name": "comment.block.documentation.lua"
-            }
-          }
-        },
-        {
-          "comment": "Simple/union type with optional description (allows spaces around | and &, and ...M variadic generic types). Delegates to emmydoc.type for rich sub-tokenization of operators and type names.",
-          "match": "\\s+((?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
+          "comment": "Simple/union type with optional description (allows spaces around | and &, ...M variadic generic types, and {…} table literal members with one level of brace nesting, e.g. Frame&{obj: self} or {x: number}?). Delegates to emmydoc.type for rich sub-tokenization of operators and type names.",
+          "match": "\\s+((?:(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}[\\[\\]?!]*)(?:\\s*[|&]\\s*(?:(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*|\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}[\\[\\]?!]*))*)(?:\\s+(.+))?",
           "captures": {
             "1": {
               "name": "support.type.lua"
