@@ -362,16 +362,16 @@ print(castMuA)
 print(castMuC)
 --    ^ hover: (local) castMuC: string
 
--- ── @cast blocked by blank line + comment ────────────────────────────────────
--- A @cast followed by a blank line AND a plain comment does not apply — the
--- comment after the blank line signals a section boundary.
+-- ── @cast followed by a blank line + comment ─────────────────────────────────
+-- A @cast applies from where it's written: a blank line and a plain comment
+-- before the next statement don't stop it.
 
 local castBlankVal = "hello"
 ---@cast castBlankVal string?
 
 -- unrelated section header
 print(castBlankVal)
---    ^ hover: (local) castBlankVal: string = "hello"
+--    ^ hover: (local) castBlankVal: string?
 
 -- ── @cast spaced line comment '--- @cast' (regression) ──────────────────────
 -- A space after the leading dashes (`--- @cast`, the common doc-comment style)
@@ -520,4 +520,31 @@ local function castIncompleteMid(val)
 --        ^ comp: name
     print(val)
 --        ^ hover: (param) val: CastIncompleteSub
+end
+
+-- ── @cast set off from the next statement by a blank line ────────────────────
+
+---@class CastBlankBase
+---@field id integer
+
+---@class CastBlankSub : CastBlankBase
+
+---@param val CastBlankBase
+local function castBlankAtBlockStart(val)
+    if val.id == 0 then
+        --- @cast val CastBlankSub
+
+        print(val)
+--            ^ hover: (param) val: CastBlankSub
+    end
+end
+
+---@param val CastBlankBase
+local function castBlankBetween(val)
+    print(val)
+
+    ---@cast val CastBlankSub
+
+    print(val)
+--        ^ hover: (param) val: CastBlankSub
 end

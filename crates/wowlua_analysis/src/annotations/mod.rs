@@ -2444,7 +2444,7 @@ pub use annotation_scanning::{
     FieldValueKind, CallArgRefs, ExternalGlobalKind, ExternalGlobal, CtorField, CreatesGlobalSpec, GeneratesEventsSpec,
     CallbackRegistryDecl, StringArrayConstDecl,
     SuppressionKind, DiagnosticSuppression, scan_diagnostic_directives,
-    DIAGNOSTIC_DIRECTIVE_MARKER, find_diagnostic_directive, strip_trailing_diagnostic_directive,
+    find_diagnostic_directive, strip_trailing_diagnostic_directive,
 };
 pub use annotation_scanning::{
     ADDON_NS_NAME, STRING_INDEX_ENTRY, ANY_INDEX_ENTRY, apply_index_entry, is_index_entry,

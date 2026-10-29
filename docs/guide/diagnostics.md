@@ -108,6 +108,8 @@ function greet(name) end
 greet(42) -- type-mismatch: expected string, got number
 ```
 
+A function with `@overload`s is checked against the signature the call matches. A call that matches none is checked against the one with the fewest mismatched arguments, so an argument only another signature rejects isn't reported.
+
 ### `return-mismatch` <Badge type="warning" text="Warning" />
 
 Return type doesn't match the function's `@return` annotation:
@@ -173,6 +175,8 @@ function greet(name)
     print(name:upper()) -- need-check-nil
 end
 ```
+
+A possibly-nil argument for a parameter that doesn't accept nil is reported here too, rather than as `type-mismatch`.
 
 Enable in `.wowluarc.json`: `"diagnostics": { "enable": ["need-check-nil"] }`
 

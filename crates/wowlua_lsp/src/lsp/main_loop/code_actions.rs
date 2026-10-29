@@ -1660,6 +1660,16 @@ pub(super) fn find_assignment_in_line(line: &str, name: &str) -> Option<usize> {
     None
 }
 
+/// The codes (the text after the colon) of a `---@diagnostic <keyword>:`
+/// directive in `text`, tight or spaced (`find_diagnostic_directive`); with
+/// `at_start`, only one that begins `text`.
+fn diagnostic_directive_codes<'t>(text: &'t str, keyword: &str, at_start: bool) -> Option<&'t str> {
+    let (marker, body) = crate::annotations::find_diagnostic_directive(text)?;
+    if at_start && marker != 0 { return None; }
+    let (kw, codes) = body.split_once(':')?;
+    (kw.trim() == keyword).then_some(codes)
+}
+
 #[allow(clippy::mutable_key_type)]
 /// If `codes_text` (the part after a `---@diagnostic disable*:` marker) already
 /// contains `code`, return a no-op edit; otherwise return an edit that appends
@@ -1698,9 +1708,7 @@ pub(super) fn make_disable_line_action(
         .unwrap_or("");
     let line_trimmed = line_text.trim_end();
 
-    let marker = "---@diagnostic disable-line:";
-    let edit = if let Some(pos) = line_trimmed.find(marker) {
-        let codes_text = &line_trimmed[pos + marker.len()..];
+    let edit = if let Some(codes_text) = diagnostic_directive_codes(line_trimmed, "disable-line", false) {
         merge_diagnostic_codes_edit(target_line, line_trimmed.len() as u32, codes_text, code)
     } else {
         let insert_pos = Position { line: target_line, character: line_text.len() as u32 };
@@ -1728,14 +1736,12 @@ pub(super) fn make_disable_next_line_action(
 ) -> CodeAction {
     let target_line = diag.range.start.line;
 
-    let marker = "---@diagnostic disable-next-line:";
-
     // Check if the previous line already has a disable-next-line directive
     let edit = if target_line > 0 {
         let prev_line = text.split('\n').nth((target_line - 1) as usize).unwrap_or("");
         let prev_trimmed = prev_line.trim_end();
         let prev_content = prev_trimmed.trim_start();
-        if let Some(codes_text) = prev_content.strip_prefix(marker) {
+        if let Some(codes_text) = diagnostic_directive_codes(prev_content, "disable-next-line", true) {
             merge_diagnostic_codes_edit(target_line - 1, prev_trimmed.len() as u32, codes_text, code)
         } else {
             make_new_disable_next_line_edit(text, target_line, code)
@@ -1776,17 +1782,15 @@ pub(super) fn make_disable_file_action(
     diag: &lsp_types::Diagnostic,
     code: &str,
 ) -> CodeAction {
-    let marker = "---@diagnostic disable:";
-
     // Search the comment-only prefix of the file for an existing file-level
     // disable directive. Stop at the first line that is neither blank nor a
     // `---` comment so we don't merge into a scoped directive buried inside a
     // function body.
-    let mut found: Option<(u32, &str)> = None;
+    let mut found: Option<(u32, &str, &str)> = None;
     for (line_idx, line) in text.split('\n').enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with(marker) {
-            found = Some((line_idx as u32, line));
+        if let Some(codes_text) = diagnostic_directive_codes(trimmed, "disable", true) {
+            found = Some((line_idx as u32, line, codes_text));
             break;
         }
         if !trimmed.is_empty() && !trimmed.starts_with("---") && !trimmed.starts_with("#!") {
@@ -1794,10 +1798,8 @@ pub(super) fn make_disable_file_action(
         }
     }
 
-    let edit = if let Some((line_idx, line_text)) = found {
+    let edit = if let Some((line_idx, line_text, codes_text)) = found {
         let line_trimmed = line_text.trim_end();
-        let content = line_trimmed.trim_start();
-        let codes_text = content.strip_prefix(marker).unwrap_or("");
         merge_diagnostic_codes_edit(line_idx, line_trimmed.len() as u32, codes_text, code)
     } else {
         let insert_pos = Position { line: 0, character: 0 };
@@ -1939,5 +1941,30 @@ mod tests {
         assert_read_contains(&out, "New");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["globals"]["write"][0], "read");
+    }
+
+    /// The suppression quick-fixes add to an existing directive written in the
+    /// spaced `--- @diagnostic` form, as for the tight one, rather than insert
+    /// a line between a `disable-next-line` and the line it covers.
+    #[test]
+    fn disable_actions_merge_into_spaced_directive() {
+        use std::str::FromStr;
+        let uri = lsp_types::Uri::from_str("file:///tmp/wowlua-disable-test/a.lua").unwrap();
+        let diag_at = |line: u32| lsp_types::Diagnostic {
+            range: Range { start: Position { line, character: 0 }, end: Position { line, character: 1 } },
+            ..Default::default()
+        };
+        let only_edit = |action: CodeAction| {
+            let mut edits = action.edit.and_then(|e| e.changes?.into_values().next()).unwrap();
+            assert_eq!(edits.len(), 1);
+            edits.remove(0)
+        };
+        let text = "--- @diagnostic disable: foo\n\t--- @diagnostic disable-next-line: foo\n\tx()\ny() --- @diagnostic disable-line: foo\n";
+        let next_line = only_edit(make_disable_next_line_action(&uri, text, &diag_at(2), "bar"));
+        assert_eq!((next_line.range.start, next_line.new_text.as_str()), (Position { line: 1, character: 39 }, ", bar"));
+        let same_line = only_edit(make_disable_line_action(&uri, text, &diag_at(3), "bar"));
+        assert_eq!((same_line.range.start, same_line.new_text.as_str()), (Position { line: 3, character: 37 }, ", bar"));
+        let file = only_edit(make_disable_file_action(&uri, text, &diag_at(2), "bar"));
+        assert_eq!((file.range.start, file.new_text.as_str()), (Position { line: 0, character: 28 }, ", bar"));
     }
 }

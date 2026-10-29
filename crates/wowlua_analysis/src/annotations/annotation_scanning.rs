@@ -2030,29 +2030,25 @@ pub fn resolve_annotation_type(
 
 // ── Diagnostic suppression scanning ─────────────────────────────────────────
 
-/// The marker that introduces a `---@diagnostic` suppression directive.
-///
-/// A single Lua line-comment may carry such a directive *after* other annotation
-/// content (`---@class Foo ---@diagnostic disable-line: code`) — the natural way
-/// to suppress a diagnostic that lands on an annotation-only line. Both the
-/// directive scanner (which must find it) and the annotation parsers (which must
-/// ignore it) locate the trailing directive with this marker.
-pub const DIAGNOSTIC_DIRECTIVE_MARKER: &str = "---@diagnostic";
-
 /// Locate a `---@diagnostic` directive within a comment's `text` — whether it is
 /// the entire comment (`---@diagnostic disable: foo`) or trails other annotation
-/// content (`---@class Foo ---@diagnostic disable-line: foo`). Returns the byte
-/// offset of the marker within `text` and the (untrimmed) directive body that
-/// follows it.
+/// content (`---@class Foo ---@diagnostic disable-line: foo`), the natural way to
+/// suppress a diagnostic that lands on an annotation-only line. Like every
+/// `@tag`, the marker may be spaced (`--- @diagnostic`, see
+/// `strip_line_annotation_prefix`). Returns the byte offset of the marker within
+/// `text` and the (untrimmed) directive body that follows it.
 ///
 /// Shared by `scan_diagnostic_directives` (which attributes the directive to the
-/// marker's own line) and the `unknown-diag-code` validator (which searches the
+/// marker's own line), the `unknown-diag-code` validator (which searches the
 /// body — not the whole comment — for code spans, so an identical substring
-/// earlier in the comment can't capture the emitted range), keeping the two
-/// scanners in lockstep on what counts as a directive and where it begins.
+/// earlier in the comment can't capture the emitted range) and the annotation
+/// parsers (which must ignore a trailing directive), keeping them in lockstep on
+/// what counts as a directive and where it begins.
 pub fn find_diagnostic_directive(text: &str) -> Option<(usize, &str)> {
-    let marker = text.find(DIAGNOSTIC_DIRECTIVE_MARKER)?;
-    Some((marker, &text[marker + DIAGNOSTIC_DIRECTIVE_MARKER.len()..]))
+    text.match_indices('-').find_map(|(marker, _)| {
+        let body = super::strip_line_annotation_prefix(&text[marker..])?.strip_prefix("diagnostic")?;
+        Some((marker, body))
+    })
 }
 
 /// The annotation-content portion of a comment, with any *trailing*
@@ -2068,8 +2064,8 @@ pub fn find_diagnostic_directive(text: &str) -> Option<(usize, &str)> {
 /// scanners (`scan_diagnostic_directives` / the `unknown-diag-code` validator),
 /// which do not call this helper.
 pub fn strip_trailing_diagnostic_directive(text: &str) -> &str {
-    match text.find(DIAGNOSTIC_DIRECTIVE_MARKER) {
-        Some(pos) if pos > 0 => text[..pos].trim_end(),
+    match find_diagnostic_directive(text) {
+        Some((pos, _)) if pos > 0 => text[..pos].trim_end(),
         _ => text,
     }
 }
@@ -2338,5 +2334,15 @@ mod tests {
             .collect();
         let expected = [("MyProto", "viaMethod"), ("MyProto", "viaCtor")].map(|(c, f)| (c.to_string(), f.to_string()));
         assert_eq!(fields, expected);
+    }
+
+    /// A `@diagnostic` directive is found in the tight and spaced forms, as the
+    /// whole comment or after other annotation content.
+    #[test]
+    fn diagnostic_directive_tight_and_spaced() {
+        assert_eq!(find_diagnostic_directive("---@diagnostic disable: a"), Some((0, " disable: a")));
+        assert_eq!(find_diagnostic_directive("--- @diagnostic disable: a"), Some((0, " disable: a")));
+        assert_eq!(find_diagnostic_directive("---@class Foo --- @diagnostic disable-line: a"), Some((14, " disable-line: a")));
+        assert_eq!(find_diagnostic_directive("-- @diagnostic disable: a"), None);
     }
 }

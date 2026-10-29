@@ -48,6 +48,10 @@ oldFunc()
 -- Should NOT warn: suppressed by disable-line on same line
 oldFunc() ---@diagnostic disable-line: deprecated
 
+-- Should NOT warn: the spaced `--- @diagnostic` form suppresses too
+--- @diagnostic disable-next-line: deprecated
+oldFunc()
+
 -- Should warn: deprecated method called via self:Method()
 ---@class DeprMethodHost
 local deprHost = {}
@@ -1122,6 +1126,9 @@ _consume(testDupParam)
 ---@diagnostic disable-next-line: typo-code
 -- ^ diag: unknown-diag-code
 local _suppressed = nil
+--- @diagnostic disable-next-line: typo-code
+-- ^ diag: unknown-diag-code
+local _suppressedSpaced = nil
 
 -- LuaLS alias codes should NOT trigger unknown-diag-code and should suppress
 ---@diagnostic disable-next-line: param-type-mismatch

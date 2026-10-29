@@ -34,6 +34,36 @@ enum CalleeResolution {
     },
 }
 
+/// How a call's arguments fit a signature: how many the type-mismatch
+/// diagnostic would report, then how many fit only once nil is removed (which it
+/// leaves to `need-check-nil`). Orders the better fit first.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct SignatureFit {
+    mismatches: usize,
+    nilable: usize,
+}
+
+impl SignatureFit {
+    fn is_exact(self) -> bool {
+        self == Self::default()
+    }
+
+    fn add(&mut self, arg: ArgFit) {
+        match arg {
+            ArgFit::Exact => {}
+            ArgFit::Nilable => self.nilable += 1,
+            ArgFit::Mismatch => self.mismatches += 1,
+        }
+    }
+}
+
+/// How one argument fits its parameter (see [`SignatureFit`]).
+enum ArgFit {
+    Exact,
+    Nilable,
+    Mismatch,
+}
+
 // ── Function call resolution ──────────────────────────────────────────────────
 
 impl<'a> Analysis<'a> {
@@ -440,7 +470,7 @@ impl<'a> Analysis<'a> {
         });
 
         let (matching_overload, overload_self_offset, ambiguous_overload_ret_type) =
-            self.select_matching_overload(&overloads, args, ret_index);
+            self.select_matching_overload(&overloads, args, ret_index, (func_idx, self_offset));
 
         // When a generic overload is matched, re-infer generics from the
         // overload's param types. The initial inference used the primary
@@ -2785,12 +2815,17 @@ impl<'a> Analysis<'a> {
 
     /// Select the overload matching the call-site argument count and types,
     /// returning a reference to it, the overload's self-offset, and (when several
-    /// overloads tie at zero mismatches) their unioned return type.
+    /// overloads tie at zero mismatches) their unioned return type. An overload
+    /// that takes the arguments exactly wins; otherwise the call resolves against
+    /// the signature it fits best, so its diagnostics report only the arguments
+    /// that one rejects. `primary` is the base signature's function and
+    /// self-offset, which wins a tie.
     fn select_matching_overload<'o>(
         &mut self,
         overloads: &'o [ResolvedOverload],
         args: &[ExprId],
         ret_index: usize,
+        primary: (FunctionIndex, usize),
     ) -> (Option<&'o ResolvedOverload>, usize, Option<ValueType>) {
         // When multiple overloads tie at zero mismatches (no single best match),
         // we union their return types at this ret_index. Computed lazily below.
@@ -2861,143 +2896,82 @@ impl<'a> Analysis<'a> {
             } else {
                 range_matched
             };
-            // When multiple overloads remain, prefer one with compatible arg types.
-            let found = if string_filtered.len() > 1 {
-                // Resolve arg types for type-based discrimination
+            // A lone candidate's bare string-literal param (e.g. select's "#")
+            // takes only that literal in source. This check is independent of type
+            // resolution (string_literals is populated in Phase 1) and must hold
+            // even when the arg's type is unresolved — preventing unresolved or
+            // Any-typed args from falsely matching a discriminator overload.
+            //
+            // We intentionally handle only `String(Some(...))`, not `Union` of
+            // literals. Union-typed params (e.g. CreateFrame's template param
+            // resolved as a union of known class names) can legitimately receive
+            // user-defined strings not present in the union. The multi-overload
+            // string filter above already handles unions with a fallback when no
+            // overload matches; replicating that rejection here without the
+            // fallback would break valid calls.
+            let literal_unmatched = |o: &ResolvedOverload| {
+                let off = ovl_self_off(&o);
+                args.iter().enumerate().any(|(i, arg_id)| {
+                    matches!(o.params.get(i + off).and_then(|p| p.typ.as_ref()),
+                        Some(ValueType::String(Some(expected)))
+                        if self.ir.string_literals.get(arg_id).is_none_or(|actual| actual != expected))
+                })
+            };
+            let candidates: &[&ResolvedOverload] = match string_filtered[..] {
+                [only] if literal_unmatched(only) => &[],
+                _ => &string_filtered,
+            };
+            // Prefer the overload the arg types fit best.
+            let found = if candidates.is_empty() {
+                None
+            } else {
                 let arg_types: Vec<Option<ValueType>> = args.iter()
                     .map(|id| self.resolve_expr(*id))
                     .collect();
-                // Score: count type mismatches per overload
-                let scored: Vec<(&ResolvedOverload, usize)> = string_filtered.iter().map(|o| {
-                    let off = ovl_self_off(o);
-                    let mismatches = arg_types.iter().enumerate().filter(|(i, arg_t)| {
-                        if let Some(arg_t) = arg_t {
-                            if let Some(param) = o.params.get(i + off) {
-                                if let Some(param_t) = &param.typ {
-                                    // Nil against a non-optional param is always a mismatch
-                                    if !param.optional && matches!(arg_t, ValueType::Nil) {
-                                        return true;
-                                    }
-                                    // Skip mismatch check for params with unresolved type variables
-                                    if let Some(result) = self.type_var_param_mismatch(param_t, arg_t) {
-                                        return result;
-                                    }
-                                    // Optional params accept nil
-                                    if param.optional && matches!(arg_t, ValueType::Nil) {
-                                        return false;
-                                    }
-                                    !arg_t.is_assignable_to(param_t)
-                                        && !self.is_table_subtype(arg_t, param_t)
-                                } else {
-                                    false // no param type → no mismatch
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false // unresolved arg → no mismatch
-                        }
-                    }).count();
-                    (*o, mismatches)
-                }).collect();
-                let best_score = scored.iter().map(|(_, m)| *m).min();
-                if let Some(0) = best_score {
-                    let zero_mismatch: Vec<&ResolvedOverload> = scored.iter()
-                        .filter(|(_, m)| *m == 0)
-                        .map(|(o, _)| *o)
-                        .collect();
-                    if zero_mismatch.len() == 1 {
-                        Some(zero_mismatch[0])
-                    } else {
-                        // Multiple overloads with 0 mismatches — prefer the one whose
-                        // non-self param count best matches the arg count (tightest arity).
-                        // Vararg overloads get a slight penalty so a non-vararg exact
-                        // match is preferred over a vararg with fewer declared params.
-                        let with_arity: Vec<(&ResolvedOverload, usize)> = zero_mismatch.iter()
-                            .map(|&o| {
-                                let off = ovl_self_off(&o);
-                                let non_self = o.params.len() - off;
-                                let distance = (non_self as isize - n_args as isize).unsigned_abs();
-                                let score = if o.is_vararg && non_self <= n_args { distance + 1 } else { distance };
-                                (o, score)
-                            })
-                            .collect();
-                        let best_score = with_arity.iter().map(|(_, s)| *s).min()
-                            .expect("zero_mismatch has >= 2 elements");
-                        let best_count = with_arity.iter().filter(|(_, s)| *s == best_score).count();
-                        if best_count == 1 {
-                            let (best, _) = with_arity.into_iter().find(|(_, s)| *s == best_score).unwrap();
-                            Some(best)
-                        } else {
-                            // Still ambiguous: union their returns at ret_index.
-                            let types: Vec<ValueType> = zero_mismatch.iter()
-                                .map(|o| o.return_type_at(ret_index))
-                                .collect();
-                            ambiguous_overload_ret_type = Some(ValueType::make_union(types));
-                            None
-                        }
-                    }
-                } else {
+                let scored: Vec<(&ResolvedOverload, SignatureFit)> = candidates.iter()
+                    .map(|&o| (o, self.overload_fit(o, ovl_self_off(&o), &arg_types)))
+                    .collect();
+                let best = scored.iter().map(|&(_, fit)| fit).min()
+                    .expect("candidates is non-empty");
+                let tied: Vec<&ResolvedOverload> = scored.iter()
+                    .filter(|&&(_, fit)| fit == best)
+                    .map(|&(o, _)| o)
+                    .collect();
+                let (primary_idx, primary_self_offset) = primary;
+                if !best.is_exact() && best >= self.primary_fit(primary_idx, primary_self_offset, &arg_types) {
+                    // No overload fits better than the base signature.
                     None
-                }
-            } else if let Some(&only) = string_filtered.first() {
-                // Single candidate: verify type compatibility before committing
-                let off = ovl_self_off(&only);
-                let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
-                    // Bare string-literal param (e.g. select's "#"): reject
-                    // unless the arg is that exact literal in source. This check
-                    // is independent of type resolution (string_literals is
-                    // populated in Phase 1) and must run even when resolve_expr
-                    // returns None — preventing unresolved or Any-typed args from
-                    // falsely matching a discriminator overload.
-                    //
-                    // We intentionally handle only `String(Some(...))`, not
-                    // `Union` of literals. Union-typed params (e.g. CreateFrame's
-                    // template param resolved as a union of known class names)
-                    // can legitimately receive user-defined strings not present
-                    // in the union. The multi-overload string filter (lines
-                    // 752–778) already handles unions with a fallback when no
-                    // overload matches; replicating that rejection here without
-                    // the fallback would break valid calls.
-                    if let Some(param) = only.params.get(i + off)
-                        && let Some(ValueType::String(Some(expected))) = &param.typ
-                    {
-                        let matches_literal = self.ir.string_literals.get(arg_id)
-                            .is_some_and(|actual| actual == expected);
-                        if !matches_literal {
-                            return true;
-                        }
-                    }
-                    if let Some(arg_t) = self.resolve_expr(*arg_id) {
-                        if let Some(param) = only.params.get(i + off) {
-                            if let Some(param_t) = &param.typ {
-                                // Nil against a non-optional param is always a mismatch
-                                if !param.optional && matches!(arg_t, ValueType::Nil) {
-                                    return true;
-                                }
-                                // Skip mismatch check for params with unresolved type variables
-                                if let Some(result) = self.type_var_param_mismatch(param_t, &arg_t) {
-                                    return result;
-                                }
-                                // Optional params accept nil
-                                if param.optional && matches!(arg_t, ValueType::Nil) {
-                                    return false;
-                                }
-                                !arg_t.is_assignable_to(param_t)
-                                    && !self.is_table_subtype(&arg_t, param_t)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
+                } else if let [only] = tied[..] {
+                    Some(only)
+                } else {
+                    // Multiple overloads fit equally — prefer the one whose
+                    // non-self param count best matches the arg count (tightest arity).
+                    // Vararg overloads get a slight penalty so a non-vararg exact
+                    // match is preferred over a vararg with fewer declared params.
+                    let arity_distance = |o: &ResolvedOverload| -> usize {
+                        let non_self = o.params.len() - ovl_self_off(&o);
+                        let distance = non_self.abs_diff(n_args);
+                        if o.is_vararg && non_self <= n_args { distance + 1 } else { distance }
+                    };
+                    let closest = tied.iter().map(|o| arity_distance(o)).min()
+                        .expect("tied has >= 2 elements");
+                    let closest_tied: Vec<&ResolvedOverload> = tied.iter().copied()
+                        .filter(|o| arity_distance(o) == closest)
+                        .collect();
+                    if closest_tied.len() > 1 && best.is_exact() {
+                        // Still ambiguous, and the call is valid against each:
+                        // union their returns at ret_index.
+                        let types: Vec<ValueType> = tied.iter()
+                            .map(|o| o.return_type_at(ret_index))
+                            .collect();
+                        ambiguous_overload_ret_type = Some(ValueType::make_union(types));
+                        None
                     } else {
-                        false
+                        // Otherwise check the call against the first declared of
+                        // them, a best fit, so its diagnostics stay.
+                        closest_tied.first().copied()
                     }
-                });
-                if has_mismatch { None } else { Some(only) }
-            } else {
-                None
+                }
             };
             if let Some(o) = found {
                 let off = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
@@ -3009,6 +2983,59 @@ impl<'a> Analysis<'a> {
             (None, 0)
         };
         (matching_overload, overload_self_offset, ambiguous_overload_ret_type)
+    }
+
+    /// How the call's argument types fit overload `o`, whose params start past
+    /// an explicit `self` at `self_off`. An unresolved argument or an untyped
+    /// param fits.
+    fn overload_fit(&self, o: &ResolvedOverload, self_off: usize, arg_types: &[Option<ValueType>]) -> SignatureFit {
+        let mut fit = SignatureFit::default();
+        for (i, arg_t) in arg_types.iter().enumerate() {
+            let Some(arg_t) = arg_t else { continue };
+            let Some(param) = o.params.get(i + self_off) else { continue };
+            let Some(param_t) = &param.typ else { continue };
+            fit.add(self.arg_fit(param_t, param.optional, arg_t));
+        }
+        fit
+    }
+
+    /// How the call's argument types fit the base signature of `func_idx`. Only
+    /// its declared params are checked, not a vararg.
+    fn primary_fit(&self, func_idx: FunctionIndex, self_offset: usize, arg_types: &[Option<ValueType>]) -> SignatureFit {
+        let func = self.func(func_idx);
+        let mut fit = SignatureFit::default();
+        for (i, arg_t) in arg_types.iter().enumerate() {
+            let Some(arg_t) = arg_t else { continue };
+            let Some(param_t) = self.ir.param_decl_type(func, i + self_offset) else { continue };
+            fit.add(self.arg_fit(param_t, param_t.contains_nil(), arg_t));
+        }
+        fit
+    }
+
+    /// How an argument of type `arg_t` fits a param of type `param_t`, judged as
+    /// the type-mismatch diagnostic judges it.
+    fn arg_fit(&self, param_t: &ValueType, optional: bool, arg_t: &ValueType) -> ArgFit {
+        // Nil against a non-optional param is always a mismatch
+        if !optional && matches!(arg_t, ValueType::Nil) {
+            return ArgFit::Mismatch;
+        }
+        // Skip mismatch check for params with unresolved type variables
+        if let Some(mismatch) = self.type_var_param_mismatch(param_t, arg_t) {
+            return if mismatch { ArgFit::Mismatch } else { ArgFit::Exact };
+        }
+        // Optional params accept nil
+        if optional && matches!(arg_t, ValueType::Nil) {
+            return ArgFit::Exact;
+        }
+        let fits = |t: &ValueType| t.is_assignable_to(param_t) || self.is_table_subtype(t, param_t);
+        if fits(arg_t) {
+            ArgFit::Exact
+        } else if arg_t.contains_nil() && fits(&arg_t.strip_nil()) {
+            // The diagnostic leaves a possibly-nil argument to need-check-nil.
+            if optional { ArgFit::Exact } else { ArgFit::Nilable }
+        } else {
+            ArgFit::Mismatch
+        }
     }
 
     /// Index the calls receiving local table constructors as an argument
@@ -3101,7 +3128,13 @@ impl<'a> Analysis<'a> {
             return Vec::new();
         };
         let overloads = self.func(func_idx).overloads.clone();
-        let (overload, overload_self_offset, _) = self.select_matching_overload(&overloads, &args, 0);
+        let f = self.func(func_idx);
+        let primary_has_self = f.args.first().is_some_and(|&sym| {
+            matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
+        });
+        let primary_self_offset = super::call_self_offset(false, false, false, is_method_call, primary_has_self, !f.args.is_empty());
+        let (overload, overload_self_offset, _) =
+            self.select_matching_overload(&overloads, &args, 0, (func_idx, primary_self_offset));
         let (param_types, self_offset, has_self): (Vec<Option<ValueType>>, usize, bool) = match overload {
             Some(o) => (
                 o.params.iter().map(|p| p.typ.clone()).collect(),
@@ -3110,11 +3143,7 @@ impl<'a> Analysis<'a> {
             ),
             None => {
                 let f = self.func(func_idx);
-                let has_self = f.args.first().is_some_and(|&sym| {
-                    matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
-                });
-                let self_offset = super::call_self_offset(false, false, false, is_method_call, has_self, !f.args.is_empty());
-                ((0..f.args.len()).map(|i| self.ir.param_decl_type(f, i).cloned()).collect(), self_offset, has_self)
+                ((0..f.args.len()).map(|i| self.ir.param_decl_type(f, i).cloned()).collect(), primary_self_offset, primary_has_self)
             }
         };
         // `@stores-into N` counts the parameters after `self`.

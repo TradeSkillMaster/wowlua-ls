@@ -4060,25 +4060,19 @@ impl<'a> Analysis<'a> {
     }
 
     /// Scan preceding comments for `---@cast` directives and apply type changes.
-    /// Walks backward from a statement's first token (same pattern as extract_annotations).
+    /// Walks backward from a statement's first token to the code before it. A
+    /// cast applies where it's written, so unlike an annotation block
+    /// (extract_annotations) a blank line doesn't end the scan.
     fn scan_cast_annotations(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) {
         let Some(first_token) = node.first_token() else { return };
         let mut cast_lines = Vec::new();
         let mut tok = first_token.prev_token();
-        let mut newlines_since_comment = 0u32;
         while let Some(token) = tok {
             let kind = token.kind();
-            if kind == SyntaxKind::Whitespace {
+            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
                 tok = token.prev_token();
                 continue;
             }
-            if kind == SyntaxKind::Newline {
-                newlines_since_comment += 1;
-                if newlines_since_comment >= 2 { break; }
-                tok = token.prev_token();
-                continue;
-            }
-            newlines_since_comment = 0;
             if kind == SyntaxKind::Comment {
                 // Skip inline trailing comments (on same line as previous code)
                 {
@@ -4118,8 +4112,8 @@ impl<'a> Analysis<'a> {
     /// ---@cast d number?
     /// ```
     ///
-    /// The preceding-statement backward scan cannot find these when a blank
-    /// line separates the cast from the next statement.
+    /// The next statement's backward scan reaches these too (`apply_cast_lines`
+    /// applies each once), but no statement follows a block's last one.
     fn scan_trailing_cast_annotations(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) {
         let Some(last_token) = node.last_token() else { return };
         let mut newlines_at_end = 0u32;
@@ -4185,6 +4179,7 @@ impl<'a> Analysis<'a> {
     /// Apply `@cast` comments, each given as its text and start offset.
     fn apply_cast_lines(&mut self, cast_lines: &[(String, u32)], scope_idx: ScopeIndex) {
         for (line, line_start) in cast_lines {
+            if !self.applied_casts.insert(*line_start) { continue; }
             // Parse ---@cast, --- @cast (spaced), and --[[@cast forms.
             let Some((var_name, mode, type_str)) = crate::annotations::parse_cast_comment(line) else { continue };
             let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else {

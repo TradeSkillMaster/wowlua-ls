@@ -3600,6 +3600,9 @@ pub struct Analysis<'a> {
     pub sym_ref_sites: HashMap<SymbolIndex, Vec<(ExprId, u32)>>,
     pub referenced_symbols: HashSet<SymbolIndex>,
     pub functions_with_returns: HashSet<FunctionIndex>,
+    /// Start offsets of the `@cast` comments applied so far: the scans before
+    /// and after a statement can both reach one.
+    pub applied_casts: HashSet<u32>,
     /// Dense cycle-detection bitmap for `resolve_expr`, indexed by `ExprId.val()`.
     /// Local expressions only (< EXT_BASE); external ones resolve via fast paths.
     pub resolving_exprs: Vec<bool>,
@@ -3992,6 +3995,7 @@ impl<'a> Analysis<'a> {
             deferred_field_mixins: Vec::new(),
             referenced_symbols: HashSet::default(),
             functions_with_returns: HashSet::default(),
+            applied_casts: HashSet::default(),
             resolving_exprs: Vec::new(),
             resolve_depth: 0,
             resolve_work_count: 0,

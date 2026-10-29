@@ -447,3 +447,62 @@ local basketSeed
 local itemBasket = makeBasket(basketSeed)
 local firstItem = itemBasket:First()
 --    ^ hover: (local) firstItem: BasketItem
+
+-- A possibly-nil argument for an overload's non-optional param still selects
+-- the overload: the nil is need-check-nil's concern, not a type mismatch.
+---@class OvlItem
+---@class OvlOtherItem
+---@class OvlHost
+local OvlHost = {}
+
+---@param item OvlItem
+---@param key? string
+---@overload fun(self: OvlHost, item: OvlItem, all: boolean)
+function OvlHost:Reload(item, key) end
+
+---@type OvlItem?
+local ovlMaybeItem
+OvlHost:Reload(ovlMaybeItem, true)
+
+-- A call no signature takes is checked against the one it fits best, so the
+-- argument only the base signature rejects isn't reported.
+---@type OvlOtherItem
+local ovlOtherItem
+OvlHost:Reload(
+    ovlOtherItem,
+--  ^ diag: type-mismatch
+    true
+)
+
+-- An optional overload param takes a possibly-nil argument (the template
+-- overload, not the base signature's `T`).
+---@type string?
+local ovlMaybeName
+local _cfMaybeName = CreateFrame("Frame", ovlMaybeName, nil, "TestMixin")
+--     ^ hover: (local) _cfMaybeName: Frame & TestMixin
+---@type number?
+local ovlMaybeOffset
+f:SetPoint("TOPLEFT", 0, ovlMaybeOffset)
+
+-- A base signature that takes the nil outright beats an overload that takes the
+-- argument only once nil is removed.
+---@overload fun(name: string): number
+---@param name? string
+---@return string
+local function ovlLookup(name) return "" end
+local ovlLooked = ovlLookup(ovlMaybeName)
+--    ^ hover: (local) ovlLooked: string
+
+-- Overloads that tie as the best fit, better than the base signature: the
+-- call is checked against the first, so an argument every overload accepts
+-- isn't reported.
+---@param a boolean
+---@param b string
+---@overload fun(self: OvlHost, a: number, b: number)
+---@overload fun(self: OvlHost, a: number, b: table)
+function OvlHost:Tie(a, b) end
+OvlHost:Tie(
+    1,
+    true
+--  ^ diag: type-mismatch
+)

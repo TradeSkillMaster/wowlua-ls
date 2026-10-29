@@ -3139,3 +3139,17 @@ function NilCheckGuarded:Read()
     if not self:HasSub() then return end
     local _ = self.sub.x
 end
+
+-- ── Possibly-nil subclass argument ───────────────────────────────────────
+-- A `Sub?` argument for a `Base` param is a nil concern, like `string?` for
+-- `string`: need-check-nil, not type-mismatch.
+
+---@class NilCheckSubFrame : NilCheckFrame
+
+---@param frame NilCheckFrame
+local function _takeFrame(frame) end
+
+---@type NilCheckSubFrame?
+local maybeSubFrame
+_takeFrame(maybeSubFrame)
+--         ^ diag: need-check-nil

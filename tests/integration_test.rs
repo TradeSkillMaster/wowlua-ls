@@ -1815,6 +1815,15 @@ fn need_check_nil() {
 }
 
 #[test]
+fn need_check_nil_overloads() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/need-check-nil/overloads.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn upvalue_writes() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/upvalue-writes/test.lua",

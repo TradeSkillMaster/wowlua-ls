@@ -217,13 +217,16 @@ impl DiagnosticPass for TypeMismatch {
                     || !analysis.is_function_compatible(&arg_type, expected_type) {
                     let is_nil_union_compatible = matches!(&arg_type, ValueType::Union(types) if types.iter().any(|t| matches!(t, ValueType::Nil))) && {
                         let stripped = arg_type.strip_nil();
-                        stripped.is_assignable_to(expected_type)
+                        (stripped.is_assignable_to(expected_type) || analysis.is_table_subtype(&stripped, expected_type))
                             && analysis.is_function_compatible(&stripped, expected_type)
                     };
                     let expected_str = analysis.format_value_type_depth(expected_type, 1);
                     let actual_str = analysis.format_value_type_depth(&arg_type, 1);
+                    // An optional param takes the nil: the matched overload's
+                    // (`skip_if_nil`), or the base signature's same-named one.
                     if is_nil_union_compatible
-                        && check.primary_param_type.as_ref().is_some_and(|pt| pt.contains_nil())
+                        && (check.skip_if_nil
+                            || check.primary_param_type.as_ref().is_some_and(|pt| pt.contains_nil()))
                     {
                         continue;
                     }

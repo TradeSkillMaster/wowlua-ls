@@ -1,5 +1,5 @@
 use crate::analysis::AnalysisResult;
-use crate::annotations::{DIAGNOSTIC_DIRECTIVE_MARKER, find_diagnostic_directive};
+use crate::annotations::find_diagnostic_directive;
 use crate::syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 use crate::syntax::tree::SyntaxTree;
 use super::{DiagnosticPass, WowDiagnostic};
@@ -19,13 +19,13 @@ impl DiagnosticPass for UnknownDiagCode {
             // trails other annotation content (`---@class Foo ---@diagnostic
             // disable: x`), mirroring scan_diagnostic_directives so the two
             // scanners agree on what is a directive and where it begins.
-            let Some((marker, body)) = find_diagnostic_directive(text) else { continue };
+            let Some((_, body)) = find_diagnostic_directive(text) else { continue };
             let tok_start = u32::from(tok.text_range().start()) as usize;
-            // Absolute file offset of `body`'s first byte. Code spans are located
-            // by walking `body` from here (not by searching the whole comment), so
-            // an identical substring earlier in the comment can't capture the
-            // emitted range.
-            let body_base = tok_start + marker + DIAGNOSTIC_DIRECTIVE_MARKER.len();
+            // Absolute file offset of `body`'s first byte (`body` ends `text`).
+            // Code spans are located by walking `body` from here (not by searching
+            // the whole comment), so an identical substring earlier in the comment
+            // can't capture the emitted range.
+            let body_base = tok_start + text.len() - body.len();
 
             let Some(colon_in_body) = body.find(':') else {
                 // No colon. A bare keyword (`---@diagnostic disable-next-line`)
