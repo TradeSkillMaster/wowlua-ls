@@ -41,7 +41,7 @@ mod trailing_space;
 mod type_mismatch;
 mod undefined_doc_class;
 mod undefined_doc_name;
-mod undefined_field;
+pub mod undefined_field;
 mod undefined_global;
 mod unknown_cast_variable;
 mod unknown_diag_code;

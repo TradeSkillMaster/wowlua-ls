@@ -275,7 +275,7 @@ Backward inference works from:
 - **Table keys**: `prices[x]` implies the table's key type when it's declared (`table<string, number>`) or comes from the table's constructor or list inserts. Keys written into a table later (`seen[k] = true`) don't type lookups, since a lookup with any other key just returns `nil`.
 
 ::: info Conflicting usages
-Backward inference treats each usage as an upper bound and intersects them. If a parameter is used in conflicting ways (passed to a function expecting `string` and another expecting `number`), the LS leaves it untyped rather than guessing wrong. When that happens, add an explicit `@param`.
+Backward inference treats each usage as an upper bound and intersects them. If a parameter is used in conflicting ways (passed to a function expecting `string` and another expecting `number`), the LS leaves it untyped rather than guessing wrong. The same goes for a body that reads a member the inferred type doesn't have: `pin:OnReleased()` after passing `pin` where a `Frame` is expected means `pin` is more than a plain `Frame`. When that happens, add an explicit `@param`.
 :::
 
 The inference also bails when a function is called with incompatible types at different sites:

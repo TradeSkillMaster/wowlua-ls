@@ -76,6 +76,32 @@ useLine({ label = 42, content = "world" })
 useLine({})
 --      ^ diag: type-mismatch ~missing fields: 'content', 'label'
 
+-- Should NOT warn: an empty table has every field of a class whose fields are
+-- all optional, as an argument or as a map's value
+---@class AllOptional
+---@field name? string
+---@field count number|nil
+
+---@param o AllOptional
+local function useAllOptional(o) return o end
+
+---@param byName table<string, AllOptional>
+local function useAllOptionalMap(byName) return byName end
+
+useAllOptional({})
+useAllOptionalMap({ ["first"] = {}, ["second"] = { name = "x" } })
+
+-- Should WARN: a method is a member `{}` doesn't have
+---@class WithMethod
+local WithMethod = {}
+function WithMethod:Run() end
+
+---@param w WithMethod
+local function useWithMethod(w) return w end
+
+useWithMethod({})
+--            ^ diag: type-mismatch
+
 -- Should WARN: table literal does not have parent's required field 'color'
 -- (missing-fields, not type-mismatch)
 useChild({ sides = 4 })

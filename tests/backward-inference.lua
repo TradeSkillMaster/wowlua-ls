@@ -1188,3 +1188,106 @@ local function describeMixedValue(value)
 end
 describeMixedValue(anyValues.first)
 describeMixedValue("named")
+
+-- ── A member the body reads that the inferred class lacks ──
+-- Passing `pin` where a `BiWidget` is expected suggests that class, but a read
+-- of a member it doesn't have (a mixin's method) says the argument is more than
+-- a `BiWidget`: the param stays untyped instead of flagging the body's own read.
+---@class BiWidget
+local BiWidget = {}
+function BiWidget:Hide() end
+
+---@param widget BiWidget
+local function hideWidget(widget) widget:Hide() end
+
+local function releasePin(pin)
+--                        ^ hover: (param) pin: ?
+    hideWidget(pin)
+    pin:OnReleased()
+end
+
+-- Reads of the class's own members, and guarded reads, keep the inference.
+local function resetPin(pin)
+--                      ^ hover: (param) pin: BiWidget
+    hideWidget(pin)
+    pin:Hide()
+    if pin.OnReset then pin:OnReset() end
+end
+
+-- Only reads of the argument count: not through a reassignment, nor after a
+-- `@cast` saying the value has more members. A narrowing still reads it, and so
+-- does a merge after a conditional reassignment.
+---@class BiParent
+local BiParent = {}
+function BiParent:Show() end
+
+---@class BiRegion
+local BiRegion = {}
+function BiRegion:Hide() end
+---@return BiParent
+function BiRegion:GetParent() return BiParent end
+
+---@class BiText : BiRegion
+local BiText = {}
+function BiText:SetText(text) end
+
+---@param r BiRegion
+local function hideRegion(r) r:Hide() end
+
+local function reparentRegion(region)
+--                            ^ hover: (param) region: BiRegion
+    hideRegion(region)
+    region = region:GetParent()
+    region:Show()
+end
+
+local function castRegion(region)
+--                        ^ hover: (param) region: BiRegion
+    hideRegion(region)
+    ---@cast region BiText
+    region:SetText("x")
+end
+
+local function narrowPin(pin)
+--                       ^ hover: (param) pin: ?
+    hideWidget(pin)
+    ---@cast pin -nil
+    pin:OnReleased()
+end
+
+local function fallbackPin(pin, fallback)
+--                         ^ hover: (param) pin: ?
+    if fallback then
+        pin = fallback
+    end
+    hideWidget(pin)
+    pin:OnReleased()
+end
+
+-- The inferred type is checked as `undefined-field` checks it: a `{field: type}`
+-- shape like a class, and a union by all of its classes.
+---@param opts {name: string}
+local function greetOpts(opts) return opts.name end
+
+local function greetExtra(o)
+--                        ^ hover: (param) o: ?
+    greetOpts(o)
+    return o.extra
+end
+
+---@class BiA
+local BiA = {}
+function BiA:Hide() end
+
+---@class BiB
+local BiB = {}
+function BiB:Hide() end
+
+---@param w BiA|BiB
+local function hideEither(w) w:Hide() end
+
+local function releaseEither(p)
+--                           ^ hover: (param) p: ?
+    hideEither(p)
+    p:OnReleased()
+end

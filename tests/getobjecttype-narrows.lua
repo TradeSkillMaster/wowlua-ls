@@ -155,6 +155,34 @@ local function test_local_trailing(t)
     end
 end
 
+-- ── Guarded read on a backward-inferred param ────────────────────────────────
+-- `widget` is inferred `LocalWidget` from the call, but the guard can't narrow
+-- it before then (a `GetObjectType` of its own beside the API's), so the read
+-- under it is of the argument: `LocalWidget` lacks `SetLabel`, and the param
+-- stays untyped rather than flagging it.
+
+---@class LocalWidget
+local LocalWidget = {}
+---@returns-class-name
+---@return string
+function LocalWidget:GetObjectType() return "LocalWidget" end
+function LocalWidget:Hide() end
+
+---@class LocalLabel : LocalWidget
+local LocalLabel = {}
+function LocalLabel:SetLabel(text) end
+
+---@param w LocalWidget
+local function hideLocalWidget(w) w:Hide() end
+
+local function test_inferred_guarded(widget)
+--                                   ^ hover: (param) widget: ?
+    hideLocalWidget(widget)
+    if widget:GetObjectType() == "LocalLabel" then
+        widget:SetLabel("x")
+    end
+end
+
 -- ── Field-chain receiver ─────────────────────────────────────────────────────
 -- The field the method is called on is narrowed, not the variable it's read
 -- through.

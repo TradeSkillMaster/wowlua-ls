@@ -4437,6 +4437,8 @@ impl<'a> Analysis<'a> {
         if candidates.is_empty() { return false; }
 
         let mut overall_progress = false;
+        let mut membership_suppressed = None;
+        let mut call_funcs = None;
         const MAX_ITER: usize = 8;
         for _ in 0..MAX_ITER {
             let hints = self.collect_backward_inference_hints(&candidates);
@@ -4451,6 +4453,7 @@ impl<'a> Analysis<'a> {
                 combined.extend(sym_hints.narrowing.iter().cloned());
                 let inferred = intersect_hints(&combined, &is_subtype).unwrap_or(baseline_intersect);
                 if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
+                if self.reads_member_inferred_type_lacks(&inferred, &sym_hints.member_reads, &mut membership_suppressed, &mut call_funcs) { continue; }
                 // used_as_or_lhs: `param or default` idiom implies the param
                 // can be nil at runtime (see detection in collect_backward_inference_hints).
                 // caller_has_nil: a call site passes a nilable value (e.g. boolean?),
@@ -4478,6 +4481,75 @@ impl<'a> Analysis<'a> {
         overall_progress
     }
 
+    /// Whether the body reads a member the inferred type doesn't have, by the
+    /// `undefined-field` pass's own tests (`pin:OnReleased()` after passing `pin`
+    /// where a `Frame` is expected): the argument is more than that type (a `Frame`
+    /// with a mixin applied), so it can't be the param's type. `suppressed` (the
+    /// guarded reads the pass skips) and `call_funcs` (every call's callee) are
+    /// collected on first use.
+    fn reads_member_inferred_type_lacks(
+        &self,
+        inferred: &ValueType,
+        member_reads: &[MemberRead],
+        suppressed: &mut Option<crate::collections::HashSet<u32>>,
+        call_funcs: &mut Option<crate::collections::HashSet<ExprId>>,
+    ) -> bool {
+        use crate::diagnostics::{collect_class_indices, undefined_field as uf};
+        if member_reads.is_empty() { return false; }
+        let mut classes = Vec::new();
+        collect_class_indices(inferred, &mut classes);
+        if classes.iter().any(|&idx| uf::is_open_mixin_table(&self.ir, idx)) { return false; }
+        let mut missing = member_reads.iter().filter(|read| {
+            let is_call = || call_funcs.get_or_insert_with(|| self.ir.exprs.iter()
+                .filter_map(|e| match e {
+                    Expr::FunctionCall { func, .. } => Some(*func),
+                    _ => None,
+                })
+                .collect()
+            ).contains(&read.read);
+            uf::receiver_tables(&self.ir, inferred, read.receiver, is_call).is_some_and(|tables| {
+                !uf::tables_have_member(&self.ir, &tables, &read.field)
+                    && uf::declaring_table(&self.ir, &tables).is_some()
+            })
+        }).peekable();
+        if missing.peek().is_none() { return false; }
+        let suppressed = suppressed.get_or_insert_with(|| uf::collect_membership_suppressions(self.tree));
+        missing.any(|read| !suppressed.contains(&read.start))
+    }
+
+    /// Whether version `ver` of param `sym` may hold the argument: the version
+    /// backward inference types (its first), one narrowing it (a guard,
+    /// `@cast x -T`), or a merge one of whose values does (after
+    /// `if c then x = y end`) — not a reassignment or a `@cast`, which the
+    /// inferred type doesn't reach.
+    fn version_holds_argument(&self, sym: SymbolIndex, ver: usize) -> bool {
+        let mut seen = crate::collections::HashSet::default();
+        let mut pending = vec![ver];
+        while let Some(ver) = pending.pop() {
+            if ver == 0 { return true; }
+            if !seen.insert(ver) { continue; }
+            let Some(ts) = self.ir.symbols[sym.val()].versions[ver].type_source else { continue };
+            if self.is_narrowing_version_of(sym, ver) || matches!(self.expr(ts), Expr::BranchMerge(_)) {
+                self.push_source_versions(sym, ts, &mut pending);
+            }
+        }
+        false
+    }
+
+    /// The versions of `sym` that `expr`, a version's `type_source`, narrows or merges.
+    fn push_source_versions(&self, sym: SymbolIndex, expr: ExprId, out: &mut Vec<usize>) {
+        match self.expr(expr) {
+            Expr::SymbolRef(s, v) if *s == sym => out.push(*v),
+            Expr::BranchMerge(values) => {
+                for &value in values { self.push_source_versions(sym, value, out); }
+            }
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::TypeFilter(inner, _)
+            | Expr::CastRemove(inner, _) | Expr::AssignNarrow { inner, .. }
+            | Expr::OverloadNarrow { inner, .. } => self.push_source_versions(sym, *inner, out),
+            _ => {}
+        }
+    }
+
     fn collect_backward_inference_hints(
         &mut self,
         candidates: &crate::collections::HashSet<SymbolIndex>,
@@ -4491,6 +4563,7 @@ impl<'a> Analysis<'a> {
         let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::default();
         let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::default();
         let mut and_lhs_params: HashSet<SymbolIndex> = HashSet::default();
+        let mut member_reads: HashMap<SymbolIndex, Vec<MemberRead>> = HashMap::default();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
@@ -4700,9 +4773,16 @@ impl<'a> Analysis<'a> {
                         record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, ValueType::Table(None));
                     }
                 }
-                Expr::FieldAccess { table, .. } => {
-                    if let Some(sym) = self.candidate_ref_in(table, candidates) {
+                Expr::FieldAccess { table, field, field_range } => {
+                    if let Some((sym, ver)) = self.candidate_version_in(table, candidates) {
                         narrowing_hints.entry(sym).or_default().push(ValueType::Table(None));
+                        // A write target has no `field_range`.
+                        if let Some((start, _)) = field_range
+                            && self.version_holds_argument(sym, ver)
+                        {
+                            member_reads.entry(sym).or_default()
+                                .push(MemberRead { receiver: table, read: ExprId(expr_id), field, start });
+                        }
                     }
                 }
                 _ => {}
@@ -4776,7 +4856,8 @@ impl<'a> Analysis<'a> {
                 .collect();
             let caller = caller_types.remove(&s).unwrap_or_default();
             let used_as_or_lhs = or_lhs_params.contains(&s);
-            out.insert(s, BackwardInferenceHints { baseline, narrowing, caller, used_as_or_lhs });
+            let member_reads = member_reads.remove(&s).unwrap_or_default();
+            out.insert(s, BackwardInferenceHints { baseline, narrowing, caller, used_as_or_lhs, member_reads });
         }
 
         // Promote narrowing-only params that have nilability evidence.
@@ -4807,6 +4888,7 @@ impl<'a> Analysis<'a> {
                 narrowing: Vec::new(),
                 caller,
                 used_as_or_lhs: has_nil_evidence,
+                member_reads: member_reads.remove(&s).unwrap_or_default(),
             });
         }
 
@@ -4814,10 +4896,15 @@ impl<'a> Analysis<'a> {
     }
 
     fn candidate_ref_in(&self, expr_id: ExprId, candidates: &crate::collections::HashSet<SymbolIndex>) -> Option<SymbolIndex> {
+        self.candidate_version_in(expr_id, candidates).map(|(sym, _)| sym)
+    }
+
+    /// The candidate param `expr_id` reads, and the version it reads.
+    fn candidate_version_in(&self, expr_id: ExprId, candidates: &crate::collections::HashSet<SymbolIndex>) -> Option<(SymbolIndex, usize)> {
         let mut cur = expr_id;
         loop {
             match self.expr(cur) {
-                Expr::SymbolRef(sym, _) if candidates.contains(sym) => return Some(*sym),
+                Expr::SymbolRef(sym, ver) if candidates.contains(sym) => return Some((*sym, *ver)),
                 Expr::Grouped(inner)
                 | Expr::StripFalsy(inner)
                 | Expr::StripNil(inner) => cur = *inner,
@@ -5452,6 +5539,19 @@ struct BackwardInferenceHints {
     /// which is the standard Lua idiom for optional/default parameters. This means
     /// the parameter can be nil at runtime, so the inferred type should include nil.
     used_as_or_lhs: bool,
+    /// The members the body reads on the argument.
+    member_reads: Vec<MemberRead>,
+}
+
+/// A read of a member on a candidate param (`pin:OnReleased()`).
+struct MemberRead {
+    /// The receiver expression (`pin`).
+    receiver: ExprId,
+    /// The read itself, a `FieldAccess`.
+    read: ExprId,
+    field: String,
+    /// The start of the member's name.
+    start: u32,
 }
 
 impl BackwardInferenceSignature {

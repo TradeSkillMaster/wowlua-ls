@@ -4393,9 +4393,11 @@ pub fn is_table_subtype_impl(
             }
             // A plain table literal structurally matches a `@class` when it
             // provides all the class's required fields (positional elements
-            // providing `[N]` ones).
+            // providing `[N]` ones). An empty `{}` provides them when the class
+            // has none.
             if at.class_name.is_none() && bt.class_name.is_some()
-                && (!at.fields.is_empty() || !at.array_fields.is_empty())
+                && (!at.fields.is_empty() || !at.array_fields.is_empty()
+                    || (at.key_type.is_none() && at.value_type.is_none()))
                 && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
                     return true;
                 }

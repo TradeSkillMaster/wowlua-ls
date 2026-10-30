@@ -2117,7 +2117,7 @@ impl<'a> Analysis<'a> {
     /// reassignment. Used by `rewrite_sym_refs_in_subtree` so a guard-narrowing
     /// version doesn't masquerade as a reassignment and block a later deferred
     /// OverloadNarrow rewrite.
-    fn is_narrowing_version_of(&self, sym_idx: SymbolIndex, ver: usize) -> bool {
+    pub(super) fn is_narrowing_version_of(&self, sym_idx: SymbolIndex, ver: usize) -> bool {
         let Some(ts) = self.ir.symbols[sym_idx.val()].versions[ver].type_source else {
             return false;
         };

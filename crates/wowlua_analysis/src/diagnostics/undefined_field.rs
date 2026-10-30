@@ -1,5 +1,5 @@
 use crate::collections::HashSet;
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, Ir};
 use crate::ast::{AstNode, BinaryExpression, Expression, Identifier, IfBranch, LocalAssign, Operator, RepeatUntilLoop, UnaryExpression, WhileLoop};
 use crate::syntax::NodeOrToken;
 use crate::syntax::syntax_kind::SyntaxKind;
@@ -52,8 +52,8 @@ fn is_closed_record(analysis: &AnalysisResult, idx: TableIndex) -> bool {
 /// A `{field: type}` table from one of this file's own annotations
 /// (`TableInfo::declared_shape`): like a `@class`'s, its fields are all it has,
 /// unless it also has a key or value type.
-fn is_declared_shape(analysis: &AnalysisResult, idx: TableIndex) -> bool {
-    let t = analysis.table(idx);
+fn is_declared_shape(ir: &Ir, idx: TableIndex) -> bool {
+    let t = ir.table(idx);
     t.declared_shape && !t.fields.is_empty() && t.key_type.is_none() && t.value_type.is_none()
 }
 
@@ -66,6 +66,37 @@ fn key_accepts_name(key: &ValueType, name: &str) -> bool {
         ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => key_accepts_name(inner, name),
         _ => false,
     }
+}
+
+/// Whether table `idx` has a member named `field`: its own or a parent's, or an
+/// entry of a string-keyed table.
+pub fn table_has_member(ir: &Ir, idx: TableIndex, field: &str) -> bool {
+    let t = ir.table(idx);
+    ir.has_field(idx, field)
+        || t.key_type.as_ref().is_some_and(|key| key_accepts_name(key, field))
+        || t.parent_classes.iter().any(|&pi| ir.has_field(pi, field))
+}
+
+/// Whether a read of `field` on a receiver checked against `tables` finds a
+/// member: one of the tables has it, or `_G` holds a global of that name.
+pub fn tables_have_member(ir: &Ir, tables: &[TableIndex], field: &str) -> bool {
+    tables.iter().any(|&idx| table_has_member(ir, idx, field))
+        || (tables.iter().any(|&idx| ir.is_global_env(idx))
+            && ir.get_symbol(&SymbolIdentifier::Name(field.to_string()), ScopeIndex(0)).is_some())
+}
+
+/// The table that declares its whole field set among `tables`, which makes a
+/// missing member an `undefined-field`: a `@class`, else a `{field: type}` shape.
+pub fn declaring_table(ir: &Ir, tables: &[TableIndex]) -> Option<TableIndex> {
+    tables.iter().copied().find(|&idx| ir.table(idx).class_name.is_some())
+        .or_else(|| tables.iter().copied().find(|&idx| is_declared_shape(ir, idx)))
+}
+
+/// A `Derived = CreateFromMixins(Base)` mixin class, or a class inheriting one: its
+/// instances get fields at runtime, so no read on one is checked.
+pub fn is_open_mixin_table(ir: &Ir, idx: TableIndex) -> bool {
+    let t = ir.table(idx);
+    t.open_mixin || t.parent_classes.iter().any(|&pi| ir.table(pi).open_mixin)
 }
 
 /// Collect symbols that are pure module-private record tables: a local variable
@@ -177,11 +208,7 @@ fn base_chain_is_open_mixin(analysis: &AnalysisResult, mut expr: ExprId) -> bool
         if let Some(vt) = analysis.resolve_expr_type(expr) {
             let mut idxs: Vec<TableIndex> = Vec::new();
             super::collect_class_indices(&vt, &mut idxs);
-            if idxs.iter().any(|&i| {
-                analysis.table(i).open_mixin
-                    || analysis.table(i).parent_classes.iter()
-                        .any(|&pi| analysis.table(pi).open_mixin)
-            }) {
+            if idxs.iter().any(|&i| is_open_mixin_table(&analysis.ir, i)) {
                 return true;
             }
         }
@@ -196,11 +223,11 @@ fn base_chain_is_open_mixin(analysis: &AnalysisResult, mut expr: ExprId) -> bool
 
 /// Collect the tables an intersection's fields come from. False when a member
 /// can hold any field (`any`, a bare `table`, a map, a type variable).
-fn intersection_tables(analysis: &AnalysisResult, t: &ValueType, out: &mut Vec<TableIndex>) -> bool {
+fn intersection_tables(ir: &Ir, t: &ValueType, out: &mut Vec<TableIndex>) -> bool {
     match t {
-        ValueType::Intersection(members) => members.iter().all(|m| intersection_tables(analysis, m, out)),
-        ValueType::OpaqueAlias(_, inner) => intersection_tables(analysis, inner, out),
-        ValueType::Table(Some(idx)) if analysis.table(*idx).key_type.is_none() && !analysis.table(*idx).placeholder => {
+        ValueType::Intersection(members) => members.iter().all(|m| intersection_tables(ir, m, out)),
+        ValueType::OpaqueAlias(_, inner) => intersection_tables(ir, inner, out),
+        ValueType::Table(Some(idx)) if ir.table(*idx).key_type.is_none() && !ir.table(*idx).placeholder => {
             out.push(*idx);
             true
         }
@@ -220,10 +247,10 @@ fn intersection_tables(analysis: &AnalysisResult, t: &ValueType, out: &mut Vec<T
 /// distrust of cross-file / EXT-space tables. The default is conservative: an
 /// unrecognized base (including a future wrapper variant) is treated as
 /// unreliable and simply not flagged.
-fn reliable_string_receiver(analysis: &AnalysisResult, base: ExprId) -> bool {
+fn reliable_string_receiver(ir: &Ir, base: ExprId) -> bool {
     let mut e = base;
     loop {
-        match analysis.ir.expr(e) {
+        match ir.expr(e) {
             // Peel narrowing / grouping wrappers to the receiver they refine.
             Expr::Grouped(inner)
             | Expr::StripNil(inner)
@@ -239,6 +266,64 @@ fn reliable_string_receiver(analysis: &AnalysisResult, base: ExprId) -> bool {
             _ => return false,
         }
     }
+}
+
+/// The tables a read through `receiver`, a value of type `t`, is checked against;
+/// `None` when the read isn't checked. `is_call` tells whether the read is a
+/// call's callee (asked only for a `string`).
+pub fn receiver_tables(ir: &Ir, t: &ValueType, receiver: ExprId, is_call: impl FnOnce() -> bool) -> Option<Vec<TableIndex>> {
+    let mut tables = Vec::new();
+    match t {
+        ValueType::Table(Some(idx)) => tables.push(*idx),
+        // A top-level intersection is checked only when the receiver's own
+        // annotation declares it. One inferred from a call (a templated
+        // `CreateFrame`, `Mixin`, a pool's `Acquire`) is a frame that
+        // commonly gets fields this file can't see: per-instance XML
+        // `KeyValue`s, members its template's `OnLoad` installs, writes in
+        // other files.
+        ValueType::Intersection(_) => {
+            let declared = matches!(*ir.expr(super::unwrap_to_inner_expr(ir, receiver)),
+                Expr::SymbolRef(sym, _) if ir.declares_intersection(sym, t));
+            if !declared || !intersection_tables(ir, t, &mut tables) { return None; }
+        }
+        // For unions, recurse into intersection/opaque-alias members so mixin
+        // patterns like `(Frame & Template) | AceEvent-3.0` check all tables.
+        ValueType::Union(members) => {
+            // An intersection member with a member that can hold any field
+            // could carry this one.
+            if members.iter().any(|m| matches!(m, ValueType::Intersection(_))
+                && !intersection_tables(ir, m, &mut Vec::new())) { return None; }
+            super::collect_class_indices(t, &mut tables);
+            // A `string` union member indexes into the `string` library via its
+            // metatable, so add that library table to the permissive multi-member
+            // field check — but *additively only*: when the union already has a
+            // class member to drive the emit. A classless string-union
+            // (`string | nil`, e.g. an optional `@field x string?`) must never
+            // independently trigger a diagnostic — it would bypass the
+            // string-receiver gates in the `ValueType::String` arm below and
+            // false-positive on mis-collapsed field types and on method calls.
+            if !tables.is_empty() {
+                ir.collect_library_table_indices(t, &mut tables);
+            }
+        }
+        // In Lua a string value indexes into the `string` library through its
+        // metatable, so a `string`-typed receiver's valid fields are exactly the
+        // string-library members — reading a field that isn't one (`s.bar`)
+        // yields nil, a silent typo. Two gates keep this precise on real addons:
+        //  - `reliable_string_receiver`: only a directly-string value (not a
+        //    table-member read whose type may be mis-collapsed to `string` by
+        //    cross-file inference) is trusted.
+        //  - not a *call*: only a field *read* is flagged. Addons routinely
+        //    extend the string metatable with custom methods we can't see
+        //    (`("x"):Colorize()`), and a genuinely-missing method errors loudly
+        //    at runtime anyway — so calls on strings are left alone.
+        ValueType::String(_) => {
+            if !reliable_string_receiver(ir, receiver) || is_call() { return None; }
+            ir.collect_library_table_indices(t, &mut tables);
+        }
+        _ => return None,
+    }
+    (!tables.is_empty()).then_some(tables)
 }
 
 /// Collect field-name-token start offsets that sit in a defensive
@@ -259,7 +344,7 @@ fn reliable_string_receiver(analysis: &AnalysisResult, base: ExprId) -> bool {
 ///      condition probed the same path. Only accesses whose dotted path *exactly*
 ///      matches a probed path are suppressed, so a *deeper* access on a
 ///      now-known field (`if o.cfg then o.cfg.typo end`) is still checked.
-fn collect_membership_suppressions(tree: &SyntaxTree) -> HashSet<u32> {
+pub fn collect_membership_suppressions(tree: &SyntaxTree) -> HashSet<u32> {
     let mut suppress = HashSet::default();
     for node in SyntaxNode::new_root(tree).descendants() {
         match node.kind() {
@@ -548,7 +633,7 @@ impl DiagnosticPass for UndefinedField {
         let membership_suppressed = collect_membership_suppressions(tree);
         // Field-access exprs that are the callee of a call (`recv:m()` / `recv.m()`):
         // the method-name lookup lowers to a `FieldAccess` used as the call's `func`.
-        // Only consulted for `string` receivers (the `ValueType::String` arm), so it
+        // Only consulted for `string` receivers (`receiver_tables`' `String` arm), so it
         // is built lazily on first use — files with no string-typed receivers (the
         // vast majority) never pay for the extra pass + allocation.
         let mut call_func_exprs: Option<HashSet<ExprId>> = None;
@@ -556,69 +641,16 @@ impl DiagnosticPass for UndefinedField {
             let Expr::FieldAccess { table, field, field_range } = expr else { continue };
             let Some((start, end)) = field_range else { continue };
             let Some(table_type) = analysis.resolve_expr_type(*table) else { continue };
-            if matches!(table_type, ValueType::Any) { continue; }
-            // For unions, recurse into intersection/opaque-alias members so
-            // mixin patterns like `(Frame & Template) | AceEvent-3.0` check
-            // all tables.
-            let mut table_indices: Vec<TableIndex> = Vec::new();
-            match &table_type {
-                ValueType::Table(Some(idx)) => table_indices.push(*idx),
-                // A top-level intersection is checked only when the receiver's own
-                // annotation declares it. One inferred from a call (a templated
-                // `CreateFrame`, `Mixin`, a pool's `Acquire`) is a frame that
-                // commonly gets fields this file can't see: per-instance XML
-                // `KeyValue`s, members its template's `OnLoad` installs, writes in
-                // other files.
-                ValueType::Intersection(_) => {
-                    let declared = matches!(*analysis.ir.expr(super::unwrap_to_inner_expr(&analysis.ir, *table)),
-                        Expr::SymbolRef(sym, _) if analysis.ir.declares_intersection(sym, &table_type));
-                    if !declared || !intersection_tables(analysis, &table_type, &mut table_indices) { continue; }
-                }
-                ValueType::Union(members) => {
-                    // An intersection member with a member that can hold any field
-                    // could carry this one.
-                    if members.iter().any(|m| matches!(m, ValueType::Intersection(_))
-                        && !intersection_tables(analysis, m, &mut Vec::new())) { continue; }
-                    super::collect_class_indices(&table_type, &mut table_indices);
-                    // A `string` union member indexes into the `string` library via its
-                    // metatable, so add that library table to the permissive multi-member
-                    // field check — but *additively only*: when the union already has a
-                    // class member to drive the emit. A classless string-union
-                    // (`string | nil`, e.g. an optional `@field x string?`) must never
-                    // independently trigger a diagnostic — it would bypass the
-                    // string-receiver gates in the `ValueType::String` arm below and
-                    // false-positive on mis-collapsed field types and on method calls.
-                    if !table_indices.is_empty() {
-                        analysis.ir.collect_library_table_indices(&table_type, &mut table_indices);
-                    }
-                }
-                // In Lua a string value indexes into the `string` library through its
-                // metatable, so a `string`-typed receiver's valid fields are exactly the
-                // string-library members — reading a field that isn't one (`s.bar`)
-                // yields nil, a silent typo. Two gates keep this precise on real addons:
-                //  - `reliable_string_receiver`: only a directly-string value (not a
-                //    table-member read whose type may be mis-collapsed to `string` by
-                //    cross-file inference) is trusted.
-                //  - not a *call*: only a field *read* is flagged. Addons routinely
-                //    extend the string metatable with custom methods we can't see
-                //    (`("x"):Colorize()`), and a genuinely-missing method errors loudly
-                //    at runtime anyway — so calls on strings are left alone.
-                ValueType::String(_) => {
-                    if !reliable_string_receiver(analysis, *table) { continue; }
-                    let call_funcs = call_func_exprs.get_or_insert_with(|| {
-                        analysis.local_exprs()
-                            .filter_map(|(_, e)| match e {
-                                Expr::FunctionCall { func, .. } => Some(*func),
-                                _ => None,
-                            })
-                            .collect()
-                    });
-                    if call_funcs.contains(&expr_id) { continue; }
-                    analysis.ir.collect_library_table_indices(&table_type, &mut table_indices);
-                }
-                _ => continue,
-            }
-            if table_indices.is_empty() { continue; }
+            let Some(table_indices) = receiver_tables(&analysis.ir, &table_type, *table, || {
+                call_func_exprs.get_or_insert_with(|| {
+                    analysis.local_exprs()
+                        .filter_map(|(_, e)| match e {
+                            Expr::FunctionCall { func, .. } => Some(*func),
+                            _ => None,
+                        })
+                        .collect()
+                }).contains(&expr_id)
+            }) else { continue };
             // `Derived = CreateFromMixins(Base)` mixin classes are dynamic
             // runtime-field-receiving instances (parentKey children attached at
             // frame creation, fields set on `self` in inherited methods). Treat
@@ -628,30 +660,9 @@ impl DiagnosticPass for UndefinedField {
             // base chain to its root so `self.Foo.Bar:Method()` is skipped when
             // `self` is an open mixin.
             if base_chain_is_open_mixin(analysis, *table) { continue; }
-            if table_indices.iter().any(|&idx| analysis.ir.has_field(idx, field)) { continue; }
-            // A table keyed by strings (`table<string, V>`, a class extending one)
-            // has an entry for every name.
-            if table_indices.iter().any(|&idx| {
-                analysis.table(idx).key_type.as_ref().is_some_and(|key| key_accepts_name(key, field))
-            }) { continue; }
-            // Inherited field?
-            if table_indices.iter().any(|&idx| {
-                analysis.table(idx).parent_classes.iter().any(|&pi| analysis.ir.has_field(pi, field))
-            }) { continue; }
-            // _G global-env redirect: field access on _G resolves against scope-0 symbols
-            if table_indices.iter().any(|&idx| analysis.ir.is_global_env(idx)) {
-                let sym_id = SymbolIdentifier::Name(field.clone());
-                if analysis.get_symbol(&sym_id, ScopeIndex(0)).is_some() {
-                    continue;
-                }
-            }
-            // Only emit when at least one table declares its whole field set: a
-            // @class, or a `{field: type}` shape.
-            let class = table_indices.iter()
-                .find_map(|&idx| analysis.table(idx).class_name.clone().map(|n| (idx, n)));
-            let Some(named_idx) = class.as_ref().map(|&(idx, _)| idx)
-                .or_else(|| table_indices.iter().copied().find(|&idx| is_declared_shape(analysis, idx)))
-            else {
+            if tables_have_member(&analysis.ir, &table_indices, field) { continue; }
+            // Only emit when at least one table declares its whole field set.
+            let Some(named_idx) = declaring_table(&analysis.ir, &table_indices) else {
                 // Closed-record fallback: a plain file-local table whose entire
                 // field set is statically known (the `local private = {}; function
                 // private.X()` module pattern). Accessing a field never assigned on
@@ -665,6 +676,7 @@ impl DiagnosticPass for UndefinedField {
                 }
                 continue;
             };
+            let class = analysis.table(named_idx).class_name.clone().map(|n| (named_idx, n));
             // A field read used as a defensive existence check (`obj.M and
             // obj:M()`, `if obj.F then ... obj:F ... end`) is probing whether the
             // field exists — not a typo — so don't report it as undefined. This is
