@@ -326,7 +326,7 @@ fn resolve_expr_type_uncleared(
                 (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
                     if op.is_arithmetic() => Some(ValueType::Number),
                 (Some(ref t), None) | (None, Some(ref t))
-                    if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
+                    if op == Operator::Concatenate && t.concat_yields_string() => Some(ValueType::String(None)),
                 _ if op.is_comparison() => Some(ValueType::Boolean(None)),
                 _ => None,
             }

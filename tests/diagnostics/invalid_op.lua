@@ -180,6 +180,16 @@ local function _concatNarrowField(obj)
 end
 _use(_concatNarrowField)
 
+-- A concatenation that errors when an operand is nil still gives a string when it
+-- gives anything.
+---@param obj ConcatNarrow
+local function _concatNilableResult(obj)
+    local text = "n:" .. obj.count
+    --    ^ hover: (local) text: string  diag: invalid-op
+    return text
+end
+_use(_concatNilableResult)
+
 -- Deep field chain: `(obj.inner.count or 0) > 0` narrows nested field
 ---@param obj ConcatNarrowOuter
 local function _concatNarrowDeepField(obj)

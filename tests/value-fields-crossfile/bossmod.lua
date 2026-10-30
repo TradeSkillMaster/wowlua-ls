@@ -30,3 +30,34 @@ function proto:Check()
     return self.combatState
     --          ^ hover: (field) combatState: CombatState {
 end
+
+-- A field two constructors of one class write a concatenation, one of a value that
+-- may be `false` (an error if it is): the concatenation is a string, so the field is.
+---@class BossWarning
+local warningProto = {}
+local warningMt = { __index = warningProto }
+
+function warningProto:OptionKey()
+    return self.option
+    --          ^ hover: (field) option: string
+end
+
+---@param name string|boolean?
+---@param version any
+function proto:NewWarning(name, version)
+    ---@class BossWarning
+    local obj = setmetatable({}, warningMt)
+    local optionId = name or name ~= false and "Warning"
+    if optionId then
+        obj.option = optionId .. (version or "")
+    end
+    return obj
+end
+
+---@param spellId number
+function proto:NewSpecWarning(spellId)
+    ---@class BossWarning
+    local obj = setmetatable({}, warningMt)
+    obj.option = "SpecWarn" .. spellId
+    return obj
+end

@@ -540,6 +540,20 @@ impl ValueType {
         }
     }
 
+    /// Whether `..` with an operand of this type gives a string whenever it gives a
+    /// value: every member concatenates ([`Self::can_concat_to_string`]) or is `nil`
+    /// or a boolean, which raise an error instead, and one member concatenates. A
+    /// member a `__concat` metamethod may handle (a table) leaves the result unknown.
+    pub fn concat_yields_string(&self) -> bool {
+        let members = match self {
+            ValueType::Union(types) => types.as_slice(),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => return inner.concat_yields_string(),
+            other => std::slice::from_ref(other),
+        };
+        members.iter().all(|t| t.can_concat_to_string() || matches!(t, ValueType::Nil | ValueType::Boolean(_)))
+            && members.iter().any(ValueType::can_concat_to_string)
+    }
+
     /// Returns true if this type is guaranteed to be truthy in Lua (not nil, not false).
     /// Used by `or` resolution: `truthy_val or y` always evaluates to `truthy_val`.
     pub fn is_guaranteed_truthy(&self) -> bool {

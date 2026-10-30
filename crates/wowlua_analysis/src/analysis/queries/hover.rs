@@ -14,9 +14,10 @@ impl AnalysisResult {
         // A field an inline `TableShape` member of its receiver declares (the
         // shape of a generic's binding harvested from another file, `Defaults &
         // AceDBObject-3.0`) reads as the access resolves, which a class member's
-        // bare `table` of the same name doesn't widen.
+        // bare `table` of the same name doesn't widen. A union receiver reads as
+        // in the shapes' own file, through the field-chain path below.
         let shape_field = self.shape_field_hover_at(offset);
-        if let Some((field_name, field_ty)) = &shape_field
+        if let Some((field_name, field_ty, true)) = &shape_field
             && !matches!(field_ty, ValueType::Function(_))
         {
             return Some(HoverResult {
@@ -221,7 +222,7 @@ impl AnalysisResult {
         // where `dropdown: Frame & { DropDown: ... }`, no arena `TableIndex`), or a
         // dot access on a typed map (`keys.realm` where `keys: table<K, V>`, which
         // reads the map's value type).
-        if let Some((field_name, field_ty)) = shape_field.or_else(|| self.map_value_hover_at(offset)) {
+        if let Some((field_name, field_ty)) = shape_field.map(|(name, ty, _)| (name, ty)).or_else(|| self.map_value_hover_at(offset)) {
             let formatted = self.format_type(&field_ty);
             return Some(HoverResult {
                 type_str: format!("(field) {}: {}", field_name, formatted),
@@ -588,11 +589,12 @@ impl AnalysisResult {
     /// Hover for a field access whose receiver type carries the field as an
     /// inline `TableShape` member (cross-file injected-field carrier). Finds the
     /// `Expr::FieldAccess` whose field name range covers `offset`, resolves the
-    /// receiver type, and returns `(field_name, field_type)` when a shape member
-    /// declares the field: the access's type, which narrows it with what the
-    /// receiver's other members say. `None` for ordinary class/record fields
+    /// receiver type, and returns `(field_name, field_type, intersection)` when a
+    /// shape member declares the field: the access's type, which narrows it with
+    /// what the receiver's other members say, and whether the receiver (but its
+    /// `nil`) is an intersection. `None` for ordinary class/record fields
     /// (handled by the table-index field-chain path).
-    fn shape_field_hover_at(&self, offset: u32) -> Option<(String, ValueType)> {
+    fn shape_field_hover_at(&self, offset: u32) -> Option<(String, ValueType, bool)> {
         for (eid, expr) in self.ir.field_access_exprs_at(offset) {
             let Expr::FieldAccess { table, field, .. } = expr else { continue };
             let Some(recv) = self.resolve_expr_type(*table).map(|t| t.into_strip_opaque()) else { continue };
@@ -600,7 +602,7 @@ impl AnalysisResult {
             recv.collect_shape_field_types(field, &mut tys);
             if !tys.is_empty() {
                 let ty = self.resolve_expr_type(eid).unwrap_or_else(|| ValueType::make_union(tys));
-                return Some((field.clone(), ty));
+                return Some((field.clone(), ty, matches!(recv.strip_nil(), ValueType::Intersection(_))));
             }
         }
         None

@@ -2248,7 +2248,7 @@ impl<'a> Analysis<'a> {
                     && let Some(ValueType::Table(Some(scan_table))) = self.ir.get_field(cur_table, field_name)
                         .and_then(|f| f.annotation.clone())
                 {
-                    self.overlay_ctor_functions(scan_table, expr_id);
+                    self.overlay_ctor_functions(scan_table, expr_id, false);
                 }
             } else {
                 self.deep_field_injections.push(DeepFieldInjection {
@@ -2325,7 +2325,7 @@ impl<'a> Analysis<'a> {
                         .filter(|f| f.from_scan)
                         .and_then(|f| f.annotation.clone())
                 {
-                    self.overlay_ctor_functions(scan_table, expr_id);
+                    self.overlay_ctor_functions(scan_table, expr_id, false);
                 }
             } else {
                 // External table: store in per-file overlay.
@@ -2768,6 +2768,17 @@ impl<'a> Analysis<'a> {
                     let class_expr = self.ir.push_expr(Expr::Literal(ValueType::Table(Some(class_idx))));
                     self.ir.set_type_source(symbol_idx, class_expr);
                 }
+                // A global only this file defines, defaulted to a constructor (a
+                // saved variable an event handler initializes, `DB = DB or { ... }`):
+                // the workspace's table, which `DB` reads as, is the scan's copy of
+                // it. A same-named local's constructor is another table.
+                if !self.ir.local_decl_symbols.contains(&symbol_idx)
+                    && self.ir.defines_global_alone(root_name)
+                    && let Some(scan_table) = self.ir.external_table_for(root_name)
+                    && let Some(ctor) = self.constructor_operand(expr_id)
+                {
+                    self.overlay_ctor_functions(scan_table, ctor, true);
+                }
                 if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
                     // Reassignment path for @type-annotated variables:
                     // record the original RHS for assign-type-mismatch
@@ -2836,11 +2847,24 @@ impl<'a> Analysis<'a> {
     /// `scan_table`, the scan's anonymous copy of it (`ns.T = { f = function() end }`,
     /// or `ns.M = M` for a local table `M`), nested tables' entries likewise: other
     /// files read the methods the scan registered for them, but this file reads its
-    /// own definitions, as it does a `function ns.T.f()` it defines. Recorded in
+    /// own definitions, as it does a `function ns.T.f()` it defines. `untyped` lays
+    /// the entries the scan couldn't type, the copy's `any`, over it too. Recorded in
     /// `ctor_overlays` for [`Self::overlay_written_functions`].
-    fn overlay_ctor_functions(&mut self, scan_table: TableIndex, rhs: ExprId) {
+    fn overlay_ctor_functions(&mut self, scan_table: TableIndex, rhs: ExprId, untyped: bool) {
         self.ctor_overlays.push((scan_table, rhs));
-        self.overlay_table_functions(scan_table, rhs, 0, true);
+        self.overlay_table_functions(scan_table, rhs, 0, true, untyped);
+    }
+
+    /// The table constructor the `and`/`or` chain `expr` holds as an operand
+    /// (`DB or { ... }`).
+    fn constructor_operand(&self, expr: ExprId) -> Option<ExprId> {
+        match *self.ir.expr(expr) {
+            Expr::Grouped(inner) => self.constructor_operand(inner),
+            Expr::BinaryOp { op: Operator::Or | Operator::And, lhs, rhs } => [rhs, lhs].into_iter().find_map(|operand| {
+                if matches!(self.ir.expr(operand), Expr::TableConstructor(_)) { Some(operand) } else { self.constructor_operand(operand) }
+            }),
+            _ => None,
+        }
     }
 
     /// Lay the functions of the tables this file's writes recorded in
@@ -2850,7 +2874,7 @@ impl<'a> Analysis<'a> {
     /// defined on the copy since (`function ns.M.f()`), stays.
     fn overlay_written_functions(&mut self) {
         for (scan_table, rhs) in std::mem::take(&mut self.ctor_overlays) {
-            self.overlay_table_functions(scan_table, rhs, 0, false);
+            self.overlay_table_functions(scan_table, rhs, 0, false, false);
         }
     }
 
@@ -2858,8 +2882,10 @@ impl<'a> Analysis<'a> {
     /// (see [`Self::overlay_ctor_functions`]): all of them when `replace`, else
     /// those the copy has no definition of from this file. Once the file is built
     /// (not `replace`), so are the entries the copy lacks, such as the fields the
-    /// table's methods write through `self`, holding every write by then.
-    fn overlay_table_functions(&mut self, scan_table: TableIndex, rhs: ExprId, depth: usize, replace: bool) {
+    /// table's methods write through `self`, holding every write by then. With
+    /// `untyped`, so are the entries the copy holds as `any`, a value the scan
+    /// couldn't type, that the file doesn't overlay yet.
+    fn overlay_table_functions(&mut self, scan_table: TableIndex, rhs: ExprId, depth: usize, replace: bool, untyped: bool) {
         if depth > 16 || !scan_table.is_external() || self.ir.table(scan_table).class_name.is_some() {
             return;
         }
@@ -2875,13 +2901,17 @@ impl<'a> Analysis<'a> {
                 }
                 continue;
             }
-            let scanned = self.ir.table(scan_table).fields.get(&name).map(|f| match f.annotation {
+            let scanned_field = self.ir.table(scan_table).fields.get(&name);
+            let untyped_entry = untyped && scanned_field
+                .is_some_and(|f| f.annotation.is_none() && matches!(self.ir.expr(f.expr), Expr::Literal(ValueType::Any)));
+            let scanned = scanned_field.map(|f| match f.annotation {
                 Some(ValueType::Table(Some(t))) => Some(t),
                 _ => self.ir.find_table_index(f.expr),
             });
             match scanned {
                 // A nested constructor, or a local table the entry holds.
-                Some(Some(nested)) => self.overlay_table_functions(nested, fi.expr, depth + 1, replace),
+                Some(Some(nested)) => self.overlay_table_functions(nested, fi.expr, depth + 1, replace, untyped),
+                Some(None) if untyped_entry && !overlaid => self.ir.insert_overlay_field(scan_table, name, fi),
                 Some(None) => {}
                 None if !replace && !overlaid => self.ir.insert_overlay_field(scan_table, name, fi),
                 None => {}

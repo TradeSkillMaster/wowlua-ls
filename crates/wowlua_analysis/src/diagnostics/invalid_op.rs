@@ -53,8 +53,13 @@ impl DiagnosticPass for InvalidOp {
             if matches!(op, Operator::Or | Operator::And | Operator::Equals | Operator::NotEquals) { continue; }
             let Some(lhs_type) = analysis.resolve_expr_type(lhs) else { continue };
             let Some(rhs_type) = analysis.resolve_expr_type(rhs) else { continue };
+            // A concatenation is typed `string` even where an operand may be nil or a
+            // boolean (`concat_yields_string`), which still errors at runtime.
+            let erroring_concat = op == Operator::Concatenate
+                && lhs_type.concat_yields_string() && rhs_type.concat_yields_string()
+                && !(lhs_type.can_concat_to_string() && rhs_type.can_concat_to_string());
             // Valid operation — no diagnostic needed
-            if analysis.resolve_expr_type(site.expr_id).is_some() { continue; }
+            if analysis.resolve_expr_type(site.expr_id).is_some() && !erroring_concat { continue; }
             // Permissive types (Any, TypeVariable) — skip to avoid noise
             if is_type_permissive(&lhs_type) || is_type_permissive(&rhs_type) { continue; }
 

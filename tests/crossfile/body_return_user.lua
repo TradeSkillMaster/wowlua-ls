@@ -83,3 +83,22 @@ panel:Show()
 -- A global data table (no methods) keeps its inline field types.
 local origin = ns.Core.GetGlobalOrigin()
 --    ^ hover: (local) origin: { x: number, y: number }  def: local
+
+---@class BodyReturnLine
+---@field text string
+
+---@class BodyReturnTooltip
+---@field lines BodyReturnLine[]
+
+-- A field read on a union of a class and returned records hovers as in their own
+-- file: the class's field.
+---@param tooltip BodyReturnTooltip
+---@param dumped boolean
+local function TooltipLines(tooltip, dumped)
+    local info = tooltip
+    if dumped then
+        info = ns.Core.DumpLines(false)
+    end
+    return info.lines
+    --          ^ hover: (field) lines: BodyReturnLine[]
+end

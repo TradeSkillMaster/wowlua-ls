@@ -150,3 +150,11 @@ BodyReturnOrigin = { x = 0, y = 0 }
 function ns.Core.GetGlobalOrigin()
     return BodyReturnOrigin
 end
+
+-- One of two records returned, one holding an empty list.
+function ns.Core.DumpLines(empty)
+    if empty then
+        return { lines = {} }
+    end
+    return { lines = { { text = "row" } } }
+end
