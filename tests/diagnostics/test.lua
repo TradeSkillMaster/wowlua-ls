@@ -1856,6 +1856,45 @@ local function eqNilOrGuard(s)
 end
 _consume(eqNilOrGuard)
 
+-- A field guard in any operand of an `or` chain narrows the RHS, not just the
+-- operand right before it, and stops narrowing once the chain ends. `== nil`
+-- rules out only nil, while `not` also rules out `false`.
+---@class OrChainCommand
+---@field Merge? fun(self: OrChainCommand, next: OrChainCommand): boolean
+---@field child OrChainCommand?
+---@field tag string?
+---@field label string|false|nil
+
+---@param top OrChainCommand?
+---@param cmd OrChainCommand
+---@param flag boolean
+local function orChainFieldGuard(top, cmd, flag)
+    if top == nil or top.Merge == nil or not top:Merge(cmd) then
+        _consume(cmd)
+    end
+    if flag or cmd.child == nil or cmd.child.tag == "x" then
+        _consume(cmd)
+    end
+    if cmd.child == nil or flag or cmd.child.tag == "x" then
+        _consume(cmd)
+    end
+    if flag or (cmd.child == nil) or cmd.child.tag == "x" then
+        _consume(cmd)
+    end
+    if cmd.label == nil or needsStr(cmd.label) == "ok" then
+--                                  ^ diag: type-mismatch
+        _consume(cmd)
+    end
+    if not cmd.label or needsStr(cmd.label) == "ok" then
+        _consume(cmd)
+    end
+    if flag or not cmd.tag or needsStr(cmd.tag) == "ok" then
+        needsStr(cmd.tag)
+--               ^ diag: need-check-nil
+    end
+end
+_consume(orChainFieldGuard)
+
 -- guard does not leak past if-statement
 ---@param s string?
 local function guardNoLeak(s)

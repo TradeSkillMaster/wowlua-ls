@@ -4649,9 +4649,15 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// When lowering `a or b` where `a` is an inverse field nil guard
-    /// (e.g. `not self.field`, `self.field == nil`), detect the guarded field.
-    pub(super) fn detect_or_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+    /// When lowering `a or b` where `a` is an inverse field nil guard, detect the
+    /// guarded field: `not self.field` leaves it truthy in `b`, `self.field == nil`
+    /// only non-nil.
+    pub(super) fn detect_or_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>, GuardNarrow)> {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = lhs
+            && let Some(inner) = g.get_expression() {
+                return self.detect_or_lhs_field_guard(&inner, scope_idx);
+        }
         // `not self.field or ...` or `not self._state.x or ...`
         if let Expression::UnaryExpression(u) = lhs
             && matches!(u.kind(), Operator::Not) {
@@ -4660,7 +4666,7 @@ impl<'a> Analysis<'a> {
                     let names = ident.names();
                     if names.len() >= 2 {
                         let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                        return Some((sym_idx, names[1..].to_vec()));
+                        return Some((sym_idx, names[1..].to_vec(), GuardNarrow::StripFalsy));
                     }
                 }
             }
@@ -4680,12 +4686,21 @@ impl<'a> Analysis<'a> {
                         let names = ident.names();
                         if names.len() >= 2 {
                             let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                            return Some((sym_idx, names[1..].to_vec()));
+                            return Some((sym_idx, names[1..].to_vec(), GuardNarrow::StripNil));
                         }
                     }
                 }
             }
         None
+    }
+
+    /// Collect the field guards of every operand of an `or` chain's LHS. The RHS
+    /// runs only when all of them are falsy, so in `a or self.f == nil or self.f()`
+    /// `self.f` is non-nil at the call.
+    pub(super) fn collect_or_chain_field_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> FieldGuards {
+        let mut operands = Vec::new();
+        chain_operands(*lhs, Operator::Or, &mut operands);
+        operands.iter().filter_map(|operand| self.detect_or_lhs_field_guard(operand, scope_idx)).collect()
     }
 
     /// Detect `event == "EVENT_NAME"` where `event` is a simple identifier being

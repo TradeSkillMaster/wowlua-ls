@@ -249,46 +249,24 @@ impl<'a> Analysis<'a> {
                             coalesce_pre_narrow.push((derived, v));
                         }
                     }
-                    // Field-level narrowing for `self.field and ...` / `not self.field or ...` /
-                    // `type(self.field) == "type" and ...` patterns.
-                    // Returns (sym_idx, field_chain, GuardNarrow).
-                    let field_guard: Option<(SymbolIndex, Vec<String>, GuardNarrow)> = if matches!(op, Operator::And) {
-                        self.detect_and_lhs_field_guard(lhs, scope_idx)
-                    } else if matches!(op, Operator::Or) {
-                        self.detect_or_lhs_field_guard(lhs, scope_idx).map(|(s, c)| (s, c, GuardNarrow::StripFalsy))
-                    } else if matches!(op, Operator::None) {
-                        if let Expression::BinaryExpression(rhs_bin) = rhs {
-                            if matches!(rhs_bin.kind(), Operator::And) {
-                                self.detect_and_lhs_field_guard(lhs, scope_idx)
-                            } else if matches!(rhs_bin.kind(), Operator::Or) {
-                                self.detect_or_lhs_field_guard(lhs, scope_idx).map(|(s, c)| (s, c, GuardNarrow::StripFalsy))
-                            } else { None }
-                        } else { None }
-                    } else { None };
-                    // Also collect field guards from intermediate `and` operands
-                    // (e.g. `self.a and self.b and func(self.a, self.b)` narrows both)
+                    // Field guards from every `and`/`or` operand left of the RHS
+                    // (e.g. `self.a and self.b and func(self.a, self.b)` narrows both,
+                    // as does `not self.a or self.b == nil or func(self.a, self.b)`)
                     // and every field a secret guard in the chain proves.
-                    let mut extra_field_guards: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = if is_and_chain {
+                    let mut field_guards = if is_and_chain {
                         self.collect_and_chain_field_guards(lhs, scope_idx)
+                    } else if is_or_chain {
+                        self.collect_or_chain_field_guards(lhs, scope_idx)
                     } else {
                         Vec::new()
                     };
-                    extra_field_guards.extend(secret_field_guards);
-                    extra_field_guards.extend(guard_call_field_guards);
+                    field_guards.extend(secret_field_guards);
+                    field_guards.extend(guard_call_field_guards);
                     // Temporarily insert field narrowings so RHS sees narrowed types.
                     // We track which entries we inserted so we can remove them after.
                     let mut temp_field_narrows: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = Vec::new();
-                    if let Some((sym_idx, ref chain, ref narrow_kind)) = field_guard
-                        && self.insert_temp_field_narrow(scope_idx, sym_idx, chain, narrow_kind)
-                    {
-                        temp_field_narrows.push((sym_idx, chain.clone(), narrow_kind.clone()));
-                    }
-                    for (sym_idx, chain, narrow_kind) in &extra_field_guards {
-                        if field_guard.as_ref().is_none_or(|(gs, gc, k)| {
-                            (*gs, gc) != (*sym_idx, chain) || k.is_secrecy() != narrow_kind.is_secrecy()
-                        })
-                            && self.insert_temp_field_narrow(scope_idx, *sym_idx, chain, narrow_kind)
-                        {
+                    for (sym_idx, chain, narrow_kind) in &field_guards {
+                        if self.insert_temp_field_narrow(scope_idx, *sym_idx, chain, narrow_kind) {
                             temp_field_narrows.push((*sym_idx, chain.clone(), narrow_kind.clone()));
                         }
                     }
@@ -440,21 +418,14 @@ impl<'a> Analysis<'a> {
                     }
                     // Mark and-guarded call/access exprs for all field guards + bare-name.
                     {
-                        let mut all_field_guards: Vec<(SymbolIndex, &Vec<String>)> = Vec::new();
-                        if let Some((guard_sym, ref guard_fields, _)) = field_guard {
-                            all_field_guards.push((guard_sym, guard_fields));
-                        }
-                        for (sym_idx, chain, _) in &extra_field_guards {
-                            all_field_guards.push((*sym_idx, chain));
-                        }
                         for eid in expr_start..self.ir.exprs.len() {
                             let expr_id = ExprId(eid);
                             match self.ir.expr(expr_id) {
                                 Expr::FunctionCall { func: callee, .. } => {
                                     let callee = *callee;
-                                    for &(gs, gf) in &all_field_guards {
+                                    for (gs, gf, _) in &field_guards {
                                         if self.ir.extract_field_chain(callee)
-                                            .is_some_and(|(sym, chain)| sym == gs && chain == *gf)
+                                            .is_some_and(|(sym, chain)| sym == *gs && chain == *gf)
                                         {
                                             self.ir.and_guarded_call_exprs.insert(callee);
                                             break;
@@ -480,9 +451,9 @@ impl<'a> Analysis<'a> {
                                 Expr::FieldAccess { table, .. } | Expr::BracketIndex { table, .. } => {
                                     let table = *table;
                                     let mut guarded = false;
-                                    for &(gs, gf) in &all_field_guards {
+                                    for (gs, gf, _) in &field_guards {
                                         if self.ir.extract_field_chain(table)
-                                            .is_some_and(|(sym, chain)| sym == gs && chain == *gf)
+                                            .is_some_and(|(sym, chain)| sym == *gs && chain == *gf)
                                         {
                                             guarded = true;
                                             break;
