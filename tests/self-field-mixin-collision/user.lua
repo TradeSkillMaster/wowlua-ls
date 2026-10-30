@@ -3,7 +3,7 @@
 -- top-level `Collision` (the misattribution bug), while the single-name
 -- `PlainMixin`'s `self.shallow` must still resolve.
 local leaked = Collision.deep
---                       ^ hover: <missing>
+--                       ^ hover: (field) deep: ?
 local ok = PlainMixin.shallow
 --                    ^ hover: (field) shallow: any
 -- The deeply-nested @class `Outer.Sub.Widget`'s control-flow-nested `self.nested`

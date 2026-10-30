@@ -215,7 +215,6 @@ impl AnalysisResult {
                 };
                 return Some(HoverResult { type_str, doc });
             }
-            return None;
         }
         // Fields the class-field chain above has no `FieldInfo` for: one carried
         // cross-file by an inline `TableShape` member (e.g. `dropdown.DropDown`
@@ -234,7 +233,7 @@ impl AnalysisResult {
             return Some(result);
         }
         if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
-            return None;
+            return self.unresolved_field_hover_at(tree, offset);
         }
         // Try varargs hover (... in expressions or parameter lists)
         if let Some(result) = self.varargs_hover_at(tree, offset) {
@@ -626,5 +625,28 @@ impl AnalysisResult {
             }
         }
         None
+    }
+
+    /// Hover for a field name the member lookups above find nothing for (a key
+    /// read through a map, a field of an untyped receiver, a member no file
+    /// declares): the type the analysis gives the access, else `?`.
+    fn unresolved_field_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let token = match SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)) {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(_, right) => right,
+            TokenAtOffset::None => return None,
+        };
+        let name = token.text();
+        let colon = Self::detect_access_before_token(&token.parent()?, &token) == FieldAccessKind::Colon;
+        let kind = if colon { "method" } else { "field" };
+        let (type_str, doc) = match self.field_access_type_at(u32::from(token.text_range().start())) {
+            Some(ValueType::Function(Some(func_idx))) => {
+                let _call_secrecy = self.secrecy_display_for_function(func_idx, self.call_expr_for_callee_at(tree, offset));
+                (format!("({kind}) {}", self.format_function_decl(func_idx, name, colon, None)), self.format_function_doc(func_idx))
+            }
+            Some(ty) => (format!("({kind}) {name}: {}", self.format_type(&ty)), self.doc_for_type(&ty)),
+            None => (format!("({kind}) {name}: ?"), None),
+        };
+        Some(HoverResult { type_str, doc })
     }
 }

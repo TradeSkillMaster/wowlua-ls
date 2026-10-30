@@ -14,4 +14,10 @@ local realm = keys.realm
 --    ^ hover: (local) realm: string
 --                  ^ hover: (field) realm: string
 
-_G.useMapDotAccess = { counts, n, keys, realm }
+-- A field read through a map's key has the type the read resolves to.
+---@type table<string, {id: number}>
+local byName = {}
+local id = byName.first.id
+--                      ^ hover: (field) id: number
+
+_G.useMapDotAccess = { counts, n, keys, realm, id }

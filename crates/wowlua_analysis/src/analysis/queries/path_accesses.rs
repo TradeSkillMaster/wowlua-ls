@@ -78,7 +78,8 @@ pub struct PathAccess {
     /// The path used (a global's has no fields), or why it has none.
     pub path: Result<FieldPath, Unkeyed>,
     /// The type the access shows, naming classes without expanding them and
-    /// collapsing table shapes to `{…}`. `<none>` when the field isn't found.
+    /// collapsing table shapes to `{…}`: `?` when it has none, as its hover;
+    /// `<none>` for a constructor key no table it builds has a field for.
     pub display: String,
     /// An assignment, a function definition or a table constructor key.
     pub write: bool,
@@ -368,12 +369,12 @@ impl AnalysisResult {
     /// The type the field access at `offset` shows, as [`PathAccess::display`].
     fn field_display(&self, tree: &SyntaxTree, offset: u32) -> String {
         let _secrecy = self.secrecy_display_at(offset);
-        let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) else {
-            return "<none>".to_string();
-        };
-        let shown = match self.get_field(table_idx, &field_name) {
+        let chain = self.resolve_field_chain_at(tree, offset);
+        let shown = match chain.as_ref().and_then(|(table_idx, field_name, ..)| self.get_field(*table_idx, field_name)) {
             Some(fi) => self.format_field_type(fi, 0),
-            None => match self.resolve_expr_type(expr_id) {
+            None => match chain.and_then(|(.., expr_id, _, _)| self.resolve_expr_type(expr_id))
+                .or_else(|| self.field_access_type_at(offset))
+            {
                 Some(vt) => self.format_type_depth(&vt, 1),
                 None => "?".to_string(),
             },

@@ -2226,6 +2226,14 @@ impl Ir {
             .then(|| calls.iter().filter(|call| call.path != *path).cloned().collect())
     }
 
+    /// Whether the placeholder the workspace scan left in `fi` stands only for
+    /// calls other files make (`deferred_call_fields`), which the call-field
+    /// harvest types here: the field this file reads, not one it writes.
+    pub(super) fn placeholder_calls_only_in_other_files(&self, fi: &FieldInfo) -> bool {
+        let (Some(calls), Some(path)) = (self.ext.deferred_call_fields.get(&fi.expr), &self.file_path) else { return false };
+        !calls.iter().any(|call| call.path == *path)
+    }
+
     /// Record the tables of this file `writes` hold in `unknown_element_tables`.
     pub(super) fn mark_unknown_element_tables(&mut self, writes: impl IntoIterator<Item = ExprId>) {
         for write in writes {
@@ -3581,6 +3589,10 @@ pub struct Analysis<'a> {
     /// (`overlay_written_functions`).
     pub ctor_overlays: Vec<(TableIndex, ExprId)>,
     pub deferred_field_assignments: Vec<DeferredFieldAssignment>,
+    /// Scan placeholder reads that waited on a local a write of the field reads,
+    /// untyped yet (`Analysis::wait_on_local_write`): what is resolved through one
+    /// stays pending and uncached, to take the local's type once it is typed.
+    pub placeholder_waits: usize,
     /// `@narrows-arg` mixins applied to field targets (`Mixin(self.Child, M)`);
     /// resolved after the fixpoint by `resolve_deferred_field_mixins`.
     pub deferred_field_mixins: Vec<crate::types::DeferredFieldMixin>,
@@ -3992,6 +4004,7 @@ impl<'a> Analysis<'a> {
             ctor_twins: HashMap::default(),
             ctor_overlays: Vec::new(),
             deferred_field_assignments: Vec::new(),
+            placeholder_waits: 0,
             deferred_field_mixins: Vec::new(),
             referenced_symbols: HashSet::default(),
             functions_with_returns: HashSet::default(),

@@ -163,8 +163,9 @@ const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
 /// or an `Any` inherited from a parent class — so the field's real type is
 /// whatever its `expr`/`extra_exprs` resolve to. Resolves those, ignoring the
 /// `Any`/`Nil` placeholders themselves, and re-adds `Any` to `out` iff nothing
-/// more specific resolved OR a reassignment was unresolvable while a specific
-/// type did (the field could still hold any type). Returns whether a specific
+/// more specific resolved OR, for an author's `any`, a reassignment was
+/// unresolvable while a specific type did (the field could still hold any type;
+/// the scan's placeholder yields to the writes that resolve). Returns whether a specific
 /// (non-`Any`/`Nil`) type was found. Mirrors resolve.rs's FieldAccess `is_any`.
 ///
 /// Single source of truth for the two query-side `Any`-field callers:
@@ -192,7 +193,8 @@ fn refine_any_field_exprs(
             None => has_unresolvable = true,
         }
     }
-    let keep_any = !found_specific || (has_unresolvable && !fi.extra_exprs.is_empty());
+    let keep_any = !found_specific
+        || (has_unresolvable && !fi.extra_exprs.is_empty() && !fi.scan_inferred());
     if keep_any && !out.contains(&ValueType::Any) {
         out.push(ValueType::Any);
     }
@@ -351,6 +353,11 @@ fn resolve_expr_type_uncleared(
             let table = *table;
             let field = field.clone();
             let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
+            // A field of `any` is `any`, as in the fixpoint's `resolve_field_access`
+            // (which never caches `any`).
+            if matches!(table_type, ValueType::Any) {
+                return Some(ValueType::Any);
+            }
             let table_type = table_type.into_strip_opaque();
             // Inline `TableShape` members (cross-file carriers) declare fields by
             // value, as in the fixpoint's `resolve_field_access`.

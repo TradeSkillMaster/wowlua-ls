@@ -1539,6 +1539,14 @@ pub struct FieldInfo {
     pub from_scan: bool,
 }
 
+impl FieldInfo {
+    /// The field's annotation is the type the workspace scan inferred from its
+    /// writes, not an author's (`@field`, `---@type`).
+    pub fn scan_inferred(&self) -> bool {
+        self.from_scan && self.annotation_text.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TableInfo {
     pub fields: HashMap<String, FieldInfo>,

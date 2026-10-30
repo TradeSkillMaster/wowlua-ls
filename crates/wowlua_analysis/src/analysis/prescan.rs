@@ -484,7 +484,9 @@ impl<'a> Analysis<'a> {
                 //
                 // Filter 1 (unconditional): Skips unannotated table-typed fields —
                 // speculative table placeholders from workspace scanning. These would
-                // suppress inject-field checks if imported. Applies to all classes.
+                // suppress inject-field checks if imported. Applies to all classes,
+                // but for a placeholder standing only for other files' calls, which
+                // the call-field harvest types here.
                 //
                 // Filter 2 (conditional on @field contract): When the local class has
                 // explicit @field annotations, skips fields marked `from_scan` —
@@ -496,6 +498,7 @@ impl<'a> Analysis<'a> {
                     if fi.annotation.is_none()
                         && fi.annotation_type_raw.is_none()
                         && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(..)))
+                        && !self.ir.placeholder_calls_only_in_other_files(&fi)
                     {
                         continue;
                     }
@@ -974,11 +977,13 @@ impl<'a> Analysis<'a> {
             if let Some(&ext_table_idx) = self.ir.classes.get(&class_name) {
                 let mut ext_table = self.ir.table(ext_table_idx).clone();
                 // Remove placeholder fields (unresolved FunctionCall results registered as
-                // Table(None)) so they don't block per-file builder chain resolution.
+                // Table(None)) so they don't block per-file builder chain resolution,
+                // unless they stand for other files' calls only.
                 ext_table.fields.retain(|_, fi| {
                     !(fi.annotation.is_none()
                       && fi.annotation_type_raw.is_none()
-                      && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(None))))
+                      && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(None)))
+                      && !self.ir.placeholder_calls_only_in_other_files(fi))
                 });
                 let local_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(ext_table);

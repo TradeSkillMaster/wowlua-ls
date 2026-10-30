@@ -80,5 +80,5 @@ end
 
 local function LayoutMigrated()
     return SAVED_LAYOUT.migrated, MigrateLayout
-    --                  ^ hover: <missing>  def: None
+    --                  ^ hover: (field) migrated: ?  def: None
 end

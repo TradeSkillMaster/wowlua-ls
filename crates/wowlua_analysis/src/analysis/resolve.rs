@@ -32,9 +32,11 @@ struct FetchedField {
     annotation: Option<ValueType>,
     primary: ExprId,
     extras: Vec<ExprId>,
-    /// The annotation comes from author text (`@field`, `---@type`), not one the
-    /// scan materialized.
+    /// The field keeps its annotation's text: an inline `---@type`, or an `@field`
+    /// function or `T!` type (a plain `@field x T` keeps none).
     has_author_text: bool,
+    /// `FieldInfo::scan_inferred`.
+    scan_inferred: bool,
 }
 
 impl FetchedField {
@@ -47,6 +49,7 @@ impl FetchedField {
             primary: fi.expr,
             extras: fi.extra_exprs.clone(),
             has_author_text: fi.annotation_text.is_some(),
+            scan_inferred: fi.scan_inferred(),
         }
     }
 }
@@ -222,6 +225,7 @@ impl<'a> Analysis<'a> {
                         && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
                         *slot = None;
                     }
+                    let waits = self.placeholder_waits;
                     if let Some(resolved) = self.resolve_expr(expr_id) {
                         let prev = self.ir.symbols[si.val()].versions[vi].resolved_type.replace(resolved.clone());
                         // Propagate event type display alias through SymbolRef assignments
@@ -237,7 +241,9 @@ impl<'a> Analysis<'a> {
                             // iteration so that newly resolved operands can contribute.
                             true
                         } else {
-                            false
+                            // Read through a scan placeholder waiting on a local the
+                            // fixpoint hasn't typed yet: pending until it is.
+                            self.placeholder_waits != waits
                         }
                     } else {
                         true
@@ -3580,6 +3586,7 @@ impl<'a> Analysis<'a> {
             *slot = true;
         }
         self.resolve_depth += 1;
+        let waits = self.placeholder_waits;
         let result = self.resolve_expr_inner(expr_id);
         self.resolve_depth -= 1;
         if let Some(slot) = self.resolving_exprs.get_mut(expr_id.val()) {
@@ -3590,9 +3597,11 @@ impl<'a> Analysis<'a> {
         // above and never reach here. Only cache local expressions (< EXT_BASE).
         // Skip caching `Any` — it may improve as symbol types converge during
         // the fixpoint (e.g. a FieldAccess on a not-yet-resolved narrowing wrapper
-        // produces `Any` initially but should refine to a concrete type later).
+        // produces `Any` initially but should refine to a concrete type later) —
+        // and a value read through a scan placeholder waiting on a local.
         if let Some(ref res) = result
             && !matches!(res, ValueType::Any)
+            && self.placeholder_waits == waits
             && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
             *slot = Some(res.clone());
         }
@@ -3634,6 +3643,21 @@ impl<'a> Analysis<'a> {
     /// creates.
     fn expr_in_progress(&self, expr_id: ExprId) -> bool {
         self.resolving_exprs.get(expr_id.val()).copied().unwrap_or(false)
+    }
+
+    /// A read of the scan's `any` whose write `expr_id` reads a local version the
+    /// fixpoint hasn't typed yet (`local c = CreateFrame(...)` declared after a
+    /// function reading the field) waits on it (`placeholder_waits`): the local
+    /// may be typed on a later round.
+    fn wait_on_local_write(&mut self, expr_id: ExprId) {
+        if let Expr::SymbolRef(sym, ver) = *self.expr(expr_id)
+            && !sym.is_external()
+        {
+            let version = &self.sym(sym).versions[ver];
+            if version.type_source.is_some() && version.resolved_type.is_none() {
+                self.placeholder_waits += 1;
+            }
+        }
     }
 
     /// True when `vt` is a zero-arg, return-less `function() end` literal — the
@@ -4025,7 +4049,8 @@ impl<'a> Analysis<'a> {
                 fetched = Some(FetchedField::of(fi, &self.ir.ext));
             }
             if let Some(FetchedField {
-                annotation: ann_vt, primary: field_primary, extras: field_extras, has_author_text, ..
+                annotation: ann_vt, primary: field_primary, extras: field_extras, has_author_text,
+                scan_inferred, ..
             }) = fetched {
                 field_exists = true;
                 let is_any = matches!(ann_vt, Some(ValueType::Any));
@@ -4040,8 +4065,13 @@ impl<'a> Analysis<'a> {
                         let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
                         let mut found_specific = false;
                         let mut has_unresolvable = false;
+                        // The scan's `any`, read while resolving one of its own writes
+                        // (`t.f = t.f or X()`): unknown for now, as in the unannotated
+                        // branch below, so the placeholder doesn't stick.
+                        let mut unsettled = false;
                         for expr_id in all_exprs {
                             if self.expr_in_progress(expr_id) {
+                                unsettled |= scan_inferred;
                                 continue;
                             }
                             if let Some(vt) = self.resolve_expr(expr_id) {
@@ -4052,18 +4082,23 @@ impl<'a> Analysis<'a> {
                                     }
                             } else {
                                 has_unresolvable = true;
+                                if scan_inferred {
+                                    self.wait_on_local_write(expr_id);
+                                }
                             }
                         }
                         // If the field was assigned multiple times and
                         // any assignment couldn't be resolved, the field
                         // could hold any type — keep as Any.  Uses
                         // has_extras (not skip_primary) because in this
-                        // branch the primary is always Any, not Nil.
-                        if has_unresolvable && has_extras {
+                        // branch the primary is always Any, not Nil. The `any`
+                        // the workspace scan inferred yields to the writes that
+                        // resolve, as an unannotated field's does.
+                        if has_unresolvable && has_extras && !scan_inferred {
                             if !field_types.contains(ann_vt) {
                                 field_types.push(ann_vt.clone());
                             }
-                        } else if !found_specific && !field_types.contains(ann_vt) {
+                        } else if !found_specific && !unsettled && !field_types.contains(ann_vt) {
                             field_types.push(ann_vt.clone());
                         }
                     } else if !field_types.contains(ann_vt) {

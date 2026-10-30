@@ -3604,9 +3604,12 @@ pub(crate) fn call_assigns_global(call: &FunctionCall<'_>, name: &str) -> bool {
     names.len() == 1 && names[0] == name
 }
 
-/// Whether `call` is the value a single-target `t.field = ...` write gives `field`.
+/// Whether `call` is the value a single-target `t.field = ...` write, or a table
+/// constructor's `field = ...` entry, gives `field`.
 pub(crate) fn call_assigns_field(call: &FunctionCall<'_>, field: &str) -> bool {
     assigned_target(call).is_some_and(|names| names.len() >= 2 && names.last().is_some_and(|n| n == field))
+        || call.syntax().parent().and_then(crate::ast::Field::cast).and_then(|entry| named_ctor_entry(&entry))
+            .is_some_and(|(name, value, _)| name == field && value.syntax().text_range() == call.syntax().text_range())
 }
 
 /// Whether `call` initializes `local name = ...`.

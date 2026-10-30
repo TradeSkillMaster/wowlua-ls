@@ -400,6 +400,12 @@ impl AnalysisResult {
         self.resolve_field_chain_for_token(token)
     }
 
+    /// The type the analysis gives the field access whose name token starts at
+    /// `start`, for a read [`Self::resolve_field_chain_at`] finds no member for.
+    pub(super) fn field_access_type_at(&self, start: u32) -> Option<ValueType> {
+        self.ir.field_access_exprs_at(start).find_map(|(eid, _)| self.resolve_expr_type(eid))
+    }
+
     /// Resolve a field access chain for a pre-found Name token.
     /// Same as `resolve_field_chain_at` but avoids redundant O(log n) tree traversal
     /// when the caller already has the token (e.g. from a `descendants_with_tokens` walk).

@@ -6072,6 +6072,15 @@ fn map_dot_access() {
     });
 }
 
+#[test]
+fn field_hover_fallback() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/field-hover-fallback.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
 // `Mixin(self.field, M)` augments a field's type with the mixin (`Frame & M`) so
 // the mixin's methods resolve on every read of the field (same-method and from
 // sibling methods), the same outcome the plain-local `Mixin(f, M)` form gives.
@@ -6311,6 +6320,8 @@ fn value_fields_crossfile() {
         "consts_user.lua", "toolkit_main.lua",
         "toolkit_user.lua", "bossmod.lua", "bossmod_user.lua", "saved_init.lua", "saved_user.lua",
         "gearview_user.lua", "store_user.lua", "frames.lua", "frames_user.lua",
+        "locale_user.lua", "locale_reader.lua", "node_info_user.lua", "node_log.lua", "lazy_panel.lua",
+        "deferred_child.lua", "untyped_writes.lua",
     ] {
         run_annotation_tests(&TestConfig {
             lua_file: &format!("tests/value-fields-crossfile/{lua_file}"),

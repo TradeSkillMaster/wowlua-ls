@@ -553,4 +553,4 @@ local presetPriority = preset.priority
 -- Nonexistent field whose name matches a local variable should NOT show the variable
 local preset2 = PRESETS["alpha"]
 local noSuchField = preset2.preset2
---                          ^ hover: <missing>
+--                          ^ hover: (field) preset2: ?

@@ -1,0 +1,2 @@
+---@class NodeHolder
+---@field record NodeLog?

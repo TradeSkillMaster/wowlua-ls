@@ -963,18 +963,15 @@ pub(super) fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String,
 
 // ── Instance field receivers ────────────────────────────────────────────────
 
-/// A table whose field writes are a class's instance fields: `self` in a method of
-/// the class, or an instance a function builds with `setmetatable` (`local h =
-/// setmetatable({ size = 1 }, Holder)` then `h.count = 0`), whose constructor
-/// entries and writes are the class's fields as a method's `self` writes are.
+/// A table whose field writes are a class's instance fields ([`ReceiverKind`]).
 struct FieldReceiver<'a> {
     class_name: String,
     /// Its name in `body` (empty for an instance only returned).
     name: String,
     body: Block<'a>,
-    /// Where an instance's writes start, innermost first: the block binding it and
-    /// the statement there, then each enclosing block and the statement holding the
-    /// inner one. Empty for `self`, whose writes are its whole body.
+    /// Where a bound receiver's writes start, innermost first: the block binding it
+    /// and the statement there, then each enclosing block and the statement holding
+    /// the inner one. Empty for `self`, whose writes are its whole body.
     after: Vec<(Block<'a>, usize)>,
     /// The function `body` belongs to, whose `@param`s type bare writes.
     func: FunctionDefinition<'a>,
@@ -982,13 +979,26 @@ struct FieldReceiver<'a> {
     self_class: Option<String>,
     /// An instance's constructor entries: the table `setmetatable` was given.
     ctor: Option<TableConstructor<'a>>,
-    /// A `setmetatable` instance rather than a method's `self`.
-    instance: bool,
+    kind: ReceiverKind,
+}
+
+/// The receivers whose field writes are a class's instance fields.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReceiverKind {
+    /// `self` in a method of the class.
+    SelfParam,
+    /// An instance a function body builds with `setmetatable` (`local h =
+    /// setmetatable({ size = 1 }, Holder)` then `h.count = 0`): its constructor
+    /// entries and writes are the class's fields as a method's `self` writes are.
+    Instance,
+    /// A local or parameter a function body binds under a `---@class`, whatever its
+    /// value (`---@class Info` on `local info = GetInfo(id)`).
+    ClassLocal,
 }
 
 /// Every field receiver in the file: `self` in the methods of known classes
-/// (top-level and control-flow definitions), and the `setmetatable` instances
-/// built in any function body ([`InstanceScan`]).
+/// (top-level and control-flow definitions), and the `setmetatable` instances and
+/// `---@class` locals of any function body ([`InstanceScan`]).
 fn field_receivers<'a>(root: SyntaxNode<'a>, known_classes: &HashSet<String>) -> Vec<FieldReceiver<'a>> {
     let Some(block) = Block::cast(root) else { return Vec::new() };
     let mut all_stmts = Vec::new();
@@ -1014,7 +1024,7 @@ fn field_receivers<'a>(root: SyntaxNode<'a>, known_classes: &HashSet<String>) ->
         let (Some(class_name), Some(body)) = (method_class(func), func.block()) else { continue };
         receivers.push(FieldReceiver {
             self_class: Some(class_name.clone()), class_name, name: "self".into(), body,
-            after: Vec::new(), func: *func, ctor: None, instance: false,
+            after: Vec::new(), func: *func, ctor: None, kind: ReceiverKind::SelfParam,
         });
     }
 
@@ -1026,6 +1036,7 @@ fn field_receivers<'a>(root: SyntaxNode<'a>, known_classes: &HashSet<String>) ->
             known_classes, class_of: &class_of, file_metatables: &file_metatables,
             self_class: method_class(&func), body, func,
             local_tables: HashMap::default(), local_metatables: HashMap::default(),
+            locals: func.params().map(|p| p.parameters()).unwrap_or_default().into_iter().collect(),
             path: Vec::new(), receivers: &mut receivers,
         };
         scan.block(body);
@@ -1036,7 +1047,8 @@ fn field_receivers<'a>(root: SyntaxNode<'a>, known_classes: &HashSet<String>) ->
 /// Finds the `setmetatable` instances one function body builds: `local h =
 /// setmetatable({...}, mt)`, `h = setmetatable(...)`, `setmetatable(h, mt)` on a
 /// local, and `return setmetatable(...)`. An instance's class is the `---@class` /
-/// `---@type` its statement declares, else the class its metatable names.
+/// `---@type` its statement declares, else the class its metatable names. Also
+/// finds the locals and parameters the body binds under a `---@class`.
 struct InstanceScan<'a, 'r, F> {
     known_classes: &'r HashSet<String>,
     class_of: &'r F,
@@ -1049,6 +1061,8 @@ struct InstanceScan<'a, 'r, F> {
     local_tables: HashMap<String, (TableConstructor<'a>, Vec<(Block<'a>, usize)>)>,
     /// The body's locals holding a metatable whose `__index` is a class.
     local_metatables: HashMap<String, String>,
+    /// The function's parameters and the locals the body declared so far.
+    locals: HashSet<String>,
     /// The enclosing blocks and the statement holding the inner one, outermost first.
     path: Vec<(Block<'a>, usize)>,
     receivers: &'r mut Vec<FieldReceiver<'a>>,
@@ -1076,6 +1090,7 @@ impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
             Statement::LocalAssign(assign) => {
                 let names = assign.name_list().map(|n| n.names()).unwrap_or_default();
                 let exprs = assign.expression_list().map(|e| e.expressions()).unwrap_or_default();
+                self.locals.extend(names.iter().cloned());
                 if let ([name], [value]) = (names.as_slice(), exprs.as_slice()) {
                     self.bind(name, value, assign.syntax(), block, i);
                 } else {
@@ -1112,7 +1127,9 @@ impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
                     let Some(args) = setmetatable_args(&value) else { continue };
                     let class = self.metatable_class(args.get(1));
                     match args.first() {
-                        Some(Expression::TableConstructor(tc)) => self.push(String::new(), class, Some(*tc), Vec::new()),
+                        Some(Expression::TableConstructor(tc)) => {
+                            self.push(String::new(), class, Some(*tc), Vec::new(), ReceiverKind::Instance);
+                        }
                         Some(arg) => {
                             if let Some(name) = single_name(arg) {
                                 self.instance_of_local(name, class, block, i);
@@ -1127,8 +1144,9 @@ impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
     }
 
     /// `name = value` / `local name = value`, statement `stmt`: an instance when
-    /// `value` is a `setmetatable` call; a table constructor is remembered for a
-    /// later one (and as a metatable when it has an `__index` class).
+    /// `value` is a `setmetatable` call, else a `---@class` local when `stmt`
+    /// declares one; a table constructor is remembered for a later `setmetatable`
+    /// (and as a metatable when it has an `__index` class).
     fn bind(&mut self, name: &str, value: &Expression<'a>, stmt: SyntaxNode<'a>, block: Block<'a>, i: usize) {
         let local_table = self.local_tables.remove(name);
         self.local_metatables.remove(name);
@@ -1137,9 +1155,16 @@ impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
                 self.local_metatables.insert(name.to_string(), class);
             }
             self.local_tables.insert(name.to_string(), (*tc, self.at(block, i)));
-            return;
         }
-        let Some(args) = setmetatable_args(value) else { return };
+        let Some(args) = setmetatable_args(value) else {
+            // The writes after its binding; a constructor's own entries are the
+            // class declaration's.
+            if self.locals.contains(name) {
+                let class = declared_own_class(stmt, self.known_classes);
+                self.push(name.to_string(), class, None, self.at(block, i), ReceiverKind::ClassLocal);
+            }
+            return;
+        };
         let class = declared_class(stmt, value, self.known_classes).or_else(|| self.metatable_class(args.get(1)));
         let ctor = match args.first() {
             Some(Expression::TableConstructor(tc)) => Some(*tc),
@@ -1148,7 +1173,7 @@ impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
                 .map(|(tc, _)| tc),
             None => None,
         };
-        self.push(name.to_string(), class, ctor, self.at(block, i));
+        self.push(name.to_string(), class, ctor, self.at(block, i), ReceiverKind::Instance);
     }
 
     /// `setmetatable(name, mt)` on a local: an instance from where it was assigned its
@@ -1158,14 +1183,21 @@ impl<'a, F: Fn(&str) -> Option<String>> InstanceScan<'a, '_, F> {
             Some((tc, after)) => (Some(*tc), after.clone()),
             None => (None, self.at(block, i)),
         };
-        self.push(name, class, ctor, after);
+        self.push(name, class, ctor, after, ReceiverKind::Instance);
     }
 
-    fn push(&mut self, name: String, class: Option<String>, ctor: Option<TableConstructor<'a>>, after: Vec<(Block<'a>, usize)>) {
+    fn push(
+        &mut self,
+        name: String,
+        class: Option<String>,
+        ctor: Option<TableConstructor<'a>>,
+        after: Vec<(Block<'a>, usize)>,
+        kind: ReceiverKind,
+    ) {
         let Some(class_name) = class else { return };
         self.receivers.push(FieldReceiver {
             class_name, name, body: self.body, after, func: self.func,
-            self_class: self.self_class.clone(), ctor, instance: true,
+            self_class: self.self_class.clone(), ctor, kind,
         });
     }
 
@@ -1204,15 +1236,19 @@ fn child_blocks<'a>(stmt: &Statement<'a>) -> Vec<Block<'a>> {
     }
 }
 
-/// The class a statement's `---@class` / `---@type` gives the value it assigns.
-fn declared_class(stmt: SyntaxNode<'_>, value: &Expression<'_>, known_classes: &HashSet<String>) -> Option<String> {
+/// The class a statement's `---@class` declares for the value it assigns.
+fn declared_own_class(stmt: SyntaxNode<'_>, known_classes: &HashSet<String>) -> Option<String> {
     super::extract_annotations(stmt).class
         .or_else(|| extract_inline_class(stmt))
-        .or_else(|| match AssignTargetTypes::new(stmt).get(0, Some(value)) {
-            Some(AnnotationType::Simple(type_name)) => Some(type_name),
-            _ => None,
-        })
         .filter(|class_name| known_classes.contains(class_name))
+}
+
+/// The class a statement's `---@class` / `---@type` gives the value it assigns.
+fn declared_class(stmt: SyntaxNode<'_>, value: &Expression<'_>, known_classes: &HashSet<String>) -> Option<String> {
+    declared_own_class(stmt, known_classes).or_else(|| match AssignTargetTypes::new(stmt).get(0, Some(value)) {
+        Some(AnnotationType::Simple(type_name)) => Some(type_name).filter(|class_name| known_classes.contains(class_name)),
+        _ => None,
+    })
 }
 
 /// The lone name `expr` is (`h`, not `a.b` or a call).
@@ -1432,9 +1468,9 @@ impl<'a> WriteWalk<'a, '_> {
             _ if declared.is_some() => (None, None),
             Some(Expression::FunctionCall(call)) => match funcall_callee(call, self.recv) {
                 Some(callee) => (Some(callee), None),
-                None => (None, bare_write_type(value, &self.param_types, self.recv.instance)),
+                None => (None, bare_write_type(value, &self.param_types, self.recv.kind)),
             },
-            _ => (None, bare_write_type(value, &self.param_types, self.recv.instance)),
+            _ => (None, bare_write_type(value, &self.param_types, self.recv.kind)),
         };
         let call_offsets = match value {
             Some(Expression::FunctionCall(c)) if call.is_some() => vec![u32::from(c.syntax().text_range().start())],
@@ -1721,13 +1757,12 @@ pub fn scan_method_bare_self_fields(
     results
 }
 
-/// The type a bare write of `value` registers its field with, `None` for a value
-/// another scan covers or that declares nothing (`nil`). `instance`: the write is
-/// on a `setmetatable` instance, not a method's `self`.
+/// The type a bare write of `value` through a `kind` receiver registers its field
+/// with, `None` for a value another scan covers or that declares nothing (`nil`).
 fn bare_write_type(
     value: Option<&Expression<'_>>,
     param_types: &HashMap<String, AnnotationType>,
-    instance: bool,
+    kind: ReceiverKind,
 ) -> Option<AnnotationType> {
     Some(match value {
         // A funcall RHS with a resolvable named callee
@@ -1759,14 +1794,15 @@ fn bare_write_type(
             }
         }
         // A method's function value is registered by the global scan (`FieldValueKind::Function`);
-        // an instance's isn't, so it exists as `any` for the class-field harvest to type.
+        // another receiver's isn't, so it exists as `any` for the class-field harvest to type.
         Some(Expression::Function(_)) => {
-            if instance { AnnotationType::Simple("any".into()) } else { return None }
+            if kind != ReceiverKind::SelfParam { AnnotationType::Simple("any".into()) } else { return None }
         }
         Some(Expression::Literal(lit)) => {
             if lit.is_nil() {
-                // A method's nil write is a reset; a constructor's declares the field.
-                if instance { AnnotationType::Simple("any".into()) } else { return None }
+                // A method's or `---@class` local's nil write is a reset; an
+                // instance's (a constructor's) declares the field.
+                if kind == ReceiverKind::Instance { AnnotationType::Simple("any".into()) } else { return None }
             } else if lit.get_number().is_some() {
                 AnnotationType::Simple("number".into())
             } else if lit.get_string().is_some() {

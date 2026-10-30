@@ -33,6 +33,14 @@ local function _withAny(x)
     _use(x + 1)
 end
 
+-- Concatenating `any?` gives a string, as `any` does
+---@param x any?
+local function _withMaybeAny(x)
+    local s = "x=" .. x
+    --    ^ hover: (local) s: string
+    _use(s)
+end
+
 -- Concatenation on non-stringable types
 local _j = nil .. "hello"
 --         ^ diag: invalid-op
