@@ -31,6 +31,7 @@ mod rename;
 mod signature;
 
 pub use references::ReferenceTarget;
+pub(crate) use references::local_declaration_site;
 pub use highlights::HighlightKind;
 pub use completion::{CallSnippets, Snippets};
 pub use call_hierarchy::{CallSiteResult, OutgoingCallResult};

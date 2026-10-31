@@ -8,12 +8,12 @@ local function caller()
     if not items then return end
     -- The cross-file external function has no `@return` annotations and (with
     -- the flag off) no synthesized overloads, so there is no correlated sibling
-    -- narrowing after the guard. `groups` (an anonymous `{}` table or nil) lifts
-    -- to `any`; the body-derived `count` (the literal `0`) is optional because
+    -- narrowing after the guard. `groups` (an empty `{}` or nil) is `table?`, as
+    -- in its file; the body-derived `count` (the literal `0`) is optional because
     -- the bare early-`return` paths make every slot implicitly nil, so it
     -- resolves to `number?`. Neither is affected by the absent overloads.
     local _ = groups
-    --        ^ hover: (local) groups: any
+    --        ^ hover: (local) groups: table?
     local _ = count
     --        ^ hover: (local) count: number?
 end

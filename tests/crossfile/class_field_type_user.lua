@@ -25,10 +25,9 @@ local n = r.num
 local o = r.opt
 --    ^ hover: (local) o: CFT_Bar?
 
--- A field whose RHS resolves to a bare `table` stays coarse `any` — never upgraded
--- `any`->`table`, which is *more* restrictive than `any`. The call below must NOT
--- fire `cannot-call` (a bare `table` isn't callable, but `any` is); the exhaustive
--- harness fails on any spurious diagnostic, so its absence is the assertion.
+-- A field written only a value declared `table` reads `table`, as in its file:
+-- calling it is the error it is there.
 local l = r.loose
---    ^ hover: (local) l: any
+--    ^ hover: (local) l: table
 r.loose()
+-- ^ diag: cannot-call

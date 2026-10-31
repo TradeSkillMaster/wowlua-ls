@@ -216,6 +216,21 @@ pub fn scan_literal_field(
     }
 }
 
+/// The type the field write `g` declares (`---@type T` on it), as written: the
+/// field shows it so in other files, aliases unexpanded, as the writing file does.
+pub fn declared_type_text(g: &crate::annotations::ExternalGlobal) -> Option<String> {
+    g.returns.first()
+        .filter(|_| g.declared_type)
+        .map(crate::annotations::format_annotation_type)
+}
+
+/// Whether the existing field `fi` holds exactly the type the write `g` declares
+/// (a `@defclass` static field the class scan typed from that `---@type`) without
+/// its text, which it then takes too.
+pub fn takes_declared_type_text(fi: &FieldInfo, g: &crate::annotations::ExternalGlobal) -> bool {
+    fi.annotation_text.is_none() && g.declared_type && fi.annotation_type_raw.as_ref() == g.returns.first()
+}
+
 /// Whether a field typed by a table shape without a class (a constructor's,
 /// `X.f = { a = 1 }`) gives way to a write declaring a class for it (`---@enum
 /// X.f` on another `X.f = { ... }`): the declaration wins over the shape whichever

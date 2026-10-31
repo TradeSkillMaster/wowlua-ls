@@ -72,13 +72,12 @@
 //! left for a later phase.
 //!
 //! The upgrade is gated on *both* ends so it only ever replaces a placeholder with a
-//! genuinely more precise type: the coarse field must be an eligible placeholder
-//! ([`field_is_coarse_placeholder`]), and the harvested type must not *itself* be a
-//! coarse placeholder — `any`, bare `table`/`function`, or `callable_or_unknown`
-//! ([`contains_coarse_placeholder`]). Replacing a placeholder with another bare
-//! `table`/`function` carries no more information (and a bare `table` is strictly
-//! *more restrictive* than `any` — not callable), so such harvests are dropped and
-//! the coarse placeholder kept. Upgrading to a genuine *nameable* class is a real
+//! more precise type: the coarse field must be an eligible placeholder
+//! ([`field_is_coarse_placeholder`]), and the harvested type must say more than
+//! `any` — not `any`, a bare `function`, or `callable_or_unknown`
+//! ([`contains_untyped`]). A bare `table` is kept: it is what the defining file
+//! reads (a `table` parameter stored, a plain `{}`), and the lift never decays a
+//! richer table to one at the top level. Upgrading to a genuine *nameable* class is a real
 //! sharpening: like any precise type it may surface a correct new diagnostic — e.g.
 //! calling a non-callable class, or reading a field the class doesn't declare. The
 //! assigning-file index is derived from the scan's per-field `field_paths`, which
@@ -680,11 +679,8 @@ impl Ir {
     /// type is an eligible placeholder ([`field_is_coarse_placeholder`] — a
     /// scan-inferred `any` or bare `Table(None)`, both carrying no author annotation)
     /// is a candidate, and the harvest only replaces it when the definition-site type
-    /// is genuinely more precise — not itself a coarse placeholder (`any`, bare
-    /// `table`/`function`, `callable_or_unknown`; see [`contains_coarse_placeholder`]).
-    /// Replacing a placeholder with another bare `table`/`function` carries no more
-    /// information, so it is left coarse. The harvested type carries the field's real
-    /// nilability (a field cleared to nil stays `T?`) and keeps generics coarse (a
+    /// says more than `any` (see [`contains_untyped`]). The harvested type carries the
+    /// field's real nilability (a field cleared to nil stays `T?`) and keeps generics coarse (a
     /// type-variable-touching type decays back to `any` through the lift and is
     /// skipped).
     ///
@@ -803,7 +799,7 @@ impl Ir {
         }
         // A placeholder the scan left for a call it couldn't type takes the call's type.
         let Some(ty) = resolve_deferred_call_field_type(&self.ext, expr).and_then(|ty| match &coarse {
-            _ if placeholder => (!contains_coarse_placeholder(&ty)).then_some(ty),
+            _ if placeholder => (!contains_untyped(&ty)).then_some(ty),
             Some(coarse) => crate::analysis::refined_class_view(&ty, coarse, self),
             None => None,
         }) else {
@@ -836,7 +832,13 @@ impl Ir {
         }
         let Some(paths) = self.ext.deferred_table_fields.get(&expr) else { return false };
         self.deferred_dep_files.extend(paths.iter().cloned());
-        let Some(ty) = deferred_table_field_type(&self.ext, expr, &mut self.deferred_dep_files) else { return false };
+        // A bare `table` says no more than the scan's, and would drop what this and
+        // other files add to the table it holds.
+        let Some(ty) = deferred_table_field_type(&self.ext, expr, &mut self.deferred_dep_files)
+            .filter(|ty| !contains_bare_table(ty))
+        else {
+            return false;
+        };
         self.refine_field_type(slot, field_name, ty);
         true
     }
@@ -1401,7 +1403,10 @@ fn harvest_class(
     // straight into the union — no clones).
     let mut by_class: HashMap<String, ClassFields> = HashMap::default();
     for ((cls, fname), f) in acc {
+        // A write this harvest can't type makes the field `any` in its own file, so
+        // the others' bare `table` isn't what that file reads.
         let ty = gate_harvested_field(f.tys, f.lateinit)
+            .filter(|ty| !(f.unresolved && contains_bare_table(ty)))
             .map(|ty| f.sub_fields.onto(ty, ext));
         by_class.entry(cls).or_default().insert(fname, ty);
     }
@@ -1756,7 +1761,7 @@ fn harvest_field_args(
 
 /// The type `path` (analyzed as `result`) gives every [deferred table
 /// field](PreResolvedGlobals::deferred_table_fields) it writes, lifted into ext-index
-/// space: the list or record its writes build there (`Ir::writes_unkeyed_table`) — on
+/// space: the list, record or map its writes build there (`Ir::writes_built_table`) — on
 /// one of its tables taking over the scan's field (`Ir::scan_field_takeovers`), its
 /// overlay of an external table's field, or a global table it defines — or `nil`
 /// when it only clears the field. A field it writes anything else has no entry, nor
@@ -1839,9 +1844,10 @@ fn own_table_fields<'a>(
         if !ext.deferred_table_fields.contains_key(&expr) {
             return None;
         }
+        let writes = || std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied());
         let typed = fi.annotation.is_none()
-            && std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
-                .any(|write| ir.writes_unkeyed_table(write, table, name));
+            && writes().any(|write| ir.writes_built_table(write, table, name))
+            && !writes().any(|write| ir.writes_mixed_map(write));
         if typed {
             Some((expr, OwnWrites::Typed(fi)))
         } else {
@@ -1914,6 +1920,8 @@ fn accumulate_class_fields_in_file(
             if !entry.tys.contains(&lifted) {
                 entry.tys.push(lifted);
             }
+        } else {
+            entry.unresolved = true;
         }
     }
     // The entries of a class's own constructor (`---@class C` on `C = { f = Call() }`),
@@ -1938,6 +1946,8 @@ fn accumulate_class_fields_in_file(
                 if !entry.tys.contains(&lifted) {
                     entry.tys.push(lifted);
                 }
+            } else {
+                entry.unresolved = true;
             }
         }
     }
@@ -1998,6 +2008,8 @@ fn accumulate_class_fields_in_file(
 struct AccField {
     tys: Vec<ValueType>,
     lateinit: bool,
+    /// A write whose type didn't resolve.
+    unresolved: bool,
     sub_fields: CarriedFields,
 }
 
@@ -2083,22 +2095,19 @@ impl CarriedFields {
 
 /// The output gate + union for a harvested `@class` field: union the per-site RHS
 /// types (a `lateinit` field reads as non-nil, so nil is stripped), then keep the
-/// result only when it is a genuine improvement over the coarse placeholder (`any` or
-/// a bare `table`) it would replace. Dropped (→ keep coarse placeholder):
-/// - a *coarse placeholder* — `any` (generics decay to `any` here — the "keep
-///   generics coarse" gate), a bare `table`/`function`, or the `callable_or_unknown`
-///   intersection — because it carries no more information than the coarse placeholder
-///   already does, and a bare `table`/`function` is strictly *more* restrictive than
-///   `any` (the input-side placeholder mirrored on the output, so a field whose RHS
-///   resolves to bare `table` isn't upgraded to another bare `table`, which for an
-///   `any` source would false-positive `cannot-call` on a metatable/mixin/callable);
+/// result only when it says more than the coarse placeholder (`any` or a bare
+/// `table`) it would replace. Dropped (→ keep coarse placeholder):
+/// - an untyped result ([`contains_untyped`]) — `any` (generics decay to `any` here
+///   — the "keep generics coarse" gate), a bare `function`, or the
+///   `callable_or_unknown` intersection;
+/// - a union whose bare `table` would swallow another table ([`absorbs_tables`]);
 /// - a purely-`nil` field (upgrading a placeholder → `nil` would over-narrow).
 ///
 /// Returns `None` to keep the coarse placeholder. Empty input (`tys`) also yields
 /// `None`. Consumes `tys` (the owned accumulated RHS types) so the union takes them
 /// directly.
 fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType> {
-    if tys.is_empty() {
+    if tys.is_empty() || absorbs_tables(&tys) {
         return None;
     }
     let ty = ValueType::make_union(tys);
@@ -2108,7 +2117,7 @@ fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType
         return None;
     }
     let ty = if lateinit { ty.strip_nil() } else { ty };
-    (!contains_coarse_placeholder(&ty)).then_some(ty)
+    (!contains_untyped(&ty)).then_some(ty)
 }
 
 /// Lift a per-file `ResolvedOverload` into external-index space: each param type
@@ -2151,27 +2160,41 @@ fn contains_any(ty: &ValueType) -> bool {
     }
 }
 
-/// True when `ty` is, or contains (inside a union/intersection), a *coarse
-/// placeholder*: bare `Any`, `Table(None)` (a shapeless `table`), or
-/// `Function(None)` (a shapeless `function`) — the `callable_or_unknown`
-/// intersection (`function & table`) is caught by the recursion.
+/// True when `ty` is, or contains (inside a union/intersection), `Any` or a bare
+/// `Function(None)` — the `callable_or_unknown` intersection (`function & table`)
+/// is caught by the recursion.
 ///
-/// Used only by the cross-file `@class` field harvest to decide whether a
-/// harvested type is a genuine improvement over the coarse placeholder (`any` or a
-/// bare `table`) it would replace. It is not when it is *itself* a placeholder:
-/// `Any` carries no more information, and a bare `table`/`function` is strictly
-/// *more restrictive* than `any` (a `table` isn't callable; both reject field
-/// accesses / argument passing that `any` permits — e.g. a loosely-typed field that
-/// is really a metatable/mixin/callable). So such a harvest is dropped and the coarse
-/// placeholder kept. This is the output-side mirror of the input-side eligibility
-/// gate ([`field_is_coarse_placeholder`]), which likewise never *starts* from a
-/// `callable_or_unknown` coarse field.
-fn contains_coarse_placeholder(ty: &ValueType) -> bool {
+/// Used by the cross-file field harvests to decide whether a harvested type says
+/// more than the coarse placeholder (`any` or a bare `table`) it would replace:
+/// `Any` doesn't, and a bare `function` or `callable_or_unknown` is a guess at a
+/// value that may be a callable table. A bare `table` is kept: the top-level lift
+/// only yields one for a table its file reads as `table` too.
+fn contains_untyped(ty: &ValueType) -> bool {
     match ty {
-        ValueType::Any | ValueType::Table(None) | ValueType::Function(None) => true,
+        ValueType::Any | ValueType::Function(None) => true,
         ValueType::Union(members) | ValueType::Intersection(members) => {
-            members.iter().any(contains_coarse_placeholder)
+            members.iter().any(contains_untyped)
         }
+        _ => false,
+    }
+}
+
+/// Whether a union of `members` would lose a table it holds: `make_union` lets a
+/// bare `table` (an empty table's lift) absorb the other tables (`table | Foo` is
+/// `table`), where the defining file keeps `Foo`.
+fn absorbs_tables(members: &[ValueType]) -> bool {
+    let flat = || members.iter().flat_map(|m| match m {
+        ValueType::Union(inner) => inner.as_slice(),
+        other => std::slice::from_ref(other),
+    });
+    flat().any(|m| *m == ValueType::Table(None)) && flat().any(|m| matches!(m, ValueType::Table(Some(_))))
+}
+
+/// Whether `ty` is, or has as a union/intersection member, a bare `table`.
+fn contains_bare_table(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Table(None) => true,
+        ValueType::Union(members) | ValueType::Intersection(members) => members.iter().any(contains_bare_table),
         _ => false,
     }
 }
@@ -2392,7 +2415,7 @@ fn ext_class_declares(ext: &PreResolvedGlobals, idx: crate::types::TableIndex, f
 type GlobalTables = HashMap<TableIndex, TableIndex>;
 
 /// Nesting bound for [`global_table_pairs`]'s walk into a global's table fields.
-const GLOBAL_TABLE_MAX_DEPTH: usize = 4;
+pub(super) const GLOBAL_TABLE_MAX_DEPTH: usize = 4;
 
 /// Map each local *mixin* table that is a global defined in the analyzed file — the
 /// global's own table (`WidgetMixin = {}`) or one nested under it
@@ -2564,10 +2587,12 @@ fn lift_local_type_to_ext_with(
 /// tables are lifted to an inline `TableShape` rather than decaying: an array/map
 /// carries its element/key types (from the arena `TableInfo`), and a record carries
 /// its named fields' types (from `res.resolve_field_type`, so only when `res` is
-/// threaded — see [`lift_local_type_to_ext_with`]). Only genuinely unrepresentable
-/// types (an anonymous table with neither, an unbound type variable, …) decay to
-/// `Any`. Past the depth cap, on a cycle, or over budget, an anonymous table
-/// decays to bare `table` and a local function to bare `function`.
+/// threaded — see [`lift_local_type_to_ext_with`]). A plain table with neither and
+/// no metatable (`{}`, a map whose entries differ) is a bare `table`, as its file
+/// shows it. Only genuinely unrepresentable types (any other anonymous table with
+/// neither, an unbound type variable, …) decay to `Any`. Past the depth cap, on a cycle, or
+/// over budget, an anonymous table decays to bare `table` and a local function to
+/// bare `function`.
 fn lift_local_type_to_ext_depth(
     ty: &ValueType,
     ir: &Ir,
@@ -2656,13 +2681,19 @@ fn lift_local_type_to_ext_depth(
                     .collect();
                 guard.tables_on_path.pop();
                 ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))
+            } else if info.is_shapeless() && info.metatable.is_none() {
+                ValueType::Table(None)
             } else {
                 ValueType::Any
             }
         }
-        ValueType::Union(members) => ValueType::make_union(
-            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect(),
-        ),
+        ValueType::Union(members) => {
+            let lifted: Vec<ValueType> = members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect();
+            if absorbs_tables(&lifted) {
+                return ValueType::Any;
+            }
+            ValueType::make_union(lifted)
+        }
         // An instance member lifts to an intersection of its own; keep it flat.
         ValueType::Intersection(members) => ValueType::Intersection(
             members

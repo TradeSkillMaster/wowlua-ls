@@ -730,8 +730,8 @@ impl<'a> Analysis<'a> {
     /// A field the workspace scan typed no more than "a table" (`self.items =
     /// {}`, `ns.list = {}`; `Ir::is_shapeless_scan_table`) or registered with no
     /// type (`field_is_coarse_placeholder`: written in a function) is typed by
-    /// this file's own writes instead when it writes a list or record there
-    /// (`Ir::writes_unkeyed_table`), as with no scan, so what the file builds in
+    /// this file's own writes instead when it writes a table it builds there
+    /// (`Ir::writes_built_table`), as with no scan, so what the file builds in
     /// it (`tinsert(self.items, v)`) reads back. A placeholder standing for calls
     /// this file makes (`Ir::other_files_placeholder_calls`) becomes a placeholder
     /// `any` annotation, which reads take from the field's writes when they resolve,
@@ -771,7 +771,7 @@ impl<'a> Analysis<'a> {
                     scanned(fi)
                         && (crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext)
                             || fi.annotation.as_ref().is_some_and(|a| self.ir.is_shapeless_scan_table(a)))
-                        && fi.extra_exprs.iter().any(|&w| self.ir.writes_unkeyed_table(w, TableIndex(t), name))
+                        && fi.extra_exprs.iter().any(|&w| self.ir.writes_built_table(w, TableIndex(t), name))
                 })
                 .map(|(name, _)| name.clone())
                 .collect();
@@ -790,6 +790,64 @@ impl<'a> Analysis<'a> {
                 self.ir.mark_unknown_element_tables(writes);
             }
         }
+    }
+
+    /// Marks the `[k] = v` maps this file writes to a field other files read through
+    /// the table-field harvest (`deferred_table_fields`) — of a global table it
+    /// defines, or its overlay of an external table's — as written over the scan's
+    /// type (`Ir::mark_unknown_element_tables`): one whose entries differ reads
+    /// `table` here, as the harvest leaves it there (`Ir::writes_mixed_map`).
+    pub(super) fn mark_harvested_field_maps(&mut self) {
+        let ext = Arc::clone(&self.ir.ext);
+        if ext.deferred_table_fields.is_empty() {
+            return;
+        }
+        let ext_table_of = |fi: &FieldInfo| match &fi.annotation {
+            Some(ValueType::Table(Some(idx))) => Some(*idx),
+            _ => match ext.try_expr(fi.expr)? {
+                Expr::Literal(ValueType::Table(Some(idx))) => Some(*idx),
+                _ => None,
+            },
+        }.filter(|idx| idx.is_external());
+        let mut owners: Vec<(TableIndex, TableIndex, usize)> = Vec::new();
+        for (id, sym_idx) in self.ir.scope0_local_symbols() {
+            let Some(&ext_sym) = ext.scope0_symbols.get(id) else { continue };
+            let Some(&ValueType::Table(Some(ext_idx))) = ext.sym(ext_sym).versions.last().and_then(|v| v.resolved_type.as_ref()) else { continue };
+            let sym = self.ir.sym(sym_idx);
+            if sym.versions.first().is_none_or(|v| super::queries::local_declaration_site(self.tree, v.def_node.start)) {
+                continue;
+            }
+            owners.extend(sym.versions.iter()
+                .filter_map(|v| self.ir.find_table_index(v.type_source?))
+                .filter(|idx| !idx.is_external())
+                .map(|idx| (idx, ext_idx, 0)));
+        }
+        let mut fields: Vec<(&FieldInfo, &FieldInfo)> = Vec::new();
+        let mut visited: HashSet<TableIndex> = HashSet::default();
+        while let Some((local_idx, ext_idx, depth)) = owners.pop() {
+            let Some(ext_table) = ext.try_table(ext_idx).filter(|_| visited.insert(local_idx)) else { continue };
+            for (name, fi) in &self.ir.table(local_idx).fields {
+                let Some(ext_fi) = ext_table.fields.get(name) else { continue };
+                fields.push((fi, ext_fi));
+                if depth < crate::analysis::deferred::GLOBAL_TABLE_MAX_DEPTH
+                    && let Some(ext_sub) = ext_table_of(ext_fi)
+                    && let Some(sub) = self.ir.find_table_index(fi.expr).filter(|idx| !idx.is_external())
+                {
+                    owners.push((sub, ext_sub, depth + 1));
+                }
+            }
+        }
+        for (&ext_idx, overlay) in &self.ir.overlay_fields {
+            let Some(ext_table) = ext.try_table(ext_idx) else { continue };
+            fields.extend(overlay.iter().filter_map(|(name, fi)| Some((fi, ext_table.fields.get(name)?))));
+        }
+        let maps: Vec<ExprId> = fields.into_iter()
+            .filter(|(fi, ext_fi)| fi.annotation.is_none() && ext.deferred_table_fields.contains_key(&ext_fi.expr))
+            .flat_map(|(fi, _)| std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()))
+            .filter(|&write| self.ir.find_table_index(write)
+                .is_some_and(|idx| !idx.is_external() && self.ir.table(idx).constructor_bracket_count > 0))
+            .collect();
+        self.ir.mark_unknown_element_tables(maps);
     }
 
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.

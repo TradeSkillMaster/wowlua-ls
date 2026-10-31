@@ -223,6 +223,15 @@ pub(crate) fn refined_class_view(ty: &ValueType, ann: &ValueType, ir: &Ir) -> Op
     }
 }
 
+/// Whether the types of a `[k] = v` map's entries, `nil` aside, are of different
+/// kinds — a settings map's (`{ [A] = false, [B] = 5 }`), which no key's read
+/// should get the union of — rather than tables, records of differing shapes
+/// included, or one type.
+pub(crate) fn map_entries_differ(types: &[ValueType]) -> bool {
+    let entries: Vec<&ValueType> = types.iter().filter(|t| !matches!(t, ValueType::Nil)).collect();
+    entries.len() > 1 && !entries.iter().all(|t| matches!(t, ValueType::Table(_) | ValueType::TableShape(_)))
+}
+
 fn scope_set_contains<T: Eq + std::hash::Hash>(
     map: &HashMap<ScopeIndex, HashSet<T>>,
     scopes: &[Scope],
@@ -862,6 +871,13 @@ pub struct Ir {
     /// type, and maps held in a field, which their writes don't type
     /// (`collect_deferred_element_writes`).
     pub unknown_element_tables: HashSet<TableIndex>,
+    /// The `[k] = v` constructors among those written over the scan's type
+    /// (`mark_unknown_element_tables`), or to a field other files read through the
+    /// table-field harvest (`mark_harvested_field_maps`). Their writes type their
+    /// elements only when they're of one kind (`map_entries_differ`): a settings map
+    /// (`{ [A] = false, [B] = 5 }`) reads back as through the scan's `table`, as in
+    /// other files, not as the union of every entry's type.
+    pub scanned_field_maps: HashSet<TableIndex>,
     /// Bracket assignments into a table only a field holds (`self.items[k] = v`,
     /// or `l[k] = v` after `local l = self.items`): (table expr, key, value),
     /// resolved when the fixpoint starts (`collect_deferred_element_writes`).
@@ -2209,12 +2225,12 @@ impl Ir {
 
     /// Whether writing `rhs` to field `fi` (`table.field`) types the field in this file over a
     /// type the workspace scan gave it that says no more than "a table"
-    /// (`is_shapeless_scan_table`): `rhs` is a list or record (`writes_unkeyed_table`).
+    /// (`is_shapeless_scan_table`): `rhs` is a table this file builds (`writes_built_table`).
     pub(super) fn write_types_shapeless_scan_field(&self, fi: &FieldInfo, table: TableIndex, field: &str, rhs: ExprId) -> bool {
         fi.from_scan
             && fi.annotation_text.is_none()
             && fi.annotation.as_ref().is_some_and(|a| self.is_shapeless_scan_table(a))
-            && self.writes_unkeyed_table(rhs, table, field)
+            && self.writes_built_table(rhs, table, field)
     }
 
     /// When the placeholder the workspace scan left in `fi` stands for calls it
@@ -2234,22 +2250,31 @@ impl Ir {
         !calls.iter().any(|call| call.path == *path)
     }
 
-    /// Record the tables of this file `writes` hold in `unknown_element_tables`.
+    /// Record the tables of this file `writes` hold, written to a field over the
+    /// workspace scan's type for it, in `unknown_element_tables`, and the maps among
+    /// them in `scanned_field_maps`: a map whose entries' types differ gets no
+    /// element type, the one its constructor's literals gave it included.
     pub(super) fn mark_unknown_element_tables(&mut self, writes: impl IntoIterator<Item = ExprId>) {
         for write in writes {
             if let Some(idx) = self.find_table_index(write).filter(|idx| !idx.is_external()) {
                 self.unknown_element_tables.insert(idx);
+                let t = &mut self.tables[idx.val()];
+                if t.constructor_bracket_count > 0 {
+                    self.scanned_field_maps.insert(idx);
+                    if matches!(&t.value_type, Some(ValueType::Union(members)) if map_entries_differ(members)) {
+                        t.key_type = None;
+                        t.value_type = None;
+                    }
+                }
             }
         }
     }
 
-    /// Whether `expr`, written to field `field` of table `table`, is a table of
-    /// this file built without `[k] = v` entries (`{}`, `{ a, b }`, `{ x = 1 }`,
-    /// possibly through a local, or as the fallback of a lazy
-    /// `t.field = t.field or {}`): a list or a record. A map built in a field —
-    /// often settings or scratch state — would read every entry's type back
-    /// through any key; any other `x or {}` holds what `x` does, saved data say.
-    pub(super) fn writes_unkeyed_table(&self, expr: ExprId, table: TableIndex, field: &str) -> bool {
+    /// Whether `expr`, written to field `field` of table `table`, is a table this
+    /// file builds (`{}`, `{ a, b }`, `{ x = 1 }`, `{ [k] = v }`), possibly through a
+    /// local, or as the fallback of a lazy `t.field = t.field or {}`; any other
+    /// `x or {}` holds what `x` does, saved data say.
+    pub(super) fn writes_built_table(&self, expr: ExprId, table: TableIndex, field: &str) -> bool {
         let expr = match self.expr(expr) {
             Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs }
                 if matches!(self.expr(*lhs), Expr::FieldAccess { table: receiver, field: read, .. }
@@ -2259,9 +2284,19 @@ impl Ir {
         self.find_table_index(expr).is_some_and(|idx| {
             let t = self.table(idx);
             !idx.is_external()
-                && t.constructor_bracket_count == 0
                 && t.class_name.is_none()
                 && !t.value_type_annotated
+        })
+    }
+
+    /// Whether `expr` is a `[k] = v` map whose entries' types differ
+    /// (`map_entries_differ`), which types a field in other files no more than the
+    /// scan's `table` (see `scanned_field_maps`).
+    pub(super) fn writes_mixed_map(&self, expr: ExprId) -> bool {
+        self.find_table_index(expr).is_some_and(|idx| {
+            let t = self.table(idx);
+            t.constructor_bracket_count > 0
+                && matches!(&t.value_type, Some(ValueType::Union(members)) if map_entries_differ(members))
         })
     }
 
@@ -3993,6 +4028,7 @@ impl<'a> Analysis<'a> {
                 pending_bracket_assigns: Vec::new(),
                 deferred_element_writes: Vec::new(),
                 unknown_element_tables: HashSet::default(),
+                scanned_field_maps: HashSet::default(),
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),
                 call_fields_checked: HashSet::default(),
@@ -4084,6 +4120,7 @@ impl<'a> Analysis<'a> {
         analysis.prescan_defclass_calls();
         analysis.build_ir();
         analysis.type_scanned_fields_by_own_writes();
+        analysis.mark_harvested_field_maps();
         analysis.share_duplicate_class_fields();
         analysis.ir.index_function_body_scopes();
         analysis.mark_external_mixins_open();
@@ -4949,7 +4986,7 @@ mod element_write_tests {
         let result = analysis.into_result();
         let written = |field: &str| {
             let fa = result.ir.field_assignments.iter().find(|fa| fa.field_name == field).expect("field write");
-            result.ir.writes_unkeyed_table(fa.actual_expr, fa.table_idx, field)
+            result.ir.writes_built_table(fa.actual_expr, fa.table_idx, field)
         };
         assert!(written("queue"));
         assert!(!written("options"));

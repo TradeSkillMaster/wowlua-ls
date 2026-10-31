@@ -2866,6 +2866,11 @@ impl BuildContext {
                             }
                             _ => {}
                         }
+                        if shared::takes_declared_type_text(existing_fi, g)
+                            && let Some(fi) = self.tables[local_idx].fields.get_mut(field_name)
+                        {
+                            fi.annotation_text = shared::declared_type_text(g);
+                        }
                         continue;
                     }
                 let value_type = if !g.returns.is_empty() {
@@ -2899,8 +2904,9 @@ impl BuildContext {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
-                    self.tables[local_idx].fields.insert(field_name.clone(),
-                        shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
+                    let mut field = shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility);
+                    field.annotation_text = shared::declared_type_text(g);
+                    self.tables[local_idx].fields.insert(field_name.clone(), field);
                     self.ctor_entries.remove(&ctor_entry);
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }

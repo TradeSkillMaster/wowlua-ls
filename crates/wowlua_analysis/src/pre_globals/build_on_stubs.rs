@@ -690,6 +690,11 @@ impl<'a> BuildOnStubsContext<'a> {
                     .is_some_and(|fi| fi.annotation.as_ref()
                         .is_some_and(|a| !matches!(a, ValueType::Any | ValueType::Table(None))
                             && !super::shared::shape_yields_to_class(Some(a), &g.returns, &self.classes, &self.tables))) {
+                    if self.tables[local_idx].fields.get(field_name).is_some_and(|fi| super::shared::takes_declared_type_text(fi, g))
+                        && let Some(fi) = self.tables[local_idx].fields.get_mut(field_name)
+                    {
+                        fi.annotation_text = super::shared::declared_type_text(g);
+                    }
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                     self.note_field_write(leaf_idx, field_name, g);
                     continue;
@@ -770,8 +775,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     } else {
                         None
                     };
-                    self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
+                    let mut field = super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility);
+                    field.annotation_text = super::shared::declared_type_text(g);
+                    self.tables[local_idx].fields.insert(field_name.clone(), field);
                     self.ctor_entries.remove(&(leaf_idx, field_name.clone()));
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }

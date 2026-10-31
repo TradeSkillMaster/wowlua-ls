@@ -32,4 +32,4 @@ local function reload(panel)
   panel:Reload()
   return panel.reloaded
 end
-print(total, untyped, reload)
+print(total, untyped, reload, ns.Slots.first)

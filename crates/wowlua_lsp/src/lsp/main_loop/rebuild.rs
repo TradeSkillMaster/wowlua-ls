@@ -46,6 +46,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.secret == y.secret
         && x.inferred_guard == y.inferred_guard
         && x.declares_class == y.declares_class
+        && x.declared_type == y.declared_type
         && x.ctor_method == y.ctor_method
         && x.export_method == y.export_method
         && x.assigned_call_offset.is_some() == y.assigned_call_offset.is_some()

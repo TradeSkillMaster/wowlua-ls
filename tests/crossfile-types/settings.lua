@@ -46,3 +46,11 @@ end
 
 ---@class FixturePanel : FixtureBase
 FixturePanel = {}
+
+---@alias FixtureSlot "left" | "right"
+
+---@type table<string, FixtureSlot>
+ns.Slots = {
+  first = "left",
+  second = "right",
+}

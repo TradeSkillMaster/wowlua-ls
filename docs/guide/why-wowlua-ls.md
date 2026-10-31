@@ -198,6 +198,8 @@ Inserting values of different types gives a union element type. A list annotated
 
 A list held in a field (`self.items = {}`, `ns.queue = {}`) is typed the same way by what's inserted or appended (`t[#t + 1] = v`) through the field, including one created where it's first added to (`self.items = self.items or {}`). A table that's also written with other keys through the field is used as a map rather than a list, and keeps no element type. Other files see these element types too: through a function returning the list, or through the field itself (`holder.items[1]`, `ns.queue[1]`). The element type comes from the files that create the list, so a value another file inserts isn't checked against it.
 
+A field written a table of `[k] = v` entries (`Data.Names = { [101] = "first", [102] = "second" }`) is typed by its entries in every file when they share one type (`string[]` here) or are all tables (the union of their shapes). When the entries are of different kinds (a settings table like `{ [A] = false, [B] = 5 }`), a field other files read keeps no element type, so a value read back through a key isn't checked against the union of every entry.
+
 ## Generics that actually work
 
 LuaLS supports basic `@generic` but struggles with more advanced patterns. wowlua-ls's generic system handles parameterized classes, constrained type parameters, backtick factory annotations, and function-type projections:

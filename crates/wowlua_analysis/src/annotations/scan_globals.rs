@@ -1177,6 +1177,7 @@ impl CtorEntryScan<'_> {
             in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
+            declared_type: false,
             ctor_method: false,
             export_method: false,
             name_start: key.0, name_end: key.1,
@@ -1372,6 +1373,7 @@ fn build_func_external(
         in_function: false,
         ctor_fields: Vec::new(),
         declares_class: false,
+        declared_type: false,
         ctor_method: false,
         export_method: false,
         name_start,
@@ -2381,6 +2383,7 @@ pub fn scan_file_globals_with_synth(
                                 in_function: false,
                                 ctor_fields,
                                 declares_class,
+                                declared_type: false,
                                 ctor_method: false,
                                 export_method: false,
                                 name_start: ns, name_end: ne,
@@ -2499,6 +2502,7 @@ pub fn scan_file_globals_with_synth(
                                     _ => Vec::new(),
                                 }
                             } else { Vec::new() };
+                            let declared_type = annotations.var_type.is_some();
                             // The call whose type in this file can refine the field's
                             // class in other files (a template frame's `Frame &
                             // Template`): an unannotated right-hand side, or the call
@@ -2633,6 +2637,7 @@ pub fn scan_file_globals_with_synth(
                                 in_function: false,
                                 ctor_fields: Vec::new(),
                                 declares_class: false,
+                                declared_type,
                                 ctor_method: false,
                                 export_method: false,
                                 name_start: u32::from(range.start()),
@@ -2918,6 +2923,7 @@ pub fn scan_file_globals_with_synth(
                     in_function: false,
                     ctor_fields,
                     declares_class: false,
+                    declared_type: false,
                     ctor_method: false,
                     export_method: false,
                     name_start: ns,
@@ -3118,6 +3124,7 @@ pub fn scan_file_globals_with_synth(
                 in_function,
                 ctor_fields: Vec::new(),
                 declares_class: false,
+                declared_type: false,
                 ctor_method: false,
                 export_method: false,
                 name_start: ns,
@@ -3547,6 +3554,7 @@ pub fn scan_created_globals(
                 in_function: false,
                 ctor_fields: Vec::new(),
                 declares_class: false,
+                declared_type: false,
                 ctor_method: false,
                 export_method: false,
                 name_start: u32::from(range.start()),

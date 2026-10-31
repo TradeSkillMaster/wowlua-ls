@@ -492,6 +492,12 @@ pub struct ExternalGlobal {
     /// only — `#[serde(skip)]`, no BLOB_VERSION bump.
     #[serde(skip)]
     pub declares_class: bool,
+    /// `returns` is a `---@type` written on this field assignment, rather than a
+    /// type the scan inferred (a constructor's shape, the class guessed for the
+    /// local assigned): the field shows it as written in other files, as the
+    /// writing file does. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub declared_type: bool,
     /// A method written as a table-constructor entry (`X.y = { f = function() end }`):
     /// it belongs on the constructor's table, so the build never lands it on the
     /// path's root the way it does an `@accessor` method. Runtime only —
@@ -587,6 +593,7 @@ impl ExternalGlobal {
             in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
+            declared_type: false,
             ctor_method: false,
             export_method: false,
             name_start: 0,
@@ -1669,6 +1676,7 @@ pub fn scan_method_funcall_self_fields(
             in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
+            declared_type: false,
             ctor_method: false,
             export_method: false,
             name_start: write.range.0,

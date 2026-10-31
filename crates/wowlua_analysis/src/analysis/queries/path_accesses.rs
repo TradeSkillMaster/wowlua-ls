@@ -234,6 +234,7 @@ impl AnalysisResult {
     /// it uses.
     pub fn path_accesses(&self, tree: &SyntaxTree, ext_paths: &TablePaths) -> Vec<PathAccess> {
         let paths = Paths { local: self.local_table_paths(ext_paths), ext: ext_paths };
+        let declared_maps = self.declared_map_constructors();
         let mut seen: HashSet<u32> = HashSet::default();
         let mut accesses = Vec::new();
         for (_, expr) in self.local_exprs() {
@@ -256,7 +257,7 @@ impl AnalysisResult {
             let access = if Self::is_field_position(tree, token.start) {
                 self.syntax_field_access(tree, t, &paths)
             } else if Self::is_constructor_key(&t) {
-                self.constructor_key_access(t, &paths)
+                self.constructor_key_access(t, &paths, &declared_maps)
             } else {
                 self.global_access(tree, t)
             };
@@ -291,8 +292,10 @@ impl AnalysisResult {
         Some(PathAccess { offset, path, display, write })
     }
 
-    /// The field a table constructor key (`f` in `{ f = v }`) writes.
-    fn constructor_key_access(&self, token: SyntaxToken<'_>, paths: &Paths) -> Option<PathAccess> {
+    /// The field a table constructor key (`f` in `{ f = v }`) writes: an element
+    /// of the declared type for a constructor written to a field declaring a map
+    /// (`declared_maps`), as reads through the field show it.
+    fn constructor_key_access(&self, token: SyntaxToken<'_>, paths: &Paths, declared_maps: &HashMap<TableIndex, ValueType>) -> Option<PathAccess> {
         let owners = self.constructor_key_owners(token);
         let ctor = *owners.last()?;
         let field = token.text();
@@ -302,9 +305,28 @@ impl AnalysisResult {
         }.and_then(|p| self.unless_builtin(p));
         let offset = u32::from(token.text_range().start());
         let _secrecy = self.secrecy_display_at(offset);
-        let display = owners.iter().find_map(|&t| self.get_field(t, field))
-            .map_or_else(|| "<none>".to_string(), |fi| collapse_shapes(&self.format_field_type(fi, 0)));
+        let display = match declared_maps.get(&ctor) {
+            Some(element) => collapse_shapes(&self.format_type_depth(element, 1)),
+            None => owners.iter().find_map(|&t| self.get_field(t, field))
+                .map_or_else(|| "<none>".to_string(), |fi| collapse_shapes(&self.format_field_type(fi, 0))),
+        };
         Some(PathAccess { offset, path, display, write: true })
+    }
+
+    /// The element type of each table constructor this file writes to a field
+    /// whose declared type is a map (`---@type table<K, V>`).
+    fn declared_map_constructors(&self) -> HashMap<TableIndex, ValueType> {
+        let mut out = HashMap::default();
+        for fa in &self.ir.field_assignments {
+            let Some(fi) = self.get_field(fa.table_idx, &fa.field_name) else { continue };
+            let (Some(_), Some(ValueType::Table(Some(map)))) = (&fi.annotation_text, &fi.annotation) else { continue };
+            let map = self.table(*map);
+            let Some(element) = map.value_type.as_ref().filter(|_| table_is_map(map.key_type.as_ref(), map.is_explicit_map)) else { continue };
+            if let Some(ctor) = self.ir.find_table_index(fa.actual_expr).filter(|t| !t.is_external()) {
+                out.insert(ctor, element.clone());
+            }
+        }
+        out
     }
 
     /// A read of a global variable at `token`, or an assignment or function

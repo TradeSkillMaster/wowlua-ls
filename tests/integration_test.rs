@@ -1400,6 +1400,12 @@ fn path_accesses_key_a_field_alike_in_every_file() {
     // Inherited members through a `FixturePanel : FixtureBase` parameter.
     expect("Reload", &["FixtureBase.Reload", "FixtureBase.Reload (write)"]);
     expect("reloaded", &["FixtureBase.reloaded", "FixtureBase.reloaded (write)"]);
+    // A map's entries, declared on the field (`---@type table<K, V>`), show its
+    // element type where its constructor writes them and where they are read.
+    expect("Slots", &["<ns>.Slots", "<ns>.Slots (write)"]);
+    assert_eq!(displays["Slots"].iter().collect::<Vec<_>>(), ["table<string, FixtureSlot>"]);
+    expect("first", &["<ns>.Slots.first", "<ns>.Slots.first (write)"]);
+    assert_eq!(displays["first"].iter().collect::<Vec<_>>(), ["\"left\" | \"right\""]);
 }
 
 #[test]
@@ -4133,6 +4139,38 @@ fn crossfile_body_returns() {
         lua_file: "tests/crossfile/body_return_user.lua",
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_class_members() {
+    // A module's or class's members read from another file have the type their
+    // own file gives them: `[k] = v` data maps (a map of mixed entries stays
+    // `table`), a getter returning an empty table or a map, a map declared with
+    // alias names, fields a base class writes (read as conditions, write targets
+    // and keys too), and namespace data read where nothing else resolves it.
+    for lua_file in [
+        "tests/crossfile-class-members/catalog.lua",
+        "tests/crossfile-class-members/catalog_user.lua",
+        "tests/crossfile-class-members/input_sub.lua",
+        "tests/crossfile-class-members/constants_user.lua",
+        "tests/crossfile-class-members/maps.lua",
+        "tests/crossfile-class-members/maps_user.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/crossfile-class-members"),
+        });
+    }
+}
+
+#[test]
+fn declared_type_text_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/declared-type-text/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/declared-type-text"),
     });
 }
 

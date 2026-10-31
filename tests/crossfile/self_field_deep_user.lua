@@ -9,7 +9,7 @@ local sub = {}
 local l = sub.label
 --            ^ hover: (field) label: string  def: external
 local m = sub.manager
---            ^ hover: (field) manager: any  def: external
+--            ^ def: external
 local r = sub.ready
 --            ^ hover: (field) ready: boolean  def: external
 

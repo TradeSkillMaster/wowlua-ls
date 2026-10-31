@@ -136,25 +136,7 @@ impl AnalysisResult {
     /// Used by the rename path's `strict_shadow` rule to reject truly-local bindings that
     /// happen to share a name with a workspace-wide global.
     pub fn is_local_declaration_site(&self, tree: &SyntaxTree, def_start: u32) -> bool {
-        let Some(token) = SyntaxNode::new_root(tree)
-            .token_at_offset(TextSize::from(def_start))
-            .right_biased()
-        else { return false };
-        let mut node = token.parent();
-        while let Some(n) = node {
-            match n.kind() {
-                SyntaxKind::LocalAssignStatement => return true,
-                SyntaxKind::FunctionDefinition => {
-                    // `local function X() end` — presence of LocalKeyword as a direct child.
-                    return n.children_with_tokens()
-                        .filter_map(|c| c.into_token())
-                        .any(|t| t.kind() == SyntaxKind::LocalKeyword);
-                }
-                SyntaxKind::Block => return false,
-                _ => node = n.parent(),
-            }
-        }
-        false
+        local_declaration_site(tree, def_start)
     }
 
     /// True when `token` falls inside the initializer (RHS) of the target
@@ -698,4 +680,27 @@ impl AnalysisResult {
         }
         None
     }
+}
+
+/// See [`AnalysisResult::is_local_declaration_site`].
+pub(crate) fn local_declaration_site(tree: &SyntaxTree, def_start: u32) -> bool {
+    let Some(token) = SyntaxNode::new_root(tree)
+        .token_at_offset(TextSize::from(def_start))
+        .right_biased()
+    else { return false };
+    let mut node = token.parent();
+    while let Some(n) = node {
+        match n.kind() {
+            SyntaxKind::LocalAssignStatement => return true,
+            SyntaxKind::FunctionDefinition => {
+                // `local function X() end` — presence of LocalKeyword as a direct child.
+                return n.children_with_tokens()
+                    .filter_map(|c| c.into_token())
+                    .any(|t| t.kind() == SyntaxKind::LocalKeyword);
+            }
+            SyntaxKind::Block => return false,
+            _ => node = n.parent(),
+        }
+    }
+    false
 }

@@ -25,9 +25,8 @@ function Reg:Init()
     self.plain = gBar        -- upvalue typed CFT_Bar: coarse `any` -> CFT_Bar
     self.num = 1 + 2         -- arithmetic: coarse `any` -> number
     self.opt = gBar          -- assigned CFT_Bar here...
-    self.loose = gTbl        -- RHS is a bare `table`: MUST stay coarse `any`, never
-end                          -- upgrade `any`->`table` (would false-positive cannot-call
-                             -- on a metatable/mixin/callable — see contains_coarse_placeholder)
+    self.loose = gTbl        -- RHS declared `table`: coarse `any` -> table
+end
 
 function Reg:Clear()
     self.opt = nil           -- ...and nil here -> nilability carried (CFT_Bar?)

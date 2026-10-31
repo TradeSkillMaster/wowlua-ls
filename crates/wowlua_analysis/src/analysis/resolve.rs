@@ -484,8 +484,57 @@ impl<'a> Analysis<'a> {
         if had_deferred {
             self.reresolve_unresolved_after_deferred();
         }
+        self.warm_unresolved_field_reads();
         self.finalize_enum_kinds();
         self.populate_deferred_overlay();
+    }
+
+    /// Give the fields read where the fixpoint resolved no read — a condition (`if
+    /// self.items then`), the base of a write (`self.items[k] = v`), a key
+    /// (`t[self.key]`) — the type the files writing them give them in other files
+    /// (`fetch_cross_file_field`), which hover and the diagnostics then read there
+    /// as at the file's other reads. Only through a receiver whose type is known
+    /// without resolving it (`known_receiver_type`): resolving more would type reads
+    /// the diagnostics so far left alone.
+    fn warm_unresolved_field_reads(&mut self) {
+        let ext = &self.ir.ext;
+        if ext.deferred_class_field_paths.is_empty() && ext.deferred_call_fields.is_empty() && ext.deferred_table_fields.is_empty() {
+            return;
+        }
+        let reads: Vec<(ExprId, String)> = self.ir.exprs.iter().enumerate()
+            .filter(|(i, _)| self.resolved_expr_cache.get(*i).is_none_or(Option::is_none))
+            .filter_map(|(_, expr)| match expr {
+                Expr::FieldAccess { table, field, field_range: Some(_) } => Some((*table, field.clone())),
+                _ => None,
+            })
+            .collect();
+        for (receiver, field) in reads {
+            let Some(receiver_type) = self.known_receiver_type(receiver, 0) else { continue };
+            for idx in self.field_receiver_tables(&receiver_type.into_strip_opaque()) {
+                self.fetch_cross_file_field(idx, &field);
+            }
+        }
+    }
+
+    /// The type of `expr` as known without resolving it: a symbol's, a resolved
+    /// expression's, or through a receiver known so, the annotation of the field
+    /// read (`ns.Constants` in `ns.Constants.Map`).
+    fn known_receiver_type(&mut self, expr: ExprId, depth: usize) -> Option<ValueType> {
+        if let Some(Some(vt)) = self.resolved_expr_cache.get(expr.val()) {
+            return Some(vt.clone());
+        }
+        match self.ir.exprs.get(expr.val())? {
+            Expr::SymbolRef(sym, ver) => self.sym(*sym).versions[*ver].resolved_type.clone(),
+            Expr::FieldAccess { table, field, .. } if depth < 8 => {
+                let (table, field) = (*table, field.clone());
+                let receiver = self.known_receiver_type(table, depth + 1)?.into_strip_opaque();
+                let types: Vec<ValueType> = self.field_receiver_tables(&receiver).into_iter()
+                    .filter_map(|idx| self.fetch_cross_file_field(idx, &field)?.annotation)
+                    .collect();
+                (!types.is_empty()).then(|| ValueType::make_union(types))
+            }
+            _ => None,
+        }
     }
 
     /// Re-resolve branch merges once the fixpoint has settled, now counting an
@@ -751,6 +800,22 @@ impl<'a> Analysis<'a> {
             .filter(|idx| !self.ir.bracket_key_fields.contains_key(idx)));
         let mut made_progress = false;
         for table_idx in table_indices {
+            // A map written over the scan's type for a field (`Ir::scanned_field_maps`)
+            // is typed as below only once every one of its writes resolves, to types
+            // of one kind; one whose entries differ keeps no element type, for good.
+            if self.ir.scanned_field_maps.contains(&table_idx) {
+                match self.field_map_entries_agree(table_idx) {
+                    Some(true) => {}
+                    Some(false) => {
+                        let t = &mut self.ir.tables[table_idx.val()];
+                        made_progress |= t.key_type.is_some() || t.value_type.is_some();
+                        t.key_type = None;
+                        t.value_type = None;
+                        continue;
+                    }
+                    None => continue,
+                }
+            }
             let already_resolved = self.ir.tables[table_idx.val()].key_type.is_some();
 
             // If value_type was set from an annotation (`@type T[]`, `table<K,V>`),
@@ -914,6 +979,30 @@ impl<'a> Analysis<'a> {
         made_progress
     }
 
+    /// Whether the writes into the field-held map `table_idx` — its constructor's
+    /// entries, positional ones included, later bracket writes and stored values —
+    /// give its elements types of one kind (`map_entries_differ`). `None` while one
+    /// doesn't resolve.
+    fn field_map_entries_agree(&mut self, table_idx: TableIndex) -> Option<bool> {
+        let mut types = self.written_element_types(table_idx, false)?;
+        for value in self.ir.tables[table_idx.val()].array_fields.clone() {
+            let vt = self.resolve_expr_to_broad_type(value)?;
+            if !self.is_structurally_duplicate_type(&types, &vt) {
+                types.push(vt);
+            }
+        }
+        let mut distinct: Vec<ValueType> = Vec::new();
+        for vt in types {
+            let vt = vt.strip_nil();
+            if !matches!(&vt, ValueType::Union(members) if members.is_empty())
+                && !self.is_structurally_duplicate_type(&distinct, &vt)
+            {
+                distinct.push(vt);
+            }
+        }
+        Some(!super::map_entries_differ(&distinct))
+    }
+
     /// Resolve an expression to its broad type (stripping specific literal values).
     pub(super) fn resolve_expr_to_broad_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
         let resolved = self.resolve_expr(expr_id)?;
@@ -988,7 +1077,7 @@ impl<'a> Analysis<'a> {
     /// file builds a list in it: stores (`@stores-into`) or appends
     /// (`t[#t + 1] = v`) into it and writes it no other key, over a scan type
     /// that says no more than "a table" (`Ir::is_shapeless_scan_table`), having
-    /// written it a list or record (`Ir::writes_unkeyed_table`). The list the
+    /// written it a table it builds (`Ir::writes_built_table`). The list the
     /// file builds then types the field, so its elements are tracked
     /// (`self.list` on an AceAddon object).
     fn type_overlay_list_fields(&mut self) {
@@ -1030,7 +1119,7 @@ impl<'a> Analysis<'a> {
                     fi.annotation_text.is_none()
                         && fi.annotation.as_ref().is_some_and(|a| self.ir.is_shapeless_scan_table(a))
                         && std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
-                            .any(|write| self.ir.writes_unkeyed_table(write, base, &field))
+                            .any(|write| self.ir.writes_built_table(write, base, &field))
                 });
             if takes_over && let Some(fi) = self.ir.get_overlay_field_mut(base, &field) {
                 fi.annotation = None;
@@ -3961,15 +4050,11 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Resolve `Expr::FieldAccess`: dot/colon field lookup over a table type (with union/intersection/shape/parent-class handling).
-    fn resolve_field_access(&mut self, table: ExprId, field: &str) -> Option<ValueType> {
-        let table_type = self.resolve_expr(table)?;
-        // Field access on any yields any
-        if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
-        // Unwrap opaque aliases — field access works on the inner type
-        let table_type = table_type.into_strip_opaque();
-        let receiver_is_intersection = matches!(table_type, ValueType::Intersection(_));
-        let table_indices: Vec<TableIndex> = match &table_type {
+    /// The tables a field read through a receiver of type `table_type` (opaque
+    /// aliases unwrapped) looks the field up in: the tables it is or holds, a
+    /// primitive's library table (`string`).
+    fn field_receiver_tables(&self, table_type: &ValueType) -> Vec<TableIndex> {
+        match table_type {
             ValueType::Table(Some(idx)) => vec![*idx],
             ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
                 ValueType::Table(Some(idx)) => Some(*idx),
@@ -3996,9 +4081,43 @@ impl<'a> Analysis<'a> {
                 }
                 indices
             }
-            // Primitive types with implicit metatables (e.g. string → string library)
             vt => self.ir.library_table_for_type(vt).into_iter().collect(),
-        };
+        }
+    }
+
+    /// The field `field` of table `idx`, fetched once with what the field-access
+    /// branches need so the borrow ends immediately. Only the (rare) cross-file
+    /// placeholder field (`any` or a bare `table`) pays for the harvest + re-fetch —
+    /// warming the per-file overlay with the definition-site type harvested from
+    /// the class's declaring file(s) — and a field written a call or `{}` in other
+    /// files, whose type there may refine it; the common precise field is used
+    /// directly, so a non-placeholder external field access repeats no `get_field`
+    /// lookups.
+    fn fetch_cross_file_field(&mut self, idx: TableIndex, field: &str) -> Option<FetchedField> {
+        let fetch = |ir: &super::Ir| ir.get_field(idx, field).map(|fi| FetchedField::of(fi, &ir.ext));
+        let mut fetched = fetch(&self.ir);
+        if fetched.as_ref().is_some_and(|f| f.placeholder) {
+            self.ir.ensure_field_overlay(idx, field);
+            fetched = fetch(&self.ir);
+        }
+        if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {
+            fetched = fetch(&self.ir);
+        }
+        if fetched.as_ref().is_some_and(|f| f.deferred_table) && self.ir.ensure_table_field_overlay(idx, field) {
+            fetched = fetch(&self.ir);
+        }
+        fetched
+    }
+
+    /// Resolve `Expr::FieldAccess`: dot/colon field lookup over a table type (with union/intersection/shape/parent-class handling).
+    fn resolve_field_access(&mut self, table: ExprId, field: &str) -> Option<ValueType> {
+        let table_type = self.resolve_expr(table)?;
+        // Field access on any yields any
+        if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
+        // Unwrap opaque aliases — field access works on the inner type
+        let table_type = table_type.into_strip_opaque();
+        let receiver_is_intersection = matches!(table_type, ValueType::Intersection(_));
+        let table_indices = self.field_receiver_tables(&table_type);
 
         // Inline `TableShape` members (cross-file overlay carriers, e.g.
         // `Frame & { DropDown: ... }`) declare fields by value with no
@@ -4020,26 +4139,7 @@ impl<'a> Analysis<'a> {
         let mut field_types: Vec<ValueType> = shape_field_types;
         for &idx in &table_indices {
             let pre_len = field_types.len();
-            // Fetch the coarse field once, extracting what the branches below need so
-            // the borrow ends immediately. Only the (rare) cross-file placeholder
-            // field (`any` or a bare `table`) pays for the harvest + re-fetch —
-            // warming the per-file overlay with the definition-site type harvested
-            // from the class's declaring file(s) — and a class field written a call,
-            // whose call type may refine the class; the common precise field is used
-            // directly, so a non-placeholder external field access repeats no
-            // `get_field` lookups.
-            let fetch = |ir: &super::Ir| ir.get_field(idx, field).map(|fi| FetchedField::of(fi, &ir.ext));
-            let mut fetched = fetch(&self.ir);
-            if fetched.as_ref().is_some_and(|f| f.placeholder) {
-                self.ir.ensure_field_overlay(idx, field);
-                fetched = fetch(&self.ir);
-            }
-            if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {
-                fetched = fetch(&self.ir);
-            }
-            if fetched.as_ref().is_some_and(|f| f.deferred_table) && self.ir.ensure_table_field_overlay(idx, field) {
-                fetched = fetch(&self.ir);
-            }
+            let mut fetched = self.fetch_cross_file_field(idx, field);
             // An entry the scan typed as a placeholder in the anonymous sub-table of
             // a constructor this file writes reads from the local constructor.
             if fetched.as_ref().is_some_and(|f| f.placeholder)
