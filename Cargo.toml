@@ -113,3 +113,23 @@ strip = true
 # std::panic::catch_unwind (src/lsp/main_loop.rs warm-diagnostics thread and
 # the profile/check subcommands in src/main.rs) to recover from analysis panics
 # without taking down the whole server; aborting would break that resilience.
+
+# Optimized builds for local runs: corpus `check`/`dump-types`/`crossfile-types`,
+# before/after comparisons, stub regen. Without LTO and with incremental
+# compilation, a rebuild after a one-line edit to wowlua_analysis takes ~20 s
+# against `--release`'s 2.5-4 min, and `check` runs just as fast. Ship and
+# measure performance with `--release`.
+[profile.local]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 256
+
+# Line tables keep file:line in panics and backtraces. Full debug info made the
+# test binaries 2.7x larger and their rebuilds cost ~2.5x the CPU; for a
+# debugger session, build with CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

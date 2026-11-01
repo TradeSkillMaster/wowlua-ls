@@ -11,7 +11,7 @@ Steps:
 1. Find the most recent tag: `git tag --sort=-v:refname | head -1`
 2. List all commits since that tag: `git log --format="%h %s" <last_tag>..HEAD`
 3. If there are no commits since the last tag, tell the user there's nothing to release.
-4. Check for cross-file type losses this release would ship: `cargo build --release`, run `target/release/wowlua_ls crossfile-types` over every addon in the corpus (`.context/addons/*/` in the main checkout, the first entry of `git worktree list`), and save its output there as `.context/crossfile-types/<short HEAD sha>.txt`. Compare it with the newest earlier report in that directory: each path whose finding is new, or covers more accesses than before, is a regression to name in the closing line of step 10. With no earlier report, just save this one.
+4. Check for cross-file type losses this release would ship: `cargo build --profile local`, run `target/local/wowlua_ls crossfile-types` over every addon in the corpus (`.context/addons/*/` in the main checkout, the first entry of `git worktree list`), and save its output there as `.context/crossfile-types/<short HEAD sha>.txt`. Compare it with the newest earlier report in that directory: each path whose finding is new, or covers more accesses than before, is a regression to name in the closing line of step 10. With no earlier report, just save this one.
 5. Read the commit messages and group them into categories:
    - **Bug Fixes** — anything that fixes incorrect behavior
    - **New** — new features or capabilities
