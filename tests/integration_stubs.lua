@@ -1750,3 +1750,91 @@ local function RetWidgetConstructor()
     widget.frame.obj = widget
     return widget
 end
+
+-- ── Members written through a frame field (`self.f.x = v`) ───────────────────
+-- A field holding a frame of other files' classes (`Button & UIPanelButtonTemplate`)
+-- takes the members written through it on the frame its call returns, not on
+-- the class: another `Button` here doesn't get them.
+local DeepPanel = {}
+DeepPanel.popup = nil
+
+function DeepPanel:Build(parent)
+    self.AddButton = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    self.AddButton.Icon = self.AddButton:CreateTexture(nil, "ARTWORK")
+--                 ^ hover: (field) Icon: Texture
+    self.AddButton.Icon:SetSize(19, 19)
+--                      ^ hover: (method) function Texture:SetSize(x: uiUnit, y: uiUnit)
+    self.ScrollBox = CreateFrame("Frame", nil, parent, "WowScrollBox")
+    self.ScrollBox.Content = CreateFrame("Frame", nil, self.ScrollBox, "ResizeLayoutFrame")
+    self.ScrollBox.Content.scrollable = true
+--                         ^ hover: (field) scrollable: true
+    local text = self.ScrollBox.Content:CreateFontString(nil, "ARTWORK")
+--        ^ hover: (local) text: FontString
+    -- Through a local holding the call's frame, written through either.
+    local list = CreateFrame("Frame", nil, parent, "WowScrollBox")
+    self.List = list
+    self.List.Content = CreateFrame("Frame", nil, list, "ResizeLayoutFrame")
+    self.List.Content.scrollable = true
+--                    ^ hover: (field) scrollable: true
+    list.Content.stride = 2
+--               ^ hover: (field) stride: number
+    -- A field first set `nil`.
+    self.popup = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    self.popup.mode = "edit"
+--             ^ hover: (field) mode: string
+    local plain = CreateFrame("Button", nil, parent)
+    return text, plain.Icon
+--                     ^ diag: undefined-field
+end
+
+-- A member the template has (`BaseLayoutMixin:OnCleaned`) keeps its declaration,
+-- written through a local too.
+local deepFrame
+local function ShowDeepFrame()
+    deepFrame = CreateFrame("Frame", nil, UIParent, "ButtonFrameTemplate")
+    deepFrame.ScrollBox = CreateFrame("Frame", nil, deepFrame, "WowScrollBox")
+    deepFrame.ScrollBox.Content = CreateFrame("Frame", nil, deepFrame.ScrollBox, "ResizeLayoutFrame")
+    deepFrame.ScrollBox.Content.OnCleaned = function() end
+--                              ^ hover: (field) function ResizeLayoutFrame.OnCleaned(self)
+end
+
+-- Frames of different classes written to one field share no home: each keeps
+-- its own class.
+local DeepMixed = {}
+
+---@param parent Frame
+function DeepMixed:Init(parent)
+    self.label = parent:CreateTexture(nil, "ARTWORK")
+    self.label.tag = 1
+    self.button = CreateFrame("Button", nil, parent)
+    self.button.tag = 1
+end
+
+---@param parent Frame
+function DeepMixed:Use(parent)
+    local label = parent:CreateFontString(nil, "ARTWORK")
+--        ^ hover: (local) label: FontString
+    self.label = label
+    label:SetText("hello")
+    local plain = CreateFrame("Frame", nil, parent)
+--        ^ hover: (local) plain: Frame
+    self.button = plain
+    plain:SetText("x")
+--        ^ diag: undefined-field
+end
+
+-- Through a field holding what a function of this file returns: on the frame
+-- that function creates, whose own reads see it.
+function DeepPanel:MakeTransferButton(parent)
+    local button = CreateFrame("Button", nil, parent, "InsecureActionButtonTemplate")
+    button:SetScript("OnShow", function()
+        button:SetShown(button.currencyID ~= nil)
+--                             ^ hover: (field) currencyID: number
+    end)
+    return button
+end
+
+function DeepPanel:Init(parent)
+    self.transferButton = self:MakeTransferButton(parent)
+    self.transferButton.currencyID = 5
+end

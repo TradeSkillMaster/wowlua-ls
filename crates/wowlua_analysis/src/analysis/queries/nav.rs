@@ -1184,11 +1184,34 @@ impl AnalysisResult {
         let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_node(c.kind())) {
             self.resolve_funcall_node_to_table(&funcall_node, scope_offset)
         } else if let Some(ident_node) = parent.children().find(|c| c.kind().is_identifier()) {
+            let tables = self.field_value_tables(&ident_node, scope_offset);
+            if !tables.is_empty() {
+                return tables;
+            }
             self.resolve_identifier_to_table(&ident_node, scope_offset)
         } else {
             None
         };
         table_idx.into_iter().collect()
+    }
+
+    /// Every table the value of the field `node` reads (`a.b`) is, on the table
+    /// [`Self::resolve_identifier_to_table`] resolves its receiver to — which keeps
+    /// only an intersection's first (`Frame & Template`). A write target's
+    /// receiver resolves only this way, so a template's own member written there
+    /// (`a.b.OnCleaned = f`) needs it.
+    fn field_value_tables(&self, node: &SyntaxNode, scope_offset: TextSize) -> Vec<TableIndex> {
+        if node.kind() != SyntaxKind::DotAccess {
+            return Vec::new();
+        }
+        let mut names = node.children_with_tokens().filter_map(|t| t.into_token()).filter(|t| t.kind() == SyntaxKind::Name);
+        let (Some(name), None) = (names.next(), names.next()) else { return Vec::new() };
+        let Some(receiver) = node.children().find(|c| c.kind().is_identifier()) else { return Vec::new() };
+        self.resolve_identifier_to_table(&receiver, scope_offset)
+            .and_then(|idx| self.get_field(idx, name.text()))
+            .and_then(|fi| self.resolve_field_type(fi))
+            .map(|ft| Self::extract_all_table_indices(&ft))
+            .unwrap_or_default()
     }
 
     /// Check if a node contains a string literal (directly or inside a GroupedExpression).

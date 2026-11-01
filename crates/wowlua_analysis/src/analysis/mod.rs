@@ -2563,17 +2563,22 @@ impl Ir {
     /// use: the methods belong to the object that call returns, which the call
     /// then resolves to ([`Self::call_object_type`]).
     pub(super) fn call_object_table(&mut self, expr: ExprId) -> Option<TableIndex> {
+        let call = self.value_call(expr)?;
+        let next = TableIndex(self.tables.len());
+        let object = *self.call_objects.entry(call).or_insert(next);
+        if object == next {
+            self.tables.push(TableInfo::default());
+        }
+        Some(object)
+    }
+
+    /// The call whose result the value `expr` is: the call itself, through
+    /// parentheses and the locals it initializes.
+    pub(super) fn value_call(&self, expr: ExprId) -> Option<ExprId> {
         let mut call = expr;
         for _ in 0..8 {
             match self.expr(call) {
-                Expr::FunctionCall { .. } => {
-                    let next = TableIndex(self.tables.len());
-                    let object = *self.call_objects.entry(call).or_insert(next);
-                    if object == next {
-                        self.tables.push(TableInfo::default());
-                    }
-                    return Some(object);
-                }
+                Expr::FunctionCall { .. } => return Some(call),
                 Expr::Grouped(inner) => call = *inner,
                 Expr::SymbolRef(sym_idx, ver_idx) if !sym_idx.is_external() => {
                     call = self.sym(*sym_idx).versions[*ver_idx].type_source?;
@@ -2588,13 +2593,18 @@ impl Ir {
     /// [`Self::call_object_table`]), as that object: a class it is an instance of
     /// replaced by `object` made an instance of that class — as the workspace
     /// build keeps a field's methods (`keep_call_field_methods`) — or, without a
-    /// class, `object` added. A call that may return nil still may.
+    /// class, `object` added. A call that may return nil still may. A type that
+    /// is the object already (a call of a function returning the result of a call
+    /// it is the object of) stays.
     pub(super) fn call_object_type(&mut self, object: TableIndex, ty: &ValueType) -> ValueType {
         let mut members = match ty.strip_nil() {
             ValueType::Intersection(members) => members,
             table @ ValueType::Table(_) => vec![table],
             _ => return ty.clone(),
         };
+        if members.contains(&ValueType::Table(Some(object))) {
+            return ty.clone();
+        }
         let class = members.iter().enumerate().find_map(|(i, m)| match m {
             ValueType::Table(Some(idx)) if *idx != object && self.table(*idx).class_name.is_some() => Some((i, *idx)),
             _ => None,
@@ -2611,7 +2621,7 @@ impl Ir {
                 t.metatable_index = Some(class_idx);
             }
             members[i] = ValueType::Table(Some(object));
-        } else if !members.contains(&ValueType::Table(Some(object))) {
+        } else {
             members.push(ValueType::Table(Some(object)));
         }
         let object_ty = if members.len() == 1 { members.remove(0) } else { ValueType::Intersection(members) };

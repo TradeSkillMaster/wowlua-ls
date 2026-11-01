@@ -2703,6 +2703,11 @@ impl<'a> Analysis<'a> {
     /// field there so deferred undefined-field checks can find it.
     fn resolve_deep_field_injections(&mut self) {
         let injections = std::mem::take(&mut self.deep_field_injections);
+        // The fields whose value a member went on (`deep_write_home`), by the table
+        // holding them, and the calls retyped as that value: the fixpoint typed
+        // their reads without it.
+        let mut homed_fields: HashSet<(TableIndex, String)> = HashSet::default();
+        let mut retyped_calls: HashSet<ExprId> = HashSet::default();
         for inj in injections {
             let mut current_table = self.ir.find_table_for_symbol(&inj.root_name, inj.scope_idx);
             // Fallback: if the root symbol's table isn't found via type_source
@@ -2716,7 +2721,15 @@ impl<'a> Analysis<'a> {
                 )
             {
                 let ver_idx = self.ir.version_for_scope(sym_idx, inj.scope_idx);
-                current_table = match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
+                let ver = &self.ir.sym(sym_idx).versions[ver_idx];
+                let (type_source, resolved_type) = (ver.type_source, ver.resolved_type.clone());
+                // A local holding a call `deep_write_home` retyped reads as the call:
+                // its version catches up only after the pass.
+                let root_type = match type_source.and_then(|ts| self.object_call(ts)) {
+                    Some(call) => self.resolve_expr(call),
+                    None => resolved_type,
+                };
+                current_table = match &root_type {
                     Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
                         ValueType::Table(Some(idx)) => Some(*idx),
                         _ => None,
@@ -2737,6 +2750,9 @@ impl<'a> Analysis<'a> {
             // The last intermediate is typed by this file's writes over the
             // workspace scan's `any` for it.
             let mut via_scan_any = false;
+            // The last intermediate's table and name, and this file's writes to it
+            // when no author annotated it: the values a member can go on.
+            let mut last_field: Option<(TableIndex, String, Vec<ExprId>)> = None;
             for intermediate in &inj.intermediates {
                 // Extract field data without holding a borrow on self
                 let field_data = self.ir.get_field(current_table, intermediate)
@@ -2748,10 +2764,16 @@ impl<'a> Analysis<'a> {
                 // The workspace scan's `any` yields to this file's writes, as when
                 // the field is read (`self.Panel.x = v` after `self.Panel = panel`).
                 via_scan_any = scan_inferred && matches!(annotation, Some(ValueType::Any));
+                let writes = if annotation.is_none() || via_scan_any {
+                    std::iter::once(expr).chain(extras.iter().copied()).filter(|e| !e.is_external()).collect()
+                } else {
+                    Vec::new()
+                };
+                last_field = Some((current_table, intermediate.clone(), writes));
                 let annotation = if via_scan_any {
                     let mut writes = super::AnyFieldWrites::for_field(true, &extras);
                     for e in std::iter::once(expr).chain(extras.iter().copied()) {
-                        let vt = self.resolve_expr(e);
+                        let vt = self.written_value_type(e);
                         writes.add(&self.ir, e, vt);
                     }
                     Some(ValueType::make_union(writes.into_types()))
@@ -2771,7 +2793,7 @@ impl<'a> Analysis<'a> {
                     let mut types: Vec<ValueType> = Vec::new();
                     let mut has_unresolvable = false;
                     for e in all_exprs {
-                        if let Some(vt) = self.resolve_expr(e) {
+                        if let Some(vt) = self.written_value_type(e) {
                             if !types.contains(&vt) {
                                 types.push(vt);
                             }
@@ -2819,6 +2841,13 @@ impl<'a> Analysis<'a> {
             } else {
                 targets.iter().copied().find(|&t| takes_member(t))
             };
+            // None does: the member goes on the value itself, when it is a call's.
+            let target = target.or_else(|| {
+                let (holder, field, writes) = last_field.take()?;
+                let home = self.deep_write_home(&writes, &mut retyped_calls)?;
+                homed_fields.insert((holder, field));
+                Some(home)
+            });
             let Some(target) = target else { continue };
             let deep_vis = if inj.root_name == "self" {
                 crate::annotations::default_visibility_for_name(&inj.field_name, self.implicit_protected_prefix)
@@ -2844,6 +2873,95 @@ impl<'a> Analysis<'a> {
                 self.ir.insert_overlay_field(target, inj.field_name, fi);
             }
         }
+        if !homed_fields.is_empty() {
+            self.invalidate_field_reads(&homed_fields, &retyped_calls);
+        }
+    }
+
+    /// The table for a member written through a field none of whose tables takes
+    /// it (`self.b.x = v`, `self.b` another file's `Button & Template`): the object
+    /// of the call each of this file's `writes` to the field holds (`self.b =
+    /// CreateFrame(...)`, [`Ir::call_object_table`]) — and, for a call of a
+    /// function of this file, of the call it returns the result of (`return
+    /// button` after `local button = CreateFrame(...)`) — one for them all, which
+    /// those calls, resolved by now, are retyped as (`retyped_calls`). `None` when
+    /// a write isn't a call's value (`nil` aside), or the calls make values of
+    /// different types (a `Texture` and a `FontString`), which one object would
+    /// retype as the first's: the member stays off the class, which every value of
+    /// it in the file shares.
+    fn deep_write_home(&mut self, writes: &[ExprId], retyped_calls: &mut HashSet<ExprId>) -> Option<TableIndex> {
+        let values = writes.iter().filter(|&&w| !matches!(self.ir.expr(w), Expr::Literal(ValueType::Nil)));
+        let mut calls: Vec<ExprId> = values.map(|&w| self.ir.value_call(w)).collect::<Option<_>>()?;
+        let mut i = 0;
+        while let Some(&call) = calls.get(i) {
+            if let Some(inner) = self.returned_call(call).filter(|c| !calls.contains(c)) {
+                calls.push(inner);
+            }
+            i += 1;
+        }
+        let mut types = calls.iter().map(|c| self.resolved_expr_cache.get(c.val()).cloned().flatten().map(|ty| self.class_view(&ty)));
+        let first = types.next()??;
+        if !types.all(|ty| ty.as_ref() == Some(&first)) {
+            return None;
+        }
+        let object = match calls.iter().find_map(|c| self.ir.call_objects.get(c)) {
+            Some(&object) => object,
+            None => self.ir.call_object_table(*calls.first()?)?,
+        };
+        for call in calls {
+            if *self.ir.call_objects.entry(call).or_insert(object) != object { continue; }
+            if let Some(ty) = self.resolved_expr_cache.get(call.val()).cloned().flatten() {
+                self.resolved_expr_cache[call.val()] = Some(self.ir.call_object_type(object, &ty));
+                retyped_calls.insert(call);
+            }
+        }
+        Some(object)
+    }
+
+    /// `ty` without `nil`, an instance table (`Ir::instance_class`) as its class:
+    /// the same for calls of one class whether or not `deep_write_home` gave one
+    /// of them its object yet.
+    fn class_view(&self, ty: &ValueType) -> ValueType {
+        let as_class = |m: &ValueType| self.ir.instance_class(m).unwrap_or_else(|| m.clone());
+        match ty.strip_nil() {
+            ValueType::Intersection(members) => ValueType::Intersection(members.iter().map(as_class).collect()),
+            other => as_class(&other),
+        }
+    }
+
+    /// The call whose result `value` is, when the call has an object
+    /// ([`Ir::call_object_table`]).
+    fn object_call(&self, value: ExprId) -> Option<ExprId> {
+        self.ir.value_call(value).filter(|call| self.ir.call_objects.contains_key(call))
+    }
+
+    /// The type a write gives a field: through a call `deep_write_home` retyped
+    /// as its object, the call's (`self.f = sb` after `local sb =
+    /// CreateFrame(...)`), whose reads catch up only after the pass
+    /// (`invalidate_field_reads`).
+    fn written_value_type(&mut self, write: ExprId) -> Option<ValueType> {
+        let value = self.object_call(write).unwrap_or(write);
+        self.resolve_expr(value)
+    }
+
+    /// The call whose result a call of an unannotated function of this file
+    /// returns, when every `return` gives that call's (`return button` after
+    /// `local button = CreateFrame(...)`).
+    fn returned_call(&self, call: ExprId) -> Option<ExprId> {
+        let func_idx = self.ir.call_resolutions.get(&call)?.func_idx;
+        if func_idx.is_external() || !self.ir.func(func_idx).return_annotations.is_empty() {
+            return None;
+        }
+        let mut returned = None;
+        for &ret in &self.ir.func(func_idx).rets {
+            if !matches!(self.ir.sym(ret).id, SymbolIdentifier::FunctionRet(_, 0)) { continue; }
+            for ver in &self.ir.sym(ret).versions {
+                let value = self.ir.value_call(ver.type_source?)?;
+                if returned.is_some_and(|r| r != value) { return None; }
+                returned = Some(value);
+            }
+        }
+        returned
     }
 
     /// Recover the concrete class table behind a `x or Constructor(...)` chain
@@ -3411,43 +3529,49 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        if augmented.is_empty() {
-            return;
+        if !augmented.is_empty() {
+            self.invalidate_field_reads(&augmented, &HashSet::default());
         }
-        // Invalidate everything whose cached type was derived from an augmented
-        // field during the fixpoint, so it recomputes against the new
-        // intersection. Targeted (not a full cache wipe) so builder-chain results
-        // the read-only resolver can't recompute are left intact.
-        let augmented_names: crate::collections::HashSet<&str> =
-            augmented.iter().map(|(_, f)| f.as_str()).collect();
-        // Seed: reads of an augmented field, matched on the *resolved receiver
+    }
+
+    /// Invalidate everything whose cached type was derived during the fixpoint
+    /// from a field of `retyped` (table, field name) or one of `retyped_calls`,
+    /// whose type a pass after it changed — a mixin intersected in, a member's
+    /// call object (the calls already hold their new type) — so it recomputes
+    /// against the new type. Targeted (not a full cache wipe) so builder-chain
+    /// results the read-only resolver can't recompute are left intact.
+    fn invalidate_field_reads(&mut self, retyped: &HashSet<(TableIndex, String)>, retyped_calls: &HashSet<ExprId>) {
+        let retyped_names: HashSet<&str> = retyped.iter().map(|(_, f)| f.as_str()).collect();
+        // Seed: reads of a retyped field, matched on the *resolved receiver
         // table* (not just the field name) so a same-named field on an unrelated
-        // table is untouched. The augmentation only adds intersection members, so
-        // the receiver's table identity is unchanged and safe to read here.
+        // table is untouched. Only the field's own type changed, so the
+        // receiver's table identity is unchanged and safe to read here.
         let field_reads: Vec<(usize, ExprId, String)> = self.ir.exprs.iter().enumerate()
             .filter_map(|(i, e)| match e {
-                Expr::FieldAccess { table, field, .. } if augmented_names.contains(field.as_str()) =>
+                Expr::FieldAccess { table, field, .. } if retyped_names.contains(field.as_str()) =>
                     Some((i, *table, field.clone())),
                 _ => None,
             })
             .collect();
-        let mut stale: crate::collections::HashSet<usize> = crate::collections::HashSet::default();
+        let mut stale: HashSet<usize> = HashSet::default();
         for (i, table_expr, field) in field_reads {
-            let on_augmented = match self.resolve_expr(table_expr) {
-                Some(ValueType::Table(Some(tidx))) => augmented.contains(&(tidx, field.clone())),
+            let on_retyped = match self.resolve_expr(table_expr) {
+                Some(ValueType::Table(Some(tidx))) => retyped.contains(&(tidx, field.clone())),
                 Some(ValueType::Intersection(ms)) | Some(ValueType::Union(ms)) => ms.iter().any(|t|
-                    matches!(t, ValueType::Table(Some(tidx)) if augmented.contains(&(*tidx, field.clone())))),
+                    matches!(t, ValueType::Table(Some(tidx)) if retyped.contains(&(*tidx, field.clone())))),
                 _ => false,
             };
-            if on_augmented {
+            if on_retyped {
                 stale.insert(i);
             }
         }
+        stale.extend(retyped_calls.iter().map(|c| c.val()));
         // Expand the stale set: wrapper exprs that build on a stale read
         // (`AssignNarrow` after the base assignment, narrowing strips, casts), and
         // `SymbolRef` reads of locals whose `type_source` is itself stale — e.g.
         // `local c = self.Child`, whose `resolved_type` was set to the pre-mixin
-        // base during the fixpoint.
+        // base during the fixpoint — including the upvalue entry versions merging
+        // such a local's values.
         loop {
             let mut grew = false;
             for i in 0..self.ir.exprs.len() {
@@ -3457,6 +3581,7 @@ impl<'a> Analysis<'a> {
                     | Expr::StripTruthy(x) | Expr::CastAdd(x, _) | Expr::CastRemove(x, _)
                     | Expr::TypeFilter(x, _) => stale.contains(&x.val()),
                     Expr::AssignNarrow { inner, .. } => stale.contains(&inner.val()),
+                    Expr::BranchMerge(paths) => paths.iter().any(|p| stale.contains(&p.val())),
                     Expr::SymbolRef(sym, ver) => self.ir.sym(*sym).versions.get(*ver)
                         .and_then(|v| v.type_source)
                         .is_some_and(|ts| stale.contains(&ts.val())),
@@ -3470,14 +3595,15 @@ impl<'a> Analysis<'a> {
             if !grew { break; }
         }
         for &idx in &stale {
+            if retyped_calls.contains(&ExprId(idx)) { continue; }
             if let Some(slot) = self.resolved_expr_cache.get_mut(idx) {
                 *slot = None;
             }
         }
-        // A local that copied an augmented field already has a stale `resolved_type`
+        // A local that copied a retyped field already has a stale `resolved_type`
         // (the pre-mixin base). `reresolve_unresolved_after_deferred` only revisits
         // symbols whose type stayed unknown, so clear those here so it recomputes
-        // them against the intersection.
+        // them against the new type.
         for sym in &mut self.ir.symbols {
             for ver in &mut sym.versions {
                 if ver.resolved_type.is_some()
