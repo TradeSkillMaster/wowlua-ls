@@ -1479,22 +1479,20 @@ pub(super) fn handle_notification(
             }
         }
         "textDocument/didSave" => {
-            if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not)
-                && is_full_rescan_trigger(params.text_document.uri.as_str())
-                && change_participates_in_scan(&params.text_document.uri, ws)
-            {
-                rescan_workspace_with_progress(connection, documents, ws, analysis_token);
+            if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not) {
+                let changed = changed_scan_inputs([&params.text_document.uri], ws);
+                if !changed.is_empty() {
+                    rescan_workspace_with_progress(connection, documents, ws, analysis_token, client, changed);
+                }
             }
         }
         "workspace/didChangeWatchedFiles" => {
             if let Ok(params) = cast_not::<notification::DidChangeWatchedFiles>(not) {
                 // Only rescan when a changed path actually participates in the
                 // scan — a broad `**/*.xml` watcher otherwise rebuilds the whole
-                // workspace on unrelated/ignored XML changes.
-                let needs_rescan = params.changes.iter().any(|e|
-                    is_full_rescan_trigger(e.uri.as_str())
-                        && change_participates_in_scan(&e.uri, ws)
-                );
+                // workspace on unrelated/ignored XML changes — and holds content
+                // the scan hasn't read.
+                let changed_inputs = changed_scan_inputs(params.changes.iter().map(|e| &e.uri), ws);
                 // Workspace `.lua` files no editor has open, which other files see as
                 // their content on disk: e.g. a save after the editor closed the file
                 // (IntelliJ keeps a closed tab's unsaved edits until it autosaves), a
@@ -1517,8 +1515,8 @@ pub(super) fn handle_notification(
                         closed_lua.push((e.uri.clone(), path));
                     }
                 }
-                if needs_rescan || closed_lua.len() > MAX_CLOSED_FILE_RECONCILES {
-                    rescan_workspace_with_progress(connection, documents, ws, analysis_token);
+                if !changed_inputs.is_empty() || closed_lua.len() > MAX_CLOSED_FILE_RECONCILES {
+                    rescan_workspace_with_progress(connection, documents, ws, analysis_token, client, changed_inputs);
                 } else {
                     let changed: Vec<_> = closed_lua.into_iter()
                         .filter_map(|(uri, path)| {
@@ -1658,7 +1656,8 @@ pub(super) fn handle_notification(
 /// workspace rescan is cheaper than reconciling them one by one.
 const MAX_CLOSED_FILE_RECONCILES: usize = 32;
 
-/// Whether a saved/changed file requires a full workspace rescan.
+/// Files whose save or change requires a full workspace rescan, as `(path
+/// suffix, watcher glob)`.
 ///
 /// These file types feed the directory scan rather than the per-file Lua
 /// incremental path, so a change to any of them must trigger
@@ -1674,8 +1673,31 @@ const MAX_CLOSED_FILE_RECONCILES: usize = 32;
 /// Lua files refresh per file — open ones via `didChange` →
 /// `maybe_rebuild_workspace`, closed ones via `reconcile_closed_files` — and are
 /// intentionally excluded here.
+const FULL_RESCAN_TRIGGERS: [(&str, &str); 3] = [
+    (".wowluarc.json", "**/.wowluarc.json"),
+    (".xml", "**/*.xml"),
+    (".toc", "**/*.toc"),
+];
+
+/// Whether a saved/changed file requires a full workspace rescan (see
+/// [`FULL_RESCAN_TRIGGERS`]).
 pub(super) fn is_full_rescan_trigger(uri: &str) -> bool {
-    uri.ends_with(".wowluarc.json") || uri.ends_with(".xml") || uri.ends_with(".toc")
+    FULL_RESCAN_TRIGGERS.iter().any(|(suffix, _)| uri.ends_with(suffix))
+}
+
+/// The on-disk changes the client is asked to report (`workspace/didChangeWatchedFiles`):
+/// every [`FULL_RESCAN_TRIGGERS`] file, which can change outside the editor (another
+/// program, a checkout), and Lua files, since a closed one is seen as its content on disk.
+pub(super) fn file_watchers() -> Vec<lsp_types::FileSystemWatcher> {
+    FULL_RESCAN_TRIGGERS
+        .iter()
+        .map(|(_, glob)| *glob)
+        .chain(["**/*.lua"])
+        .map(|glob| lsp_types::FileSystemWatcher {
+            glob_pattern: lsp_types::GlobPattern::String(glob.to_string()),
+            kind: None,
+        })
+        .collect()
 }
 
 /// Whether a changed file at `uri` actually participates in the workspace scan,
@@ -1693,15 +1715,46 @@ pub(super) fn change_participates_in_scan(uri: &lsp_types::Uri, ws: &WorkspaceSt
     }
 }
 
+/// The [`is_full_rescan_trigger`] files among `uris` that participate in the scan
+/// and whose content on disk isn't what the rescan they last set off read, each
+/// with its current [`disk_hash`]. Editors report a save of an open `.toc` twice —
+/// as `didSave` and as a watched-file change — and the second finds nothing new.
+pub(super) fn changed_scan_inputs<'a>(
+    uris: impl IntoIterator<Item = &'a lsp_types::Uri>,
+    ws: &WorkspaceState,
+) -> Vec<(PathBuf, u64)> {
+    uris.into_iter()
+        .filter(|uri| is_full_rescan_trigger(uri.as_str()) && change_participates_in_scan(uri, ws))
+        .filter_map(uri_to_abs_path)
+        .map(|path| {
+            let hash = disk_hash(&path);
+            (path, hash)
+        })
+        .filter(|(path, hash)| ws.rescanned_input_hashes.get(path) != Some(hash))
+        .collect()
+}
+
+/// Hash of a file's bytes on disk; 0 when it can't be read (e.g. it was deleted).
+pub(super) fn disk_hash(path: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let Ok(bytes) = std::fs::read(path) else { return 0 };
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Thin wrapper over [`rescan_workspace_from_disk`] that guards on a workspace
 /// root and reports progress. Driven by `didSave`/`didChangeWatchedFiles` for any
 /// [`is_full_rescan_trigger`] file (config, XML, or TOC), and by a watched-file
 /// batch changing more than [`MAX_CLOSED_FILE_RECONCILES`] closed Lua files.
+/// `inputs` are the changed scan inputs it runs for (see [`changed_scan_inputs`]).
 pub(super) fn rescan_workspace_with_progress(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     analysis_token: &Option<NumberOrString>,
+    client: &ClientSupport,
+    inputs: Vec<(PathBuf, u64)>,
 ) {
     if ws.roots.is_empty() {
         return;
@@ -1715,6 +1768,28 @@ pub(super) fn rescan_workspace_with_progress(
         }));
     }
     rescan_workspace_from_disk(documents, ws);
+    ws.rescanned_input_hashes.extend(inputs);
+    // Pull-model clients re-pull on the refresh the rebuild queues; a push-only
+    // client would keep the diagnostics it was sent before the rescan — including
+    // for a document the rescan made ignored, whose analysis it dropped.
+    if !client.diagnostic_refresh {
+        for (uri_str, doc) in documents.iter_mut() {
+            let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
+            if doc.analysis.is_some() {
+                push_fresh_diagnostics(connection, &uri, doc, ws);
+            } else if doc.toc.is_none() {
+                let params = lsp_types::PublishDiagnosticsParams {
+                    uri,
+                    diagnostics: Vec::new(),
+                    version: None,
+                };
+                let _ = connection.sender.send(Message::Notification(Notification::new(
+                    "textDocument/publishDiagnostics".to_string(),
+                    params,
+                )));
+            }
+        }
+    }
 }
 
 /// Full workspace rescan from disk: re-reads every `.wowluarc.json`, re-scans all
@@ -1769,8 +1844,10 @@ pub(super) fn rescan_workspace_from_disk(
     ws.ws_file_dynamic_prefixes = file_dynamic_prefixes;
     ws.ws_file_callback_registries = file_callback_registries;
     ws.ws_file_string_consts = file_string_consts;
-    // Every closed file was just taken from disk, so no earlier record holds.
+    // Every closed file and scan input was just taken from disk, so no earlier
+    // record holds.
     ws.closed_file_hashes.clear();
+    ws.rescanned_input_hashes.clear();
     ws.rebuild_caches();
     ws.rebuild();
     reanalyze_open_documents(documents, &ws.pre_globals, &ws.configs, ws.ws_generation);

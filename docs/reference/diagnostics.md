@@ -175,7 +175,7 @@ These diagnostics apply to `.toc` files only. See the [TOC Files guide](/guide/t
 | Code | Severity | Description |
 |---|---|---|
 | `toc-missing-interface` | Warning | Required `## Interface:` field is missing |
-| `toc-duplicate-header` | Warning | Same header key appears more than once |
+| `toc-duplicate-header` | Warning | Same header key appears more than once, except list headers a repeat appends to (`SavedVariables`, `SavedVariablesPerCharacter`, `Dependencies`, `LoadWith`, `LoadManagers`, `AllowLoadGameType`, `ExcludeLoadGameType`) |
 | `toc-unknown-header` | Hint | Header not in the known catalog and not an `X-*` custom field |
 | `toc-invalid-interface` | Error | Interface value is not a valid numeric version |
 | `toc-nonexistent-file` | Warning | Referenced file does not exist on disk |

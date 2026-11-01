@@ -942,12 +942,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                     rest.strip_prefix("SavedVariables:")
                 };
                 if let Some(names) = value {
-                    for name in names.split(',') {
-                        let name = name.trim();
-                        if !name.is_empty() {
-                            saved_variables.insert(name.to_string());
-                        }
-                    }
+                    saved_variables.extend(crate::flavor::split_toc_list(names).map(str::to_string));
                 }
                 // `## Interface:` (or flavor-specific `## Interface-Classic:` etc.) —
                 // union the version numbers' flavors. Parsing the numbers makes
@@ -1013,9 +1008,11 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                 }
             };
 
-            // Parse ## Allow/ExcludeLoadGameType headers and file listings
+            // Parse ## Allow/ExcludeLoadGameType headers and file listings. A repeated
+            // header appends to the list, so exclusion names accumulate like a file
+            // line's (see `parse_file_line_directives`).
             let mut allow_load_mask = 0u8;
-            let mut exclude_load_mask = 0u8;
+            let mut exclude_load_names = String::new();
             let mut file_lines: Vec<(PathBuf, u8)> = Vec::new();
 
             for line in entry.text.lines() {
@@ -1024,9 +1021,10 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                     if let Some(rest) = line.strip_prefix("##") {
                         let rest = rest.trim_start();
                         if let Some(value) = rest.strip_prefix("AllowLoadGameType:") {
-                            allow_load_mask = crate::flavor::parse_game_type_list(value);
+                            allow_load_mask |= crate::flavor::parse_game_type_list(value);
                         } else if let Some(value) = rest.strip_prefix("ExcludeLoadGameType:") {
-                            exclude_load_mask = crate::flavor::parse_excluded_flavors(value);
+                            exclude_load_names.push(' ');
+                            exclude_load_names.push_str(value);
                         }
                     }
                     continue;
@@ -1049,7 +1047,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
             let effective_toc_flavor = crate::flavor::apply_load_game_type(
                 toc_flavor,
                 allow_load_mask,
-                exclude_load_mask,
+                crate::flavor::parse_excluded_flavors(&exclude_load_names),
             );
 
             if effective_toc_flavor == 0 {
@@ -2274,6 +2272,7 @@ mod tests {
         std::fs::write(dir.join("Test.toc"), "\
 ## SavedVariables: SpaceBefore , SpaceAfter,NoSpaces, ExtraSpaces
 ##SavedVariablesPerCharacter: NoSpaceAfterHash
+## SavedVariables: SpaceSeparated  TabSeparated\tLast
 ").unwrap();
 
         let vars = parse_toc_saved_variables(&dir);
@@ -2282,7 +2281,10 @@ mod tests {
         assert!(vars.contains("NoSpaces"));
         assert!(vars.contains("ExtraSpaces"));
         assert!(vars.contains("NoSpaceAfterHash"));
-        assert_eq!(vars.len(), 5);
+        assert!(vars.contains("SpaceSeparated"));
+        assert!(vars.contains("TabSeparated"));
+        assert!(vars.contains("Last"));
+        assert_eq!(vars.len(), 8);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2698,6 +2700,33 @@ RetailOnly.lua [ExcludeLoadGameType classic]
         // Per-line `classic` also covers classic_era → only retail + forever are left
         assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
                    crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_repeated_load_game_type_headers_append() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_repeated_headers");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("Allow.toc"), "\
+## AllowLoadGameType: vanilla
+## AllowLoadGameType: cata
+Allowed.lua
+").unwrap();
+        // Neither line alone excludes every Classic game type; together they do.
+        std::fs::write(dir.join("Exclude.toc"), "\
+## ExcludeLoadGameType: tbc, wrath
+## ExcludeLoadGameType: cata mists
+Excluded.lua
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(*result.file_flavors.get(&dir.join("Allowed.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+        assert_eq!(*result.file_flavors.get(&dir.join("Excluded.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_FOREVER);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

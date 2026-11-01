@@ -307,6 +307,11 @@ struct WorkspaceState {
     /// that changes nothing — the save just before a close — is skipped. A full
     /// rescan, which takes every closed file from disk, clears them.
     closed_file_hashes: HashMap<PathBuf, u64>,
+    /// [`disk_hash`] of each scan input (`.wowluarc.json`, `.xml`, `.toc`) whose
+    /// change set off the last rescan, as that rescan read it, so a second report
+    /// of the same save (`didSave` and a watched-file change) doesn't rescan
+    /// again. A full rescan reads every input from disk, so it clears them.
+    rescanned_input_hashes: HashMap<PathBuf, u64>,
 }
 
 /// Generation-scoped store backing [`WorkspaceState::xfile_ref_cache`]. Holds
@@ -725,25 +730,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             method: "workspace/didChangeWatchedFiles".to_string(),
             register_options: Some(serde_json::to_value(
                 lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                    watchers: vec![
-                        lsp_types::FileSystemWatcher {
-                            glob_pattern: lsp_types::GlobPattern::String("**/.wowluarc.json".to_string()),
-                            kind: None,
-                        },
-                        // XML frame/template files feed the directory scan, not the
-                        // per-file Lua incremental path, so on-disk changes to them
-                        // must trigger a full workspace rescan (see is_full_rescan_trigger).
-                        lsp_types::FileSystemWatcher {
-                            glob_pattern: lsp_types::GlobPattern::String("**/*.xml".to_string()),
-                            kind: None,
-                        },
-                        // A closed Lua file is seen as its content on disk, which can
-                        // change without an open document (see didChangeWatchedFiles).
-                        lsp_types::FileSystemWatcher {
-                            glob_pattern: lsp_types::GlobPattern::String("**/*.lua".to_string()),
-                            kind: None,
-                        },
-                    ],
+                    watchers: file_watchers(),
                 }
             ).unwrap()),
         };
@@ -884,6 +871,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         edited_uris: HashSet::default(),
         rebuilt_since_refresh: false,
         closed_file_hashes: HashMap::default(),
+        rescanned_input_hashes: HashMap::default(),
     };
     ws.set_stubs(stub_globals, stub_classes);
     let plugin_paths = ws.configs.all_plugins();
@@ -5062,8 +5050,9 @@ mod tests {
     }
 
     /// Send `method` through the real notification handler.
-    fn notify(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, method: &str, params: impl serde::Serialize) {
-        let (connection, _client_conn) = Connection::memory();
+    /// Returns the notifications the server sent back to the (push-only) client.
+    fn notify(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, method: &str, params: impl serde::Serialize) -> Vec<lsp_server::Notification> {
+        let (connection, client_conn) = Connection::memory();
         let bg = BackgroundChannels {
             stub_tx: crossbeam_channel::unbounded().0,
             wake_tx: crossbeam_channel::unbounded().0,
@@ -5071,6 +5060,23 @@ mod tests {
         };
         let not = lsp_server::Notification::new(method.to_string(), params);
         handle_notification(&connection, documents, ws, not, &None, &ClientSupport::default(), &mut 0, &bg);
+        client_conn.receiver.try_iter()
+            .filter_map(|msg| match msg {
+                Message::Notification(not) => Some(not),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The diagnostics each `textDocument/publishDiagnostics` among `sent` published
+    /// for `uri`.
+    fn published_diagnostics(sent: &[lsp_server::Notification], uri: &lsp_types::Uri) -> Vec<Vec<lsp_types::Diagnostic>> {
+        sent.iter()
+            .filter(|not| not.method == "textDocument/publishDiagnostics")
+            .filter_map(|not| serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(not.params.clone()).ok())
+            .filter(|params| params.uri == *uri)
+            .map(|params| params.diagnostics)
+            .collect()
     }
 
     fn close_doc(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, uri: &lsp_types::Uri) {
@@ -5276,6 +5282,80 @@ mod tests {
             !names.iter().any(|n| n == "OldFrame"),
             "stale XML global must be gone after rescan: {names:?}",
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A `.toc` save rescans once, though editors report it twice (`didSave` and a
+    /// watched-file change), and sends a push-only client the open documents'
+    /// diagnostics under the new SavedVariables — it used to keep the pre-save
+    /// `undefined-global` until the document itself changed.
+    #[test]
+    fn toc_save_rescans_once_and_pushes_open_document_diagnostics() {
+        let tmp = std::env::temp_dir().join(format!("wowlua_toc_save_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let toc = tmp.join("Addon.toc");
+        let user = tmp.join("user.lua");
+        std::fs::write(&toc, "## Interface: 110002\n").unwrap();
+        std::fs::write(&user, "return AddonDB\n").unwrap();
+
+        let mut ws = build_ws_for_dir(&tmp);
+        let (user_uri, user_doc) = open_doc(&ws, &user);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(user_uri.to_string(), user_doc);
+        let toc_uri = abs_path_to_uri(&toc).unwrap();
+        let watched = lsp_types::DidChangeWatchedFilesParams {
+            changes: vec![lsp_types::FileEvent { uri: toc_uri.clone(), typ: lsp_types::FileChangeType::CHANGED }],
+        };
+
+        std::fs::write(&toc, "## Interface: 110002\n## SavedVariables: AddonDB\n").unwrap();
+        let sent = notify(&mut documents, &mut ws, "textDocument/didSave", lsp_types::DidSaveTextDocumentParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: toc_uri },
+            text: None,
+        });
+        let published = published_diagnostics(&sent, &user_uri);
+        assert_eq!(published.len(), 1, "the open document's diagnostics are pushed: {published:?}");
+        assert!(published[0].iter().all(|d| !d.message.contains("AddonDB")), "AddonDB is a saved variable now: {published:?}");
+
+        let generation = ws.ws_generation;
+        notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", watched.clone());
+        assert_eq!(ws.ws_generation, generation, "the same save, reported again, doesn't rescan");
+
+        std::fs::write(&toc, "## Interface: 110002\n").unwrap();
+        let sent = notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", watched);
+        assert!(ws.ws_generation > generation, "a change on disk rescans");
+        let published = published_diagnostics(&sent, &user_uri);
+        assert!(
+            published.last().is_some_and(|diags| diags.iter().any(|d| d.message == "undefined global 'AddonDB'")),
+            "{published:?}",
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A rescan that makes an open document ignored clears what a push-only client
+    /// was last sent for it (a pull client re-pulls and gets an empty report).
+    #[test]
+    fn rescan_clears_push_diagnostics_of_newly_ignored_document() {
+        let tmp = std::env::temp_dir().join(format!("wowlua_rescan_ignore_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let config = tmp.join(".wowluarc.json");
+        let user = tmp.join("user.lua");
+        std::fs::write(&user, "return Undeclared\n").unwrap();
+
+        let mut ws = build_ws_for_dir(&tmp);
+        let (user_uri, user_doc) = open_doc(&ws, &user);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(user_uri.to_string(), user_doc);
+
+        std::fs::write(&config, r#"{ "ignore": ["user.lua"] }"#).unwrap();
+        let sent = notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", lsp_types::DidChangeWatchedFilesParams {
+            changes: vec![lsp_types::FileEvent { uri: abs_path_to_uri(&config).unwrap(), typ: lsp_types::FileChangeType::CREATED }],
+        });
+        assert!(documents[&user_uri.to_string()].analysis.is_none(), "user.lua is ignored now");
+        assert_eq!(published_diagnostics(&sent, &user_uri), vec![Vec::new()], "its diagnostics are cleared");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

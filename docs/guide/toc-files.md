@@ -37,7 +37,7 @@ UI/MainFrame.lua
 
 Hovering `Interface` shows its documentation. Hovering `110100` shows "The War Within 11.1.0". Hovering `mainline` shows "Retail and Forever".
 
-Completions after `## ` suggest `Title`, `Notes`, `Author`, `SavedVariables`, etc., filtered to exclude fields you've already declared.
+Completions after `## ` suggest `Title`, `Notes`, `Author`, `SavedVariables`, etc., filtered to exclude fields you've already declared, except list fields such as `SavedVariables` that a repeated line adds to.
 
 ## Supported fields
 
@@ -120,7 +120,7 @@ TOC files have their own set of diagnostics:
 | Code | Severity | Description |
 |---|---|---|
 | `toc-missing-interface` | Warning | Required `## Interface:` field is missing |
-| `toc-duplicate-header` | Warning | Same header key appears more than once |
+| `toc-duplicate-header` | Warning | Same header key appears more than once, except list headers a repeat appends to (`SavedVariables`, `SavedVariablesPerCharacter`, `Dependencies`, `LoadWith`, `LoadManagers`, `AllowLoadGameType`, `ExcludeLoadGameType`) |
 | `toc-unknown-header` | Hint | Header not in the known catalog and not an `X-*` custom field |
 | `toc-invalid-interface` | Error | Interface value is not a valid numeric version |
 | `toc-nonexistent-file` | Warning | Referenced file does not exist on disk |

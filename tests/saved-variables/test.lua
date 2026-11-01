@@ -24,6 +24,12 @@ _consume(TestAddonStatsDB)
 -- Should NOT warn: SavedVariables from second .toc file (TestAddon_Options.toc)
 _consume(TestAddonOptionsDB)
 
+-- Should NOT warn: names separated by a space, a tab, or a bare comma
+_consume(TestAddonSpacedDB)
+_consume(TestAddonTabbedDB)
+_consume(TestAddonLastDB)
+_consume(TestAddonCommaDB)
+
 -- Should STILL warn: not declared anywhere
 _consume(UndeclaredGlobal)
 --       ^ diag: undefined-global

@@ -69,14 +69,14 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
     },
     TocFieldDef {
         name: "SavedVariables",
-        doc: "Comma-separated list of global variable names that persist across sessions (account-wide). These globals are saved to `WTF/Account/<name>/SavedVariables/<addon>.lua`.",
+        doc: "Comma- or space-separated list of global variable names that persist across sessions (account-wide). These globals are saved to `WTF/Account/<name>/SavedVariables/<addon>.lua`.",
         required: false,
         value_kind: TocValueKind::VariableList,
         aliases: &[],
     },
     TocFieldDef {
         name: "SavedVariablesPerCharacter",
-        doc: "Comma-separated list of global variable names that persist per-character. These globals are saved to `WTF/Account/<name>/<realm>/<char>/SavedVariables/<addon>.lua`.",
+        doc: "Comma- or space-separated list of global variable names that persist per-character. These globals are saved to `WTF/Account/<name>/<realm>/<char>/SavedVariables/<addon>.lua`.",
         required: false,
         value_kind: TocValueKind::VariableList,
         aliases: &[],
@@ -145,8 +145,8 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         aliases: &[],
     },
     // Provenance: the per-line `[ExcludeLoadGameType ...]` form appears throughout
-    // Blizzard's own TOCs; this header form does not (and the wiki documents
-    // neither), and is included on a maintainer report that the client honors it.
+    // Blizzard's own TOCs; this header form does not, and was included on a
+    // maintainer report that the client honors it (the wiki now documents it).
     TocFieldDef {
         name: "ExcludeLoadGameType",
         doc: "The inverse of `AllowLoadGameType`: the addon loads on every game flavor *except* the ones listed. Comma- or space-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot` (or `forever`).",
@@ -246,6 +246,17 @@ pub fn lookup_field(name: &str) -> Option<&'static TocFieldDef> {
 /// are separate categories.
 pub fn is_known_header(name: &str) -> bool {
     lookup_field(name).is_some() || crate::flavor::is_interface_header(name)
+}
+
+/// Whether the client appends a repeated header's values to the earlier lines'
+/// list, rather than keeping only the last line as for every other header (per
+/// the wiki's TOC format page).
+pub fn appends_on_repeat(name: &str) -> bool {
+    const APPENDING: &[&str] = &[
+        "Dependencies", "LoadWith", "LoadManagers", "AllowLoadGameType",
+        "ExcludeLoadGameType", "SavedVariables", "SavedVariablesPerCharacter",
+    ];
+    lookup_field(name).is_some_and(|f| APPENDING.contains(&f.name))
 }
 
 /// Check if a field name is a custom extension field (starts with `X-`).

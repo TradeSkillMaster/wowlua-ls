@@ -255,10 +255,11 @@ pub fn is_toc_path_variable(name: &str) -> bool {
     matches!(name, "Family" | "Game" | "TextLocale")
 }
 
-/// Split a game type list into its individual names. Blizzard's own TOCs use
-/// both separators — `[AllowLoadGameType tbc, wrath]` and
-/// `[ExcludeLoadGameType vanilla tbc wrath]` — so accept commas and whitespace.
-pub fn split_game_type_list(names: &str) -> impl Iterator<Item = &str> {
+/// Split a TOC list value (game types, `SavedVariables` names) into its entries.
+/// Blizzard's own TOCs use both separators — `[AllowLoadGameType tbc, wrath]` and
+/// `[ExcludeLoadGameType vanilla tbc wrath]` — and the client also reads
+/// `## SavedVariables: A B`, so accept commas and whitespace.
+pub fn split_toc_list(names: &str) -> impl Iterator<Item = &str> {
     names
         .split([',', ' ', '\t'])
         .map(str::trim)
@@ -268,7 +269,7 @@ pub fn split_game_type_list(names: &str) -> impl Iterator<Item = &str> {
 /// Parse a list of game type names into a flavor mask. Unknown names are ignored.
 pub fn parse_game_type_list(names: &str) -> u8 {
     let mut mask = 0u8;
-    for name in split_game_type_list(names) {
+    for name in split_toc_list(names) {
         if let Some(bit) = parse_game_type_name(name) {
             mask |= bit;
         }
@@ -306,7 +307,7 @@ const GAME_TYPE_FAMILIES: &[(&str, &[&str])] = &[
 /// `classic` count as all of their members. Unioning bits (the allow direction)
 /// stays sound under the collapse; only subtraction needs this treatment.
 pub fn parse_excluded_flavors(names: &str) -> u8 {
-    fully_listed_flavors(split_game_type_list(names))
+    fully_listed_flavors(split_toc_list(names))
 }
 
 /// Flavors taken over by game-type TOC suffixes (`_Vanilla`, `_Camelot`, …).

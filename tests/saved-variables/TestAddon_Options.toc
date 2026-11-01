@@ -1,3 +1,4 @@
 ## Interface: 110002
 ## Title: TestAddon - Options
 ## SavedVariables: TestAddonOptionsDB
+## SavedVariablesPerCharacter: TestAddonSpacedDB TestAddonTabbedDB	TestAddonLastDB,TestAddonCommaDB

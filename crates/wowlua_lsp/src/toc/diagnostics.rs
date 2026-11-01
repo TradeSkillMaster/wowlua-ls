@@ -55,6 +55,10 @@ fn check_duplicate_headers(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
     let mut seen: HashSet<String> = HashSet::default();
     for line in &doc.lines {
         if let TocLine::Header { key, key_range, .. } = line {
+            // A repeat of these adds to the list instead of replacing it.
+            if schema::appends_on_repeat(key) {
+                continue;
+            }
             let lower = key.to_ascii_lowercase();
             if !seen.insert(lower) {
                 diags.push(TocDiagnostic {
@@ -156,7 +160,7 @@ fn check_invalid_game_types(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
     let known_names: Vec<&str> = schema::GAME_TYPE_VALUES.iter().map(|(k, _)| *k).collect();
     // Report only the first unknown name per condition — one squiggle per bracket.
     let emit = |value: &str, range: (u32, u32), diags: &mut Vec<TocDiagnostic>| {
-        if let Some(unknown) = crate::flavor::split_game_type_list(value).find(|n| !known_names.contains(n)) {
+        if let Some(unknown) = crate::flavor::split_toc_list(value).find(|n| !known_names.contains(n)) {
             diags.push(TocDiagnostic {
                 code: "toc-invalid-value",
                 message: format!("Unknown game type `{}`. Known values: {}.", unknown, known_names.join(", ")),
@@ -233,6 +237,16 @@ mod tests {
     #[test]
     fn duplicate_header() {
         let diags = run("## Interface: 110002\n## Title: A\n## Title: B\n");
+        assert!(diags.iter().any(|d| d.code == "toc-duplicate-header"));
+    }
+
+    #[test]
+    fn repeated_appending_header_not_duplicate() {
+        // The client appends a repeat of these to the list rather than replacing it.
+        let diags = run("## Interface: 110002\n## SavedVariables: A\n## SavedVariables: B\n## dependencies: C\n## Dependencies: D\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-duplicate-header"));
+        // Other list headers keep only the last line.
+        let diags = run("## Interface: 110002\n## OptionalDeps: A\n## OptionalDeps: B\n");
         assert!(diags.iter().any(|d| d.code == "toc-duplicate-header"));
     }
 
@@ -368,8 +382,8 @@ mod tests {
 
     #[test]
     fn exclude_load_game_type_header_known() {
-        // `ExcludeLoadGameType` is a real (wiki-undocumented) header: no
-        // unknown-field hint, and its values are validated like AllowLoadGameType.
+        // `ExcludeLoadGameType` is a real header: no unknown-field hint, and its
+        // values are validated like AllowLoadGameType.
         let diags = run("## Interface: 110002\n## ExcludeLoadGameType: vanilla\n");
         assert!(!diags.iter().any(|d| d.code == "toc-unknown-header"));
         assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));

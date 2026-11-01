@@ -114,7 +114,7 @@ fn hover_field_value(key: &str, value: &str) -> Option<TocHover> {
             }
         }
         TocValueKind::GameTypeList => {
-            let descs: Vec<String> = crate::flavor::split_game_type_list(value)
+            let descs: Vec<String> = crate::flavor::split_toc_list(value)
                 .filter_map(|name| {
                     let (_, desc) = schema::GAME_TYPE_VALUES.iter().find(|(k, _)| *k == name)?;
                     Some(format!("`{}` — {}", name, desc))
@@ -174,9 +174,12 @@ pub fn completions_at(doc: &TocDocument, text: &str, offset: u32, toc_dir: Optio
 }
 
 fn complete_field_names(doc: &TocDocument, _prefix: &str) -> Vec<TocCompletion> {
-    // Collect already-present headers to avoid suggesting duplicates
+    // Collect already-present headers to avoid suggesting duplicates. A repeat of
+    // an appending list header is no duplicate, so those stay on offer.
     let present: crate::collections::HashSet<String> = doc.lines.iter().filter_map(|line| {
-        if let TocLine::Header { key, .. } = line {
+        if let TocLine::Header { key, .. } = line
+            && !schema::appends_on_repeat(key)
+        {
             Some(key.to_ascii_lowercase())
         } else {
             None
@@ -384,6 +387,11 @@ mod tests {
         assert!(!comps.iter().any(|c| c.label == "Interface"));
         // Should include Title
         assert!(comps.iter().any(|c| c.label == "Title"));
+
+        // A list header that a repeat appends to stays on offer.
+        let text = "## Interface: 110002\n## SavedVariables: A\n## \n";
+        let comps = completions_at(&parse_toc(text), text, 45, None);
+        assert!(comps.iter().any(|c| c.label == "SavedVariables"));
     }
 
     #[test]

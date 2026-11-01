@@ -454,6 +454,7 @@ impl WorkspaceState {
             edited_uris: HashSet::default(),
             rebuilt_since_refresh: false,
             closed_file_hashes: HashMap::default(),
+            rescanned_input_hashes: HashMap::default(),
         }
     }
 }
