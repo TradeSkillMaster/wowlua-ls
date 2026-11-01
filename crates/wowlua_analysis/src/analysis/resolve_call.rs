@@ -4437,7 +4437,6 @@ impl<'a> Analysis<'a> {
         if candidates.is_empty() { return false; }
 
         let mut overall_progress = false;
-        let mut membership_suppressed = None;
         let mut call_funcs = None;
         const MAX_ITER: usize = 8;
         for _ in 0..MAX_ITER {
@@ -4453,7 +4452,17 @@ impl<'a> Analysis<'a> {
                 combined.extend(sym_hints.narrowing.iter().cloned());
                 let inferred = intersect_hints(&combined, &is_subtype).unwrap_or(baseline_intersect);
                 if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
-                if self.reads_member_inferred_type_lacks(&inferred, &sym_hints.member_reads, &mut membership_suppressed, &mut call_funcs) { continue; }
+                let reads_beyond = self.member_reads_inferred_type_lacks(&inferred, &sym_hints.member_reads, &mut call_funcs);
+                // The argument is more than `inferred`: the type is kept only where
+                // nothing but the body's own reads of the argument sees it.
+                if !reads_beyond.is_empty() && (sym_hints.passed_to_generic || self.argument_flows_on(sym_idx)) {
+                    continue;
+                }
+                if reads_beyond.is_empty() {
+                    self.ir.reads_beyond_inferred_params.remove(&sym_idx);
+                } else {
+                    self.ir.reads_beyond_inferred_params.insert(sym_idx, reads_beyond);
+                }
                 // used_as_or_lhs: `param or default` idiom implies the param
                 // can be nil at runtime (see detection in collect_backward_inference_hints).
                 // caller_has_nil: a call site passes a nilable value (e.g. boolean?),
@@ -4481,25 +4490,24 @@ impl<'a> Analysis<'a> {
         overall_progress
     }
 
-    /// Whether the body reads a member the inferred type doesn't have, by the
-    /// `undefined-field` pass's own tests (`pin:OnReleased()` after passing `pin`
-    /// where a `Frame` is expected): the argument is more than that type (a `Frame`
-    /// with a mixin applied), so it can't be the param's type. `suppressed` (the
-    /// guarded reads the pass skips) and `call_funcs` (every call's callee) are
-    /// collected on first use.
-    fn reads_member_inferred_type_lacks(
+    /// The members the body reads on the argument that the inferred type doesn't
+    /// have, by the `undefined-field` pass's own tests (`pin:OnReleased()` after
+    /// passing `pin` where a `Frame` is expected), as their names' starts: the
+    /// argument is more than that type (a `Frame` with a mixin applied), so the
+    /// pass leaves them alone (`Ir::reads_beyond_inferred_params`). `call_funcs`
+    /// (every call's callee) is collected on first use.
+    fn member_reads_inferred_type_lacks(
         &self,
         inferred: &ValueType,
         member_reads: &[MemberRead],
-        suppressed: &mut Option<crate::collections::HashSet<u32>>,
         call_funcs: &mut Option<crate::collections::HashSet<ExprId>>,
-    ) -> bool {
+    ) -> Vec<u32> {
         use crate::diagnostics::{collect_class_indices, undefined_field as uf};
-        if member_reads.is_empty() { return false; }
+        if member_reads.is_empty() { return Vec::new(); }
         let mut classes = Vec::new();
         collect_class_indices(inferred, &mut classes);
-        if classes.iter().any(|&idx| uf::is_open_mixin_table(&self.ir, idx)) { return false; }
-        let mut missing = member_reads.iter().filter(|read| {
+        if classes.iter().any(|&idx| uf::is_open_mixin_table(&self.ir, idx)) { return Vec::new(); }
+        member_reads.iter().filter(|read| {
             let is_call = || call_funcs.get_or_insert_with(|| self.ir.exprs.iter()
                 .filter_map(|e| match e {
                     Expr::FunctionCall { func, .. } => Some(*func),
@@ -4511,10 +4519,29 @@ impl<'a> Analysis<'a> {
                 !uf::tables_have_member(&self.ir, &tables, &read.field)
                     && uf::declaring_table(&self.ir, &tables).is_some()
             })
-        }).peekable();
-        if missing.peek().is_none() { return false; }
-        let suppressed = suppressed.get_or_insert_with(|| uf::collect_membership_suppressions(self.tree));
-        missing.any(|read| !suppressed.contains(&read.start))
+        }).map(|read| read.start).collect()
+    }
+
+    /// Whether the argument param `sym` holds goes past the body's reads of it,
+    /// where a type inferred for it would follow it: assigned, stored in a table,
+    /// returned, or read in a nested function (a pass to a generic parameter is
+    /// `BackwardInferenceHints::passed_to_generic`).
+    fn argument_flows_on(&self, sym: SymbolIndex) -> bool {
+        use crate::syntax::{SyntaxKind, SyntaxNode, TextSize, TokenAtOffset};
+        let Some(home) = self.ir.functions.iter().find(|f| f.args.contains(&sym)).map(|f| f.def_node) else { return true };
+        let root = SyntaxNode::new_root(self.tree);
+        self.sym_ref_sites.get(&sym).is_some_and(|sites| sites.iter().any(|&(expr, offset)| {
+            let Expr::SymbolRef(_, ver) = *self.expr(expr) else { return false };
+            if !self.version_holds_argument(sym, ver) { return false; }
+            let name_ref = match root.token_at_offset(TextSize::from(offset)) {
+                TokenAtOffset::Single(t) | TokenAtOffset::Between(_, t) => t.parent(),
+                TokenAtOffset::None => None,
+            };
+            let Some(name_ref) = name_ref else { return true };
+            let in_home = name_ref.ancestors().find(|n| n.kind() == SyntaxKind::FunctionDefinition)
+                .is_some_and(|f| u32::from(f.text_range().start()) == home.start && u32::from(f.text_range().end()) == home.end);
+            !in_home || read_value_escapes(name_ref)
+        }))
     }
 
     /// Whether version `ver` of param `sym` may hold the argument: the version
@@ -4564,6 +4591,7 @@ impl<'a> Analysis<'a> {
         let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::default();
         let mut and_lhs_params: HashSet<SymbolIndex> = HashSet::default();
         let mut member_reads: HashMap<SymbolIndex, Vec<MemberRead>> = HashMap::default();
+        let mut passed_to_generic: HashSet<SymbolIndex> = HashSet::default();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
@@ -4693,6 +4721,7 @@ impl<'a> Analysis<'a> {
                                 self.substitute_generics_deep(&sig_param.ty, &generic_subs)
                             };
                             if self.type_contains_type_variable_deep(&substituted) {
+                                passed_to_generic.insert(sym);
                                 // The full generic type can't be used, but the structural
                                 // shape (e.g. T[] → table) is still a valid constraint.
                                 if matches!(substituted, ValueType::Table(_)) {
@@ -4714,8 +4743,9 @@ impl<'a> Analysis<'a> {
                     }
 
                     let vararg_vt = vararg_annotation.as_ref()
-                        .and_then(|a| self.resolve_annotation_type(a))
-                        .filter(|t| !t.contains_type_variable());
+                        .and_then(|a| self.resolve_annotation_type(a));
+                    let vararg_generic = vararg_vt.as_ref().is_some_and(|t| t.contains_type_variable());
+                    let vararg_vt = vararg_vt.filter(|_| !vararg_generic);
                     for (arg_i, sym) in candidate_args {
                         let covered_by_signature = signatures.iter()
                             .any(|sig| sig.param_at(arg_i).is_some());
@@ -4739,6 +4769,9 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
 
+                        if !covered_by_signature && vararg_generic {
+                            passed_to_generic.insert(sym);
+                        }
                         if !covered_by_signature
                             && let Some(ref vt) = vararg_vt {
                                 narrowing_hints.entry(sym).or_default().push(vt.clone());
@@ -4857,7 +4890,10 @@ impl<'a> Analysis<'a> {
             let caller = caller_types.remove(&s).unwrap_or_default();
             let used_as_or_lhs = or_lhs_params.contains(&s);
             let member_reads = member_reads.remove(&s).unwrap_or_default();
-            out.insert(s, BackwardInferenceHints { baseline, narrowing, caller, used_as_or_lhs, member_reads });
+            out.insert(s, BackwardInferenceHints {
+                baseline, narrowing, caller, used_as_or_lhs, member_reads,
+                passed_to_generic: passed_to_generic.contains(&s),
+            });
         }
 
         // Promote narrowing-only params that have nilability evidence.
@@ -4889,6 +4925,7 @@ impl<'a> Analysis<'a> {
                 caller,
                 used_as_or_lhs: has_nil_evidence,
                 member_reads: member_reads.remove(&s).unwrap_or_default(),
+                passed_to_generic: passed_to_generic.contains(&s),
             });
         }
 
@@ -5541,6 +5578,10 @@ struct BackwardInferenceHints {
     used_as_or_lhs: bool,
     /// The members the body reads on the argument.
     member_reads: Vec<MemberRead>,
+    /// A call passes the argument where a generic parameter binds to it
+    /// (`table.insert(list, param)`, `Mixin(param, M)`): its type can follow it
+    /// into the call's result or another argument.
+    passed_to_generic: bool,
 }
 
 /// A read of a member on a candidate param (`pin:OnReleased()`).
@@ -5558,6 +5599,45 @@ impl BackwardInferenceSignature {
     fn param_at(&self, arg_i: usize) -> Option<&BackwardInferenceSigParam> {
         self.params.get(arg_i).and_then(|p| p.as_ref())
     }
+}
+
+/// Whether the value a name reference (`name_ref`) reads goes on past the
+/// expression reading it — to an assignment, a constructor entry (whose `[key]`
+/// types the table's keys), a return or loop iterator — directly or through
+/// parentheses and an operand of `or` / `and` that can be the result. A member
+/// access on it, a call of or with it, a comparison, another operator, a test or
+/// an index key keeps it where it is.
+fn read_value_escapes(name_ref: crate::syntax::SyntaxNode<'_>) -> bool {
+    use crate::syntax::{NodeOrToken, SyntaxKind};
+    let mut child = name_ref;
+    while let Some(parent) = child.parent() {
+        match parent.kind() {
+            SyntaxKind::GroupedExpression => {}
+            SyntaxKind::BinaryExpression => {
+                let op = parent.children_with_tokens().find_map(|c| match c {
+                    NodeOrToken::Token(t) if !t.kind().is_trivia() => Some(t.kind()),
+                    _ => None,
+                });
+                let is_lhs = parent.children().next().is_some_and(|lhs| lhs.text_range() == child.text_range());
+                // `x or y` is either operand; `x and y` is `y` when `x` is truthy.
+                match op {
+                    Some(SyntaxKind::OrKeyword) => {}
+                    Some(SyntaxKind::AndKeyword) if !is_lhs => {}
+                    _ => return false,
+                }
+            }
+            SyntaxKind::ExpressionList => return !matches!(
+                parent.parent().map(|p| p.kind()),
+                Some(SyntaxKind::FunctionCall | SyntaxKind::MethodCall | SyntaxKind::ArgumentList)
+            ),
+            SyntaxKind::DotAccess | SyntaxKind::MethodCall | SyntaxKind::BracketAccess | SyntaxKind::FunctionCall
+            | SyntaxKind::ArgumentList | SyntaxKind::UnaryExpression | SyntaxKind::Condition
+            | SyntaxKind::RepeatUntilLoop => return false,
+            _ => return true,
+        }
+        child = parent;
+    }
+    true
 }
 
 fn record_hint(

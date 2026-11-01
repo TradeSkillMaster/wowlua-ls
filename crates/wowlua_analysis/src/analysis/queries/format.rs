@@ -161,18 +161,13 @@ const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
 /// placeholder — a scan-injected existence-only self-field (`self.x =
 /// LibStub(..):New()`, whose chained RHS the coarse workspace scan can't type),
 /// or an `Any` inherited from a parent class — so the field's real type is
-/// whatever its `expr`/`extra_exprs` resolve to. Resolves those, ignoring the
-/// `Any`/`Nil` placeholders themselves, and re-adds `Any` to `out` iff nothing
-/// more specific resolved OR, for an author's `any`, a reassignment was
-/// unresolvable while a specific type did (the field could still hold any type;
-/// the scan's placeholder yields to the writes that resolve). Returns whether a specific
-/// (non-`Any`/`Nil`) type was found. Mirrors resolve.rs's FieldAccess `is_any`.
+/// whatever its `expr`/`extra_exprs` resolve to, by the rule the fixpoint's
+/// `resolve_field_access` shares ([`crate::analysis::AnyFieldWrites`]). Returns
+/// whether that is more than `any`.
 ///
 /// Single source of truth for the two query-side `Any`-field callers:
 /// `resolve_expr_type_impl` (passes the live `visited`/`depth`) and
 /// `AnalysisResult::refine_any_field_type` (passes a fresh set at depth 0).
-/// resolve.rs keeps its own copy — it runs on the mutable fixpoint resolver
-/// (`self.resolve_expr`), not this read-only `resolve_expr_type_impl`.
 fn refine_any_field_exprs(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
@@ -181,24 +176,16 @@ fn refine_any_field_exprs(
     visited: &mut HashSet<ExprId>,
     depth: usize,
 ) -> bool {
-    let mut found_specific = false;
-    let mut has_unresolvable = false;
+    let mut writes = crate::analysis::AnyFieldWrites::for_field(fi.scan_inferred(), &fi.extra_exprs);
     for eid in std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()) {
-        match resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
-            Some(vt) if !matches!(vt, ValueType::Any | ValueType::Nil) => {
-                if !out.contains(&vt) { out.push(vt); }
-                found_specific = true;
-            }
-            Some(_) => {}
-            None => has_unresolvable = true,
-        }
+        writes.add(ir, eid, resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1));
     }
-    let keep_any = !found_specific
-        || (has_unresolvable && !fi.extra_exprs.is_empty() && !fi.scan_inferred());
-    if keep_any && !out.contains(&ValueType::Any) {
-        out.push(ValueType::Any);
+    let types = writes.into_types();
+    let refined = types.iter().any(|vt| !matches!(vt, ValueType::Any));
+    for vt in types {
+        if !out.contains(&vt) { out.push(vt); }
     }
-    found_specific
+    refined
 }
 
 /// Query-side (read-only) entry to the shared [`crate::analysis::enriched_class_field`]

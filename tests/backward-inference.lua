@@ -1190,23 +1190,80 @@ describeMixedValue(anyValues.first)
 describeMixedValue("named")
 
 -- ── A member the body reads that the inferred class lacks ──
--- Passing `pin` where a `BiWidget` is expected suggests that class, but a read
--- of a member it doesn't have (a mixin's method) says the argument is more than
--- a `BiWidget`: the param stays untyped instead of flagging the body's own read.
+-- Passing `pin` where a `BiWidget` is expected types it `BiWidget`, but a read of
+-- a member that class doesn't have (a mixin's method) says the argument is more
+-- than a `BiWidget`: that read isn't flagged, and the class's members still type
+-- the reads of them.
 ---@class BiWidget
 local BiWidget = {}
 function BiWidget:Hide() end
+---@return string
+function BiWidget:GetName() return "" end
 
 ---@param widget BiWidget
 local function hideWidget(widget) widget:Hide() end
 
 local function releasePin(pin)
---                        ^ hover: (param) pin: ?
+--                        ^ hover: (param) pin: BiWidget
     hideWidget(pin)
     pin:OnReleased()
+    local name = pin:GetName()
+    --    ^ hover: (local) name: string
+    return name
 end
 
--- Reads of the class's own members, and guarded reads, keep the inference.
+-- Unless the argument goes past the body's reads of it, where the narrower type
+-- would follow it: assigned, stored in a table, returned, passed where a generic
+-- binds to it, or read in a nested function. Those params stay untyped.
+local function aliasPin(pin)
+--                      ^ hover: (param) pin: ?
+    hideWidget(pin)
+    pin:OnReleased()
+    local p = pin
+    p:OnReleased()
+end
+
+local function storePin(pin)
+--                      ^ hover: (param) pin: ?
+    hideWidget(pin)
+    pin:OnReleased()
+    local holder = { pin = pin }
+    holder.pin:OnReleased()
+end
+
+local function returnPin(pin)
+--                       ^ hover: (param) pin: ?
+    hideWidget(pin)
+    pin:OnReleased()
+    return pin
+end
+local returned = returnPin(BiWidget)
+returned:OnReleased()
+
+---@generic T
+---@param v T
+---@return T
+local function keepValue(v) return v end
+
+local function keepPin(pin)
+--                     ^ hover: (param) pin: ?
+    hideWidget(pin)
+    pin:OnReleased()
+    local kept = keepValue(pin)
+    kept:OnReleased()
+end
+
+---@param fn function
+local function runLater(fn) fn() end
+
+local function laterPin(pin)
+--                      ^ hover: (param) pin: ?
+    hideWidget(pin)
+    pin:OnReleased()
+    runLater(function() pin:OnReleased() end)
+end
+
+-- Reads of the class's own members, and guarded reads, are checked as usual.
 local function resetPin(pin)
 --                      ^ hover: (param) pin: BiWidget
     hideWidget(pin)
@@ -1214,9 +1271,9 @@ local function resetPin(pin)
     if pin.OnReset then pin:OnReset() end
 end
 
--- Only reads of the argument count: not through a reassignment, nor after a
--- `@cast` saying the value has more members. A narrowing still reads it, and so
--- does a merge after a conditional reassignment.
+-- Only reads of the argument are left alone: not through a reassignment, nor
+-- after a `@cast` saying the value has more members. A narrowing still reads it,
+-- and so does a merge after a conditional reassignment.
 ---@class BiParent
 local BiParent = {}
 function BiParent:Show() end
@@ -1249,14 +1306,14 @@ local function castRegion(region)
 end
 
 local function narrowPin(pin)
---                       ^ hover: (param) pin: ?
+--                       ^ hover: (param) pin: BiWidget
     hideWidget(pin)
     ---@cast pin -nil
     pin:OnReleased()
 end
 
 local function fallbackPin(pin, fallback)
---                         ^ hover: (param) pin: ?
+--                         ^ hover: (param) pin: BiWidget
     if fallback then
         pin = fallback
     end
@@ -1270,7 +1327,7 @@ end
 local function greetOpts(opts) return opts.name end
 
 local function greetExtra(o)
---                        ^ hover: (param) o: ?
+--                        ^ hover: (param) o: {
     greetOpts(o)
     return o.extra
 end
@@ -1287,7 +1344,7 @@ function BiB:Hide() end
 local function hideEither(w) w:Hide() end
 
 local function releaseEither(p)
---                           ^ hover: (param) p: ?
+--                           ^ hover: (param) p: BiA | BiB
     hideEither(p)
     p:OnReleased()
 end

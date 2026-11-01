@@ -344,7 +344,7 @@ pub fn receiver_tables(ir: &Ir, t: &ValueType, receiver: ExprId, is_call: impl F
 ///      condition probed the same path. Only accesses whose dotted path *exactly*
 ///      matches a probed path are suppressed, so a *deeper* access on a
 ///      now-known field (`if o.cfg then o.cfg.typo end`) is still checked.
-pub fn collect_membership_suppressions(tree: &SyntaxTree) -> HashSet<u32> {
+fn collect_membership_suppressions(tree: &SyntaxTree) -> HashSet<u32> {
     let mut suppress = HashSet::default();
     for node in SyntaxNode::new_root(tree).descendants() {
         match node.kind() {
@@ -661,6 +661,9 @@ impl DiagnosticPass for UndefinedField {
             // `self` is an open mixin.
             if base_chain_is_open_mixin(analysis, *table) { continue; }
             if tables_have_member(&analysis.ir, &table_indices, field) { continue; }
+            // A member the type backward inference gave a param lacks: the argument
+            // is more than that type.
+            if analysis.ir.reads_beyond_inferred_params.values().any(|reads| reads.contains(start)) { continue; }
             // Only emit when at least one table declares its whole field set.
             let Some(named_idx) = declaring_table(&analysis.ir, &table_indices) else {
                 // Closed-record fallback: a plain file-local table whose entire

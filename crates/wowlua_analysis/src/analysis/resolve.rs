@@ -2730,15 +2730,33 @@ impl<'a> Analysis<'a> {
             }
             let Some(mut current_table) = current_table else { continue };
 
-            // Walk intermediates to find the actual target table
+            // Walk intermediates to the tables the written field goes on: the last
+            // one's, or every member of a union or intersection it holds.
             let mut resolved = true;
+            let mut targets = vec![current_table];
+            // The last intermediate is typed by this file's writes over the
+            // workspace scan's `any` for it.
+            let mut via_scan_any = false;
             for intermediate in &inj.intermediates {
                 // Extract field data without holding a borrow on self
                 let field_data = self.ir.get_field(current_table, intermediate)
-                    .map(|fi| (fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
-                let Some((annotation, expr, extras)) = field_data else {
+                    .map(|fi| (fi.annotation.clone(), fi.expr, fi.extra_exprs.clone(), fi.scan_inferred()));
+                let Some((annotation, expr, extras, scan_inferred)) = field_data else {
                     resolved = false;
                     break;
+                };
+                // The workspace scan's `any` yields to this file's writes, as when
+                // the field is read (`self.Panel.x = v` after `self.Panel = panel`).
+                via_scan_any = scan_inferred && matches!(annotation, Some(ValueType::Any));
+                let annotation = if via_scan_any {
+                    let mut writes = super::AnyFieldWrites::for_field(true, &extras);
+                    for e in std::iter::once(expr).chain(extras.iter().copied()) {
+                        let vt = self.resolve_expr(e);
+                        writes.add(&self.ir, e, vt);
+                    }
+                    Some(ValueType::make_union(writes.into_types()))
+                } else {
+                    annotation
                 };
                 let table_type = annotation.or_else(|| {
                     // Mirror FieldAccess resolution: if there are reassignments and the
@@ -2768,47 +2786,62 @@ impl<'a> Analysis<'a> {
                     }
                     if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
                 });
-                match table_type {
-                    Some(ValueType::Table(Some(idx))) => current_table = idx,
+                targets = match table_type {
+                    Some(ValueType::Table(Some(idx))) => vec![idx],
                     Some(ValueType::Union(ref types)) | Some(ValueType::Intersection(ref types)) => {
-                        if let Some(idx) = types.iter().find_map(|t| match t {
+                        types.iter().filter_map(|t| match t {
                             ValueType::Table(Some(idx)) => Some(*idx),
                             _ => None,
-                        }) {
-                            current_table = idx;
-                        } else { resolved = false; break; }
+                        }).collect()
                     }
-                    _ => { resolved = false; break; }
-                }
+                    _ => Vec::new(),
+                };
+                let Some(&first) = targets.first() else { resolved = false; break };
+                current_table = first;
             }
             if !resolved { continue; }
             if inj.bracket_key && self.ir.is_element_write(current_table, &inj.field_name) { continue; }
 
-            // Add field to the correct target table
-            if !self.ir.has_field(current_table, &inj.field_name) {
-                let deep_vis = if inj.root_name == "self" {
-                    crate::annotations::default_visibility_for_name(&inj.field_name, self.implicit_protected_prefix)
-                } else {
-                    crate::annotations::Visibility::Public
-                };
-                let fi = FieldInfo {
-                    expr: inj.expr_id,
-                    extra_exprs: Vec::new(),
-                    visibility: deep_vis,
-                    annotation: None,
-                    annotation_text: None,
-                    annotation_type_raw: None,
-                    lateinit: false,
-                    def_range: None,
-                    flavor_guard: 0,
-                    description: None,
-                    from_scan: false,
-                };
-                if !current_table.is_external() {
-                    self.ir.tables[current_table.val()].fields.insert(inj.field_name, fi);
-                } else {
-                    self.ir.insert_overlay_field(current_table, inj.field_name, fi);
-                }
+            // A member the value already has gets no second one: the write only
+            // types one the workspace scan gave `any`, as a direct write does.
+            if let Some(&holder) = targets.iter().find(|&&t| self.ir.has_field(t, &inj.field_name)) {
+                self.ir.add_scan_any_field_write(holder, &inj.field_name, inj.expr_id);
+                continue;
+            }
+            // A new member goes on the one table the value is, else on a union's or
+            // intersection's table of this file or one that is no class (a saved
+            // variable's). Never on another file's class (a stub's `Frame`) through
+            // one member (`Frame & Mixin`) or through a field only this file's
+            // writes type: every value of that class here would get it.
+            let takes_member = |t: TableIndex| !t.is_external() || self.table(t).class_name.is_none();
+            let target = if targets.len() == 1 && (!via_scan_any || takes_member(current_table)) {
+                Some(current_table)
+            } else {
+                targets.iter().copied().find(|&t| takes_member(t))
+            };
+            let Some(target) = target else { continue };
+            let deep_vis = if inj.root_name == "self" {
+                crate::annotations::default_visibility_for_name(&inj.field_name, self.implicit_protected_prefix)
+            } else {
+                crate::annotations::Visibility::Public
+            };
+            let fi = FieldInfo {
+                expr: inj.expr_id,
+                extra_exprs: Vec::new(),
+                visibility: deep_vis,
+                annotation: None,
+                annotation_text: None,
+                annotation_type_raw: None,
+                lateinit: false,
+                def_range: None,
+                flavor_guard: 0,
+                description: None,
+                from_scan: false,
+            };
+            if !target.is_external() {
+                self.ir.tables[target.val()].fields.insert(inj.field_name, fi);
+            } else {
+                self.ir.insert_overlay_field(target, inj.field_name, fi);
             }
         }
     }
@@ -4157,49 +4190,28 @@ impl<'a> Analysis<'a> {
                 if let Some(ref ann_vt) = ann_vt {
                     if is_any {
                         // When the annotation is Any (inherited from a parent
-                        // class), prefer concrete types from the primary expr
-                        // and any extra_exprs (child-class assignments).
-                        let primary = field_primary;
-                        let extras: Vec<ExprId> = field_extras.clone();
-                        let has_extras = !extras.is_empty();
-                        let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
-                        let mut found_specific = false;
-                        let mut has_unresolvable = false;
-                        // The scan's `any`, read while resolving one of its own writes
-                        // (`t.f = t.f or X()`): unknown for now, as in the unannotated
-                        // branch below, so the placeholder doesn't stick.
-                        let mut unsettled = false;
-                        for expr_id in all_exprs {
+                        // class, or the workspace scan's), prefer concrete types
+                        // from the primary expr and any extra_exprs (child-class
+                        // assignments), by the rule both engines share.
+                        let mut writes = super::AnyFieldWrites::for_field(scan_inferred, &field_extras);
+                        for expr_id in std::iter::once(field_primary).chain(field_extras.iter().copied()) {
+                            // The scan's `any`, read while resolving one of its own writes
+                            // (`t.f = t.f or X()`): unknown for now, as in the unannotated
+                            // branch below, so the placeholder doesn't stick.
                             if self.expr_in_progress(expr_id) {
-                                unsettled |= scan_inferred;
+                                writes.skip_in_progress();
                                 continue;
                             }
-                            if let Some(vt) = self.resolve_expr(expr_id) {
-                                if !matches!(vt, ValueType::Any | ValueType::Nil)
-                                    && !field_types.contains(&vt) {
-                                        field_types.push(vt);
-                                        found_specific = true;
-                                    }
-                            } else {
-                                has_unresolvable = true;
-                                if scan_inferred {
-                                    self.wait_on_local_write(expr_id);
-                                }
+                            let resolved = self.resolve_expr(expr_id);
+                            if resolved.is_none() && scan_inferred {
+                                self.wait_on_local_write(expr_id);
                             }
+                            writes.add(&self.ir, expr_id, resolved);
                         }
-                        // If the field was assigned multiple times and
-                        // any assignment couldn't be resolved, the field
-                        // could hold any type — keep as Any.  Uses
-                        // has_extras (not skip_primary) because in this
-                        // branch the primary is always Any, not Nil. The `any`
-                        // the workspace scan inferred yields to the writes that
-                        // resolve, as an unannotated field's does.
-                        if has_unresolvable && has_extras && !scan_inferred {
-                            if !field_types.contains(ann_vt) {
-                                field_types.push(ann_vt.clone());
+                        for vt in writes.into_types() {
+                            if !field_types.contains(&vt) {
+                                field_types.push(vt);
                             }
-                        } else if !found_specific && !unsettled && !field_types.contains(ann_vt) {
-                            field_types.push(ann_vt.clone());
                         }
                     } else if !field_types.contains(ann_vt) {
                         // Enrich a class annotation from the field's own local

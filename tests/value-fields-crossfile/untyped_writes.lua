@@ -53,4 +53,21 @@ function Host:Reset()
     self.count = 0
 end
 
+-- Unless all it says is "a table" (`x or {}`, `x` unknown): its members stay `any`.
+local saved = {}
+
+function Host:LoadOptions(profile)
+    self.options = saved[profile]
+end
+
+function Host:InitOptions(profile)
+    self.options = saved[profile] or {}
+end
+
+function Host:ShowTimer()
+    local enabled = self.options.showTimer and not self.options.hideTimer
+    --    ^ hover: (local) enabled: boolean?
+    return enabled
+end
+
 return Host

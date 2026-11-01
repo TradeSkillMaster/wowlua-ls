@@ -158,8 +158,8 @@ end
 -- ── Guarded read on a backward-inferred param ────────────────────────────────
 -- `widget` is inferred `LocalWidget` from the call, but the guard can't narrow
 -- it before then (a `GetObjectType` of its own beside the API's), so the read
--- under it is of the argument: `LocalWidget` lacks `SetLabel`, and the param
--- stays untyped rather than flagging it.
+-- under it is of the argument: `LocalWidget` lacks `SetLabel`, and the read
+-- isn't flagged.
 
 ---@class LocalWidget
 local LocalWidget = {}
@@ -176,7 +176,7 @@ function LocalLabel:SetLabel(text) end
 local function hideLocalWidget(w) w:Hide() end
 
 local function test_inferred_guarded(widget)
---                                   ^ hover: (param) widget: ?
+--                                   ^ hover: (param) widget: LocalWidget
     hideLocalWidget(widget)
     if widget:GetObjectType() == "LocalLabel" then
         widget:SetLabel("x")

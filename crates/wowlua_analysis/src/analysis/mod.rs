@@ -232,6 +232,91 @@ pub(crate) fn map_entries_differ(types: &[ValueType]) -> bool {
     entries.len() > 1 && !entries.iter().all(|t| matches!(t, ValueType::Table(_) | ValueType::TableShape(_)))
 }
 
+/// What the assignment exprs (primary + extras) of a field annotated `any` resolve
+/// to, each resolved by the caller's own resolver — the fixpoint's
+/// `resolve_field_access` and `resolve_deep_field_injections`, or the query side's
+/// `refine_any_field_exprs` — so the engines share one rule ([`Self::into_types`]).
+pub(crate) struct AnyFieldWrites {
+    /// The `any` is the one the workspace scan inferred (`FieldInfo::scan_inferred`),
+    /// not an author's.
+    scan_inferred: bool,
+    /// The field is assigned more than once (`FieldInfo::extra_exprs`).
+    has_extras: bool,
+    /// The types the writes resolved to, `any` and `nil` aside.
+    types: Vec<ValueType>,
+    /// One of `types` says more than "a table" (`Ir::is_shapeless_table_type`).
+    informative: bool,
+    /// One of this file's writes (the workspace scan's own exprs are external)
+    /// resolved to `nil`, a `nil` literal (a reset the scan skips) aside.
+    local_nil: bool,
+    /// One of this file's writes resolved to `any`.
+    local_any: bool,
+    /// A write didn't resolve.
+    unresolvable: bool,
+    /// A write of the scan's `any` is being resolved (`t.f = t.f or X()` reading
+    /// the field): unknown for now.
+    unsettled: bool,
+}
+
+impl AnyFieldWrites {
+    pub(crate) fn for_field(scan_inferred: bool, extras: &[ExprId]) -> Self {
+        Self {
+            scan_inferred,
+            has_extras: !extras.is_empty(),
+            types: Vec::new(),
+            informative: false,
+            local_nil: false,
+            local_any: false,
+            unresolvable: false,
+            unsettled: false,
+        }
+    }
+
+    pub(crate) fn add(&mut self, ir: &Ir, expr: ExprId, resolved: Option<ValueType>) {
+        match resolved {
+            None => self.unresolvable = true,
+            Some(ValueType::Nil) => {
+                self.local_nil |= !expr.is_external() && !matches!(ir.expr(expr), Expr::Literal(ValueType::Nil));
+            }
+            Some(ValueType::Any) => self.local_any |= !expr.is_external(),
+            Some(vt) => {
+                self.informative |= !ir.is_shapeless_table_type(&vt);
+                if !self.types.contains(&vt) {
+                    self.types.push(vt);
+                }
+            }
+        }
+    }
+
+    /// A write left out because it is being resolved.
+    pub(crate) fn skip_in_progress(&mut self) {
+        self.unsettled |= self.scan_inferred;
+    }
+
+    /// The field's types. An author's `any` yields to the types its writes resolve
+    /// to, and stays beside them when a reassignment doesn't resolve. The `any` the
+    /// workspace scan inferred yields to the writes that resolve, unless all they
+    /// say is "a table" while another doesn't (`x or {}`, `x` unknown: every member
+    /// read would be unknown); to `nil` when that is all they resolve to (a field
+    /// this file only clears, or copies from a `nil` one); and to nothing while one
+    /// of them is unsettled.
+    pub(crate) fn into_types(self) -> Vec<ValueType> {
+        let mut types = self.types;
+        if !self.scan_inferred {
+            if types.is_empty() || (self.unresolvable && self.has_extras) {
+                types.push(ValueType::Any);
+            }
+        } else if !self.informative && !self.unsettled {
+            if self.unresolvable || self.local_any {
+                types = vec![ValueType::Any];
+            } else if types.is_empty() {
+                types.push(if self.local_nil { ValueType::Nil } else { ValueType::Any });
+            }
+        }
+        types
+    }
+}
+
 fn scope_set_contains<T: Eq + std::hash::Hash>(
     map: &HashMap<ScopeIndex, HashSet<T>>,
     scopes: &[Scope],
@@ -871,6 +956,11 @@ pub struct Ir {
     /// type, and maps held in a field, which their writes don't type
     /// (`collect_deferred_element_writes`).
     pub unknown_element_tables: HashSet<TableIndex>,
+    /// The member reads on each backward-inferred param that its inferred type
+    /// lacks (`pin:OnReleased()` after passing `pin` where a `Frame` is expected),
+    /// as their names' starts: the argument is more than that type, so
+    /// `undefined-field` leaves them alone.
+    pub reads_beyond_inferred_params: HashMap<SymbolIndex, Vec<u32>>,
     /// The `[k] = v` constructors among those written over the scan's type
     /// (`mark_unknown_element_tables`), or to a field other files read through the
     /// table-field harvest (`mark_harvested_field_maps`). Their writes type their
@@ -2209,18 +2299,24 @@ impl Ir {
         }
     }
 
+    /// Whether `vt` says no more than "a table": a bare `table`, or a shapeless one
+    /// (`TableInfo::is_shapeless`, a `{}`) this file adds no fields to.
+    pub fn is_shapeless_table_type(&self, vt: &ValueType) -> bool {
+        match vt {
+            ValueType::Table(None) => true,
+            ValueType::Table(Some(idx)) => self.table(*idx).is_shapeless()
+                && self.overlay_fields.get(idx).is_none_or(|fields| fields.is_empty()),
+            _ => false,
+        }
+    }
+
     /// A table type the workspace scan gave a field that says no more than "a
     /// table": a bare placeholder (`is_bare_scan_placeholder`), or the empty
     /// anonymous table it builds for `ns.list = {}` when no file adds fields or
     /// elements to it — this file's included (`overlay_fields`).
     pub fn is_shapeless_scan_table(&self, vt: &ValueType) -> bool {
-        if self.is_bare_scan_placeholder(vt) {
-            return true;
-        }
-        let ValueType::Table(Some(idx)) = vt else { return false };
-        idx.is_external()
-            && self.table(*idx).is_shapeless()
-            && self.overlay_fields.get(idx).is_none_or(|fields| fields.is_empty())
+        self.is_bare_scan_placeholder(vt)
+            || (matches!(vt, ValueType::Table(Some(idx)) if idx.is_external()) && self.is_shapeless_table_type(vt))
     }
 
     /// Whether writing `rhs` to field `fi` (`table.field`) types the field in this file over a
@@ -2889,6 +2985,31 @@ impl Ir {
     /// Get a mutable reference to an overlay field.
     pub fn get_overlay_field_mut(&mut self, table_idx: TableIndex, field_name: &str) -> Option<&mut FieldInfo> {
         self.overlay_fields.get_mut(&table_idx)?.get_mut(field_name)
+    }
+
+    /// Add `write` to the field `field_name` of `table` (its own or a parent's)
+    /// when the workspace scan typed it `any`, so this file's write types it
+    /// (`AnyFieldWrites`): to the field itself when its table is this file's, else
+    /// to the per-file overlay copy of it.
+    pub(super) fn add_scan_any_field_write(&mut self, table: TableIndex, field_name: &str, write: ExprId) {
+        let Some(owner) = std::iter::once(table).chain(self.table(table).parent_classes.iter().copied())
+            .find(|&t| self.overlay_fields.get(&t).is_some_and(|fields| fields.contains_key(field_name))
+                || self.table(t).fields.contains_key(field_name))
+        else { return };
+        let Some(mut fi) = self.get_field_direct(owner, field_name)
+            .filter(|fi| fi.scan_inferred() && matches!(fi.annotation, Some(ValueType::Any)))
+            .cloned()
+        else { return };
+        if !owner.is_external() {
+            if let Some(own) = self.tables[owner.val()].fields.get_mut(field_name) {
+                own.extra_exprs.push(write);
+            }
+        } else if let Some(overlay) = self.get_overlay_field_mut(owner, field_name) {
+            overlay.extra_exprs.push(write);
+        } else {
+            fi.extra_exprs.push(write);
+            self.insert_overlay_field(owner, field_name.to_string(), fi);
+        }
     }
 
     // ── Methods shared by Analysis and AnalysisResult ────────────────────────
@@ -4028,6 +4149,7 @@ impl<'a> Analysis<'a> {
                 pending_bracket_assigns: Vec::new(),
                 deferred_element_writes: Vec::new(),
                 unknown_element_tables: HashSet::default(),
+                reads_beyond_inferred_params: HashMap::default(),
                 scanned_field_maps: HashSet::default(),
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),

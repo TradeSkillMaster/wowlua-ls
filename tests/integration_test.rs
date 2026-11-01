@@ -6359,7 +6359,7 @@ fn value_fields_crossfile() {
         "toolkit_user.lua", "bossmod.lua", "bossmod_user.lua", "saved_init.lua", "saved_user.lua",
         "gearview_user.lua", "store_user.lua", "frames.lua", "frames_user.lua",
         "locale_user.lua", "locale_reader.lua", "node_info_user.lua", "node_log.lua", "lazy_panel.lua",
-        "deferred_child.lua", "untyped_writes.lua",
+        "deferred_child.lua", "untyped_writes.lua", "class_local_resets.lua", "class_local_frame_child.lua",
     ] {
         run_annotation_tests(&TestConfig {
             lua_file: &format!("tests/value-fields-crossfile/{lua_file}"),

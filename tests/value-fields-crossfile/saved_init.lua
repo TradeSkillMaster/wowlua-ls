@@ -82,3 +82,22 @@ local function LayoutMigrated()
     return SAVED_LAYOUT.migrated, MigrateLayout
     --                  ^ hover: (field) migrated: ?  def: None
 end
+
+-- A member written through a field holding a saved variable, which the
+-- workspace scan types `any` and this file's write types, goes on that table.
+---@class SavedHolder
+local SavedHolder = {}
+
+function SavedHolder:Load()
+    SAVED_HOLDER = SAVED_HOLDER or {}
+    self.db = SAVED_HOLDER
+end
+
+function SavedHolder:Init()
+    self.db.layout = { width = 1 }
+end
+
+function SavedHolder:Width()
+    return self.db.layout.width
+    --                    ^ hover: (field) width: number
+end
