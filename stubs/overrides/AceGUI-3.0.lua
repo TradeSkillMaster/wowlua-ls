@@ -84,16 +84,20 @@ function AceGUI:GetWidgetCount(type) end
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-gui-3-0#title-7)
 function AceGUI:GetWidgetVersion(type) end
 
----@param widget AceGUIWidget
+---@generic T : AceGUIContainer
+---@param widget T
+---@return T
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-gui-3-0#title-8)
 function AceGUI:RegisterAsContainer(widget) end
 
----@param widget AceGUIWidget
+---@generic T : AceGUIWidget
+---@param widget T
+---@return T
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-gui-3-0#title-9)
 function AceGUI:RegisterAsWidget(widget) end
 
 ---@param Name string
----@param LayoutFunc function
+---@param LayoutFunc fun(content: Frame, children: AceGUIWidget[])
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-gui-3-0#title-10)
 function AceGUI:RegisterLayout(Name, LayoutFunc) end
 
@@ -115,7 +119,7 @@ function AceGUI:SetFocus(widget) end
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/ace-gui-3-0-widgets)
 ---@class AceGUIWidget
 ---@field public type string
----@field public frame Frame
+---@field public frame Frame&{obj: self}
 ---@field public userdata table
 ---@field protected events table<string,function>
 ---@field protected width? string|number
@@ -219,7 +223,7 @@ function AceGUIWidget:IsReleasing() end
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/ace-gui-3-0-widgets)
 ---@class AceGUIContainer : AceGUIWidget
 ---@field public children AceGUIWidget[]
----@field public content Frame
+---@field public content Frame&{obj: self}
 local AceGUIContainer = {}
 
 ---@param widget AceGUIWidget
