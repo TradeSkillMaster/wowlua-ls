@@ -121,6 +121,10 @@ function AceGUI:SetFocus(widget) end
 ---@field public type string
 ---@field public frame Frame&{obj: self}
 ---@field public userdata table
+---@field public OnRelease? fun(self: self)
+---@field public OnWidthSet? fun(self: self, width: number)
+---@field public OnHeightSet? fun(self: self, height: number)
+---@field public LayoutFinished? fun(self: self, width: number, height: number)
 ---@field protected events table<string,function>
 ---@field protected width? string|number
 ---@field protected height? string|number
