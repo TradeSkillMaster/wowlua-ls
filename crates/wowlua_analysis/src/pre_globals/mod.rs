@@ -518,6 +518,21 @@ pub struct PreResolvedGlobals {
     /// (`build_per_addon_tables`). Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_table_fields: HashMap<ExprId, Vec<PathBuf>>,
+    /// Fields of the addon namespace and of workspace global tables, at any depth,
+    /// keyed by the field's coarse expr like `deferred_table_fields`: the files
+    /// writing each. A read in another file takes the union of the values those
+    /// files write there (`analysis/deferred.rs`, `Ir::ensure_slot_overlay`).
+    /// Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub deferred_slot_fields: HashMap<ExprId, crate::analysis::deferred::DeferredSlot>,
+    /// Workspace globals assigned in files, likewise by their scope-0 symbol
+    /// (`Ir::ensure_symbol_overlay`). Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub deferred_slot_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredSlot>,
+    /// The paths of the workspace's cross-file tables (`ext_table_paths`), computed
+    /// on the first slot harvest. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    slot_table_paths: std::sync::OnceLock<crate::analysis::queries::TablePaths>,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
     /// edits are picked up immediately. The LSP layer owns the map (updated on
@@ -2958,6 +2973,34 @@ impl BuildContext {
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
         }
+        // Fields written through another file's table global (`ForeignField`): their
+        // existence, `any` until what their files write types them.
+        for g in globals {
+            let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
+            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path) else { continue };
+            if shared::add_existence_field(&mut self.tables, &mut self.exprs, leaf_idx, field_name, g, self.implicit_protected_prefix) {
+                self.existence_fields.insert((leaf_idx, field_name.clone()));
+            }
+            record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
+        }
+    }
+
+    /// The registry of the tables slots live on (`shared::SlotTables`).
+    fn slot_tables(&self) -> shared::SlotTables<'_> {
+        shared::SlotTables {
+            tables: &self.tables,
+            exprs: &self.exprs,
+            symbols: &self.symbols,
+            non_class_tables: &self.non_class_tables,
+            stub_globals: None,
+            sub_tables: &self.sub_tables,
+            ctor_entries: &self.ctor_entries,
+            call_field_methods: &self.call_field_methods,
+            addon_table_idx: self.addon_table_idx,
+            scope0_symbols: &self.scope0_symbols,
+            stub_symbols_end: 0,
+            deferred_call_globals: &self.deferred_call_globals,
+        }
     }
 
     fn resolve_inheritance(&mut self, external_classes: &[ClassDecl]) {
@@ -3547,6 +3590,9 @@ impl BuildContext {
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
             deferred_table_fields: HashMap::default(),
+            deferred_slot_fields: HashMap::default(),
+            deferred_slot_globals: HashMap::default(),
+            slot_table_paths: Default::default(),
             document_overrides: Default::default(),
             project_configs: None,
         }
@@ -3621,6 +3667,12 @@ impl PreResolvedGlobals {
     #[inline] pub fn try_table(&self, idx: TableIndex) -> Option<&TableInfo> {
         if !idx.is_external() { return None; }
         self.tables.get(idx.ext_offset())
+    }
+
+    /// The paths of the workspace's cross-file tables (`ext_table_paths`), which a
+    /// slot harvest keys a file's writes by.
+    pub fn slot_table_paths(&self) -> &crate::analysis::queries::TablePaths {
+        self.slot_table_paths.get_or_init(|| crate::analysis::queries::ext_table_paths(self))
     }
 
     /// The class method named `name` that is annotated `@type-narrows` or
@@ -3957,6 +4009,9 @@ impl PreResolvedGlobals {
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
             deferred_table_fields: HashMap::default(),
+            deferred_slot_fields: HashMap::default(),
+            deferred_slot_globals: HashMap::default(),
+            slot_table_paths: Default::default(),
             document_overrides: Default::default(),
             project_configs: None,
         }
@@ -3985,7 +4040,7 @@ impl PreResolvedGlobals {
         addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
-        Self::build_cold(globals, external_classes, external_aliases, implicit_protected_prefix, addon_ns_class_files, callable_classes, true)
+        Self::build_cold(globals, external_classes, external_aliases, implicit_protected_prefix, addon_ns_class_files, callable_classes, false)
     }
 
     /// [`Self::build`] for the stub blob, whose own duplicate aliases stay
@@ -3995,7 +4050,7 @@ impl PreResolvedGlobals {
         classes: &[ClassDecl],
         aliases: &[AliasDecl],
     ) -> PreResolvedGlobals {
-        Self::build_cold(globals, classes, aliases, false, &HashMap::default(), &HashSet::default(), false)
+        Self::build_cold(globals, classes, aliases, false, &HashMap::default(), &HashSet::default(), true)
     }
 
     fn build_cold(
@@ -4005,14 +4060,14 @@ impl PreResolvedGlobals {
         implicit_protected_prefix: bool,
         addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
-        extend_aliases: bool,
+        stub_blob: bool,
     ) -> PreResolvedGlobals {
         let returns_enum_paths = crate::annotations::build_returns_enum_paths(globals);
         let external_classes = &*crate::annotations::apply_enum_calls(external_classes, &returns_enum_paths);
         let globals = &*crate::annotations::apply_enum_call_globals(globals, &returns_enum_paths);
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
-        ctx.extend_aliases = extend_aliases;
+        ctx.extend_aliases = !stub_blob;
         let mut class_field_paths = ClassFieldPaths::new(globals, external_classes);
         ctx.register_classes_and_aliases(external_classes, external_aliases);
         ctx.populate_class_fields(external_classes);
@@ -4031,7 +4086,13 @@ impl PreResolvedGlobals {
         // `build_global_entries`).
         ctx.resolve_nested_ctor_calls();
         ctx.settle_instance_tables();
+        // The stub blob's declarations are typed by their annotations; its slots
+        // aren't harvested.
+        let (deferred_slot_fields, deferred_slot_globals) =
+            if stub_blob { Default::default() } else { ctx.slot_tables().deferred_slots(globals) };
         let mut pg = ctx.finish();
+        pg.deferred_slot_fields = deferred_slot_fields;
+        pg.deferred_slot_globals = deferred_slot_globals;
         pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
         pg.returns_enum_paths = returns_enum_paths;
         // Two merge passes: (1) copy methods from addon ns sub-tables (ns.Foo fields)

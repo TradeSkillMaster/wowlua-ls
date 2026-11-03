@@ -735,6 +735,15 @@ impl ValueType {
         }
     }
 
+    /// Whether this is `any`, or a union or intersection with an `any` member.
+    pub fn contains_any(&self) -> bool {
+        match self {
+            ValueType::Any => true,
+            ValueType::Union(members) | ValueType::Intersection(members) => members.iter().any(ValueType::contains_any),
+            _ => false,
+        }
+    }
+
     /// Check if this type is or contains Nil.
     pub fn contains_nil(&self) -> bool {
         match self {
@@ -1019,6 +1028,19 @@ impl ValueType {
     /// and cause spurious downstream diagnostics.
     pub fn callable_or_unknown() -> ValueType {
         ValueType::Intersection(vec![ValueType::Function(None), ValueType::Table(None)])
+    }
+
+    /// This type with its literal types widened to their base type (`true` to
+    /// `boolean`, `"a"` to `string`, `1` to `number`): what a variable or field
+    /// written the literal holds.
+    pub fn widen_literals(&self) -> ValueType {
+        match self {
+            ValueType::Boolean(Some(_)) => ValueType::Boolean(None),
+            ValueType::String(Some(_)) => ValueType::String(None),
+            ValueType::NumberLiteral(_) => ValueType::Number,
+            ValueType::Union(members) => ValueType::make_union(members.iter().map(ValueType::widen_literals).collect()),
+            other => other.clone(),
+        }
     }
 }
 

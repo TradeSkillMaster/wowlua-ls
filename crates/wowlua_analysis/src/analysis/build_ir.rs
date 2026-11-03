@@ -1776,7 +1776,13 @@ impl<'a> Analysis<'a> {
         // Record nil-check site for the root symbol
         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
             self.referenced_symbols.insert(sym_idx);
-            let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
+            let version = self.ir.version_for_scope(sym_idx, scope_idx);
+            let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, version));
+            let root_token = ident.syntax().descendants_with_tokens()
+                .find_map(|c| c.into_token().filter(|t| t.kind() == SyntaxKind::Name));
+            if let Some(root_token) = root_token {
+                self.ir.write_root_versions.entry(u32::from(root_token.text_range().start())).or_insert(version);
+            }
             // Use the field name token's range for the diagnostic.
             // For parser2's DotAccess, the field Name token comes after Dot;
             // for old flat Identifier, it's the second Name token.
@@ -1833,8 +1839,56 @@ impl<'a> Analysis<'a> {
         // (rare branches with no produced IR), no narrowing.
         self.invalidate_and_field_derivations(names, scope_idx);
         if let Some(rhs_id) = narrow_rhs_expr_id {
+            self.record_target_value(ident, rhs_id, Self::write_is_annotated(&ctx, &target));
+            self.ir.field_write_targets.push((scope_idx, names.to_vec()));
             self.record_field_assignment_narrow_rhs(names, scope_idx, rhs_id);
         }
+    }
+
+    /// Record `value` as what the assignment target `ident` is written
+    /// (`Ir::target_values`), or that an author annotation types it
+    /// (`Ir::annotated_targets`), by the start of its last name, or of the string
+    /// key naming the field of a bracket target (`t["f"]`), a write of `f` too.
+    fn record_target_value(&mut self, ident: Identifier<'a>, value: ExprId, annotated: bool) {
+        let start = if ident.is_indexed_expression() {
+            let node = ident.syntax();
+            crate::ast::extract_bracket_string_key(node).and_then(|_| {
+                let mut in_brackets = false;
+                node.children_with_tokens().find_map(|c| match c {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                        in_brackets = true;
+                        None
+                    }
+                    NodeOrToken::Node(key) if in_brackets => Some(u32::from(key.text_range().start())),
+                    _ => None,
+                })
+            })
+        } else {
+            ident.syntax().descendants_with_tokens().filter_map(|c| match c {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(u32::from(t.text_range().start())),
+                _ => None,
+            }).last()
+        };
+        if let Some(start) = start {
+            if annotated {
+                self.ir.annotated_targets.insert(start);
+            } else {
+                self.ir.target_values.insert(start, value);
+            }
+        }
+    }
+
+    /// Whether an author annotation types the value `target` is written, as
+    /// `build_field_value` reads one: a `---@class`/`---@enum` or `---@type` on the
+    /// statement, one after the value, or one heading a table constructor.
+    fn write_is_annotated(ctx: &AssignCtx<'a, '_>, target: &AssignTarget<'a, '_>) -> bool {
+        let inline = || match target.expression {
+            _ if !ctx.trailing_types.is_empty() => ctx.trailing_types.get(target.index).is_some(),
+            Some(expr) => Self::extract_inline_type(expr.syntax()).is_some()
+                || matches!(expr, Expression::TableConstructor(tc) if Self::extract_table_constructor_type(tc.syntax()).is_some()),
+            None => false,
+        };
+        ctx.annotations.class.is_some() || ctx.annotations.var_type_at(target.index).is_some() || inline()
     }
 
     /// Lower a bracket-indexed field assignment (`self._data[k] = v`): the write
@@ -1848,6 +1902,10 @@ impl<'a> Analysis<'a> {
     ) {
         let AssignCtx { scope_idx, .. } = ctx;
         let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
+        // The field holding the element (`t.f` in `t.f[k] = v`) is read here.
+        if names.len() >= 2 {
+            self.ir.field_write_targets.push((scope_idx, names.to_vec()));
+        }
         if let Some(expr) = expressions.get(index) {
             let expr_id = self.lower_expression(expr, scope_idx);
             // Cache for multi-return if applicable
@@ -2222,6 +2280,22 @@ impl<'a> Analysis<'a> {
                     && let Some(fi) = self.ir.tables[cur_table.val()].fields.get_mut(field_name)
                 {
                     fi.extra_exprs.push(expr_id);
+                } else if inline_annotation.is_none()
+                    && cur_table.is_external()
+                    && self.ir.ext.table(cur_table).fields.get(field_name).is_some_and(|f| self.ir.writes_type_field(f))
+                    && self.ir.named_function(expr_id, 0).is_none()
+                {
+                    // A slot other files type by what their files write: this
+                    // file's writes type it here past the scan's value
+                    // (`Ir::is_slot_primary`), as on a namespace field's copy. A
+                    // function's signature crosses files on its own.
+                    if let Some(fi) = self.ir.get_overlay_field_mut(cur_table, field_name) {
+                        fi.extra_exprs.push(expr_id);
+                    } else {
+                        let mut fi = self.ir.ext.table(cur_table).fields[field_name.as_str()].clone();
+                        fi.extra_exprs.push(expr_id);
+                        self.ir.insert_overlay_field(cur_table, field_name.clone(), fi);
+                    }
                 } else if inline_annotation.is_none()
                     && self.ir.get_field(cur_table, field_name)
                         .is_some_and(|f| self.ir.write_types_shapeless_scan_field(f, cur_table, field_name, expr_id))
@@ -2660,7 +2734,7 @@ impl<'a> Analysis<'a> {
             assign, scope_idx, func_id, node, is_conditional,
             annotations: assign_annotations, flavor_guard: annotated_flavor_guard, ..
         } = ctx;
-        let AssignTarget { names, index, expression, expressions, identifiers_len, .. } = target;
+        let AssignTarget { ident, names, index, expression, expressions, identifiers_len, .. } = target;
         let root_name = &names[0];
         // Simple assignment: x = expr
         if let Some(Expression::Function(func)) = expression {
@@ -2679,6 +2753,7 @@ impl<'a> Analysis<'a> {
             self.apply_annotations(func_idx, scope_idx, assign.syntax());
             let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
             self.ir.set_type_source(symbol_idx, expr_id);
+            self.record_target_value(ident, expr_id, Self::write_is_annotated(&ctx, &target));
             if let Some(inner_block) = func.block() {
                 stack.push(Frame {
                     block: inner_block,
@@ -2752,6 +2827,7 @@ impl<'a> Analysis<'a> {
             self.forget_root_field_values(symbol_idx, scope_idx);
             if let Some(expr_id) = type_source {
                 self.ir.set_type_source(symbol_idx, expr_id);
+                self.record_target_value(ident, expr_id, Self::write_is_annotated(&ctx, &target));
                 // Track multi-return siblings from function calls
                 if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
                     multi_return_group.push((*ret_index, symbol_idx));
@@ -2890,6 +2966,7 @@ impl<'a> Analysis<'a> {
             return;
         }
         let Some(local) = self.ir.find_table_index(rhs).filter(|t| !t.is_external()) else { return };
+        self.ir.exported_tables.entry(local).or_insert(scan_table);
         let entries: Vec<(String, FieldInfo)> = self.ir.tables[local.val()].fields.iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();

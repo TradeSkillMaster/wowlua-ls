@@ -295,6 +295,15 @@ pub enum ExternalGlobalKind {
     Variable(FieldValueKind),
     /// Reference to a field on another table (e.g. `strmatch = str.match` where `str` = `string`)
     FieldRef(String, String),
+    /// A field written through a global the file neither declares nor builds, on a
+    /// path (`(intermediate_path, field_name)`): in a function (`App.Cache = Load()`,
+    /// `App` built in another file) or through a local bound to the global (`local
+    /// MT = MyAddon; MT.x = v`). Registers only that the field exists, and only on a
+    /// workspace table global's existing tables — never a class's, a built-in
+    /// global's, or a table it would have to create. Its type is what the files
+    /// writing it write there (`PreResolvedGlobals::deferred_slot_fields`). Dropped
+    /// from the stub scan's output (stub_gen): the stubs declare no such fields.
+    ForeignField(Vec<String>, String),
 }
 
 /// Parsed `@creates-global N` annotation. Marks a function whose calls
@@ -545,8 +554,13 @@ pub struct ExternalGlobal {
 impl ExternalGlobal {
     #[cfg(any(test, feature = "test-util"))]
     pub fn for_test(name: &str, kind: ExternalGlobalKind) -> Self {
+        Self::bare(name.to_string(), kind)
+    }
+
+    /// `name` as `kind`, with nothing else known about it.
+    pub fn bare(name: String, kind: ExternalGlobalKind) -> Self {
         Self {
-            name: name.to_string(),
+            name,
             kind,
             params: Vec::new(),
             returns: Vec::new(),

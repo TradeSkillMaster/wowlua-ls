@@ -4594,6 +4594,13 @@ impl<'a> Analysis<'a> {
         let mut passed_to_generic: HashSet<SymbolIndex> = HashSet::default();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
+        // The callee of each method call (`p:m(...)`).
+        let method_callees: HashSet<ExprId> = self.ir.exprs.iter()
+            .filter_map(|e| match e {
+                Expr::FunctionCall { func, is_method_call: true, .. } => Some(*func),
+                _ => None,
+            })
+            .collect();
         for expr_id in 0..self.ir.exprs.len() {
             let expr = self.ir.exprs[expr_id].clone();
             let conditional = self.conditionally_reached_exprs.contains(&ExprId(expr_id));
@@ -4808,7 +4815,17 @@ impl<'a> Analysis<'a> {
                 }
                 Expr::FieldAccess { table, field, field_range } => {
                     if let Some((sym, ver)) = self.candidate_version_in(table, candidates) {
-                        narrowing_hints.entry(sym).or_default().push(ValueType::Table(None));
+                        // A member of the string library is read on a string, through
+                        // its metatable, as well as on a table: called as a method
+                        // (`s:gsub(...)`), on a string.
+                        let string_member = self.ir.library_table_for_type(&ValueType::String(None))
+                            .is_some_and(|lib| self.table(lib).fields.contains_key(&field));
+                        let receiver = match (string_member, method_callees.contains(&ExprId(expr_id))) {
+                            (true, true) => ValueType::String(None),
+                            (true, false) => ValueType::Union(vec![ValueType::String(None), ValueType::Table(None)]),
+                            (false, _) => ValueType::Table(None),
+                        };
+                        narrowing_hints.entry(sym).or_default().push(receiver);
                         // A write target has no `field_range`.
                         if let Some((start, _)) = field_range
                             && self.version_holds_argument(sym, ver)

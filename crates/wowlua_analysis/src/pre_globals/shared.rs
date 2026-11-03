@@ -36,6 +36,7 @@
 //!   [`deferred_call_globals_by_path`].
 
 use crate::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::types::*;
 use crate::annotations::{AnnotationType, AliasDecl, ClassDecl, parse_overload};
@@ -911,4 +912,180 @@ pub fn drop_untyped_ctor_entries_typed_by_ancestors(
             }
         }
     }
+}
+
+/// The tables the fields of the addon namespace and of workspace global tables
+/// live on, and the globals, as a build context left them: what
+/// [`SlotTables::deferred_slots`] registers the slots of
+/// (`PreResolvedGlobals::deferred_slot_fields`).
+pub struct SlotTables<'x> {
+    pub tables: &'x LayeredVec<TableInfo>,
+    pub exprs: &'x LayeredVec<Expr>,
+    pub symbols: &'x LayeredVec<Symbol>,
+    pub non_class_tables: &'x HashMap<String, TableIndex>,
+    /// The built-in globals (`Enum`, `C_Timer`), whose members the stubs declare;
+    /// none for the build of the stubs themselves.
+    pub stub_globals: Option<&'x HashMap<SymbolIdentifier, SymbolIndex>>,
+    pub sub_tables: &'x HashMap<(String, String), TableIndex>,
+    pub ctor_entries: &'x HashSet<(TableIndex, String)>,
+    pub call_field_methods: &'x HashSet<(TableIndex, String)>,
+    pub addon_table_idx: Option<TableIndex>,
+    pub scope0_symbols: &'x HashMap<SymbolIdentifier, SymbolIndex>,
+    pub stub_symbols_end: usize,
+    pub deferred_call_globals: &'x HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
+}
+
+impl SlotTables<'_> {
+    /// The table `path` reaches from the root `name` (the addon namespace or a
+    /// workspace global table, not a built-in one), where `walk_deep_path` placed
+    /// it, creating none.
+    pub fn slot_table(&self, name: &str, path: &[String]) -> Option<TableIndex> {
+        let mut current = if name == crate::annotations::ADDON_NS_NAME {
+            self.addon_table_idx?
+        } else if self.stub_globals.is_some_and(|stubs| stubs.contains_key(&SymbolIdentifier::Name(name.to_string()))) {
+            return None;
+        } else {
+            *self.non_class_tables.get(name)?
+        };
+        let mut current_name = name.to_string();
+        for seg in path {
+            current = match self.sub_tables.get(&(current_name.clone(), seg.clone())) {
+                Some(&idx) => idx,
+                None => {
+                    let fi = self.tables[current.ext_offset()].fields.get(seg)?;
+                    match &self.exprs[fi.expr.ext_offset()] {
+                        Expr::Literal(ValueType::Table(Some(idx))) => *idx,
+                        _ => return None,
+                    }
+                }
+            };
+            current_name = format!("{current_name}.{seg}");
+        }
+        Some(current)
+    }
+
+    /// The type a field or global holds as the build left it: its annotation, else
+    /// its literal value.
+    fn built_type(&self, annotation: Option<&ValueType>, expr: ExprId) -> Option<ValueType> {
+        annotation.cloned().or_else(|| match &self.exprs[expr.ext_offset()] {
+            Expr::Literal(vt) => Some(vt.clone()),
+            _ => None,
+        })
+    }
+
+    /// Whether the slot `name` holding `vt` is typed by the values the files write
+    /// there: not a function (its signature crosses on its own) nor a table other
+    /// slots hang off (`ns.Module = {}` with fields written, whose fields are slots;
+    /// the class the scan names after a global holding a table is one). A table
+    /// the scan saw nothing of (`ns.list = { ... }` of positional entries) holds
+    /// what its files build.
+    fn slot_holds_value(&self, name: &str, vt: Option<&ValueType>) -> bool {
+        match vt {
+            Some(ValueType::Function(_) | ValueType::FunctionSig(_)) => false,
+            Some(ValueType::Table(Some(idx))) => {
+                let table = &self.tables[idx.ext_offset()];
+                table.is_shapeless() || table.class_name.as_deref().is_some_and(|class| class != name)
+            }
+            _ => true,
+        }
+    }
+
+    /// The fields of the addon namespace and of workspace global tables, and the
+    /// workspace globals, typed by the values the files writing them write there
+    /// (`PreResolvedGlobals::deferred_slot_fields` / `deferred_slot_globals`), each
+    /// with those files. A field an author annotation types, a constructor entry
+    /// (typed by its constructor), a call's object methods are defined through, a
+    /// function and a table holding other slots are none.
+    pub fn deferred_slots(
+        &self,
+        ws_globals: &[crate::annotations::ExternalGlobal],
+    ) -> (HashMap<ExprId, crate::analysis::deferred::DeferredSlot>, HashMap<SymbolIndex, crate::analysis::deferred::DeferredSlot>) {
+        use crate::analysis::deferred::DeferredSlot;
+        use crate::annotations::{ExternalGlobalKind, ADDON_NS_NAME};
+        let mut fields: HashMap<ExprId, DeferredSlot> = HashMap::default();
+        let mut globals: HashMap<SymbolIndex, DeferredSlot> = HashMap::default();
+        // A slot any write of which an author annotation types keeps the annotation.
+        let mut annotated_fields: HashSet<ExprId> = HashSet::default();
+        let mut annotated_globals: HashSet<SymbolIndex> = HashSet::default();
+        let add = |slot: &mut DeferredSlot, path: &PathBuf| {
+            if !slot.writers.contains(path) {
+                slot.writers.push(path.clone());
+            }
+        };
+        for g in ws_globals {
+            let Some(path) = &g.source_path else { continue };
+            match &g.kind {
+                ExternalGlobalKind::TableField(chain, field, _) | ExternalGlobalKind::ForeignField(chain, field) => {
+                    let Some(table) = self.slot_table(&g.name, chain) else { continue };
+                    let Some(fi) = self.tables[table.ext_offset()].fields.get(field) else { continue };
+                    if g.declared_type || g.declares_class {
+                        annotated_fields.insert(fi.expr);
+                    }
+                    let key = (table, field.clone());
+                    if fi.annotation_text.is_some()
+                        || self.ctor_entries.contains(&key)
+                        || self.call_field_methods.contains(&key)
+                        || !self.slot_holds_value(field, self.built_type(fi.annotation.as_ref(), fi.expr).as_ref())
+                    {
+                        continue;
+                    }
+                    let slot = fields.entry(fi.expr).or_insert_with(|| DeferredSlot {
+                        writers: Vec::new(),
+                        in_namespace: g.name == ADDON_NS_NAME,
+                    });
+                    add(slot, path);
+                }
+                ExternalGlobalKind::Variable(_) | ExternalGlobalKind::Table | ExternalGlobalKind::FieldRef(..) => {
+                    if g.name == ADDON_NS_NAME {
+                        continue;
+                    }
+                    let Some(&sym_idx) = self.scope0_symbols.get(&SymbolIdentifier::Name(g.name.clone())) else { continue };
+                    if g.declares_class || !g.returns.is_empty() {
+                        annotated_globals.insert(sym_idx);
+                        continue;
+                    }
+                    if sym_idx.ext_offset() < self.stub_symbols_end
+                        || self.deferred_call_globals.contains_key(&sym_idx)
+                    {
+                        continue;
+                    }
+                    let built = self.symbols[sym_idx.ext_offset()].versions.last().and_then(|v| v.resolved_type.clone());
+                    if !self.slot_holds_value(&g.name, built.as_ref()) {
+                        continue;
+                    }
+                    let slot = globals.entry(sym_idx).or_insert_with(|| DeferredSlot { writers: Vec::new(), in_namespace: false });
+                    add(slot, path);
+                }
+                _ => {}
+            }
+        }
+        fields.retain(|expr, _| !annotated_fields.contains(expr));
+        globals.retain(|sym, _| !annotated_globals.contains(sym));
+        for slot in fields.values_mut().chain(globals.values_mut()) {
+            slot.writers.sort();
+        }
+        (fields, globals)
+    }
+}
+
+/// Register the field `field_name` of `table` that `g` only says exists (`any`),
+/// unless a write already put it there. Returns whether it did.
+pub fn add_existence_field(
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &mut LayeredVec<Expr>,
+    table: TableIndex,
+    field_name: &str,
+    g: &crate::annotations::ExternalGlobal,
+    implicit_protected_prefix: bool,
+) -> bool {
+    if tables[table.ext_offset()].fields.contains_key(field_name) {
+        return false;
+    }
+    let expr_idx = ExprId(EXT_BASE + exprs.len());
+    exprs.push(Expr::Literal(ValueType::Any));
+    tables[table.ext_offset()].fields.insert(
+        field_name.to_string(),
+        scan_literal_field(expr_idx, field_name, None, g.flavor_guard, implicit_protected_prefix, g.visibility),
+    );
+    true
 }

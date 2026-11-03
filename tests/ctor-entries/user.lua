@@ -126,7 +126,7 @@ local faction = ns.Factions[0]
 --    ^ hover: (local) faction: any
 
 local presetNormal = ns.Preset.normal
---    ^ hover: (local) presetNormal: any
+--    ^ hover: (local) presetNormal: ?
 local currentNormal = CurrentPreset.normal
 --    ^ hover: (local) currentNormal: ?
 local stale = ns.Rebound.stale

@@ -88,6 +88,14 @@ pub struct PathAccess {
 /// The [`FieldPath`] of each named table.
 pub type TablePaths = HashMap<TableIndex, FieldPath>;
 
+/// What an assignment writes that other files read: a field of a cross-file
+/// table (the table, in ext space), or a global.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WrittenSlot {
+    Field(TableIndex, String),
+    Global(String),
+}
+
 /// The paths of one file's own tables and of the workspace's cross-file ones.
 struct Paths<'a> {
     local: TablePaths,
@@ -246,7 +254,7 @@ impl AnalysisResult {
                 Some(receiver) => self.field_path(receiver, field, &paths),
                 None => Err(self.unkeyed(self.resolve_expr_type(*table).as_ref())),
             };
-            let display = self.access_display(tree, *start, &path);
+            let display = self.access_display(tree, *start, &path, false);
             let path = path.and_then(|p| self.unless_builtin(p));
             accesses.push(PathAccess { offset: *start, path, display, write: false });
         }
@@ -265,6 +273,79 @@ impl AnalysisResult {
         }
         accesses.sort_by_key(|a| a.offset);
         accesses
+    }
+
+    /// Every assignment in this file writing a field of a cross-file table or a
+    /// global, with the value written (`Ir::target_values`), or `None` for one an
+    /// author annotation types (`Ir::annotated_targets`): the slot keyed as
+    /// [`Self::path_accesses`] keys the write, through the cross-file table its
+    /// receiver's path reaches.
+    pub fn slot_writes(&self, tree: &SyntaxTree, ext_paths: &TablePaths) -> Vec<(WrittenSlot, Option<ExprId>)> {
+        if self.ir.target_values.is_empty() && self.ir.annotated_targets.is_empty() {
+            return Vec::new();
+        }
+        let paths = Paths { local: self.local_table_paths(ext_paths), ext: ext_paths };
+        let root = SyntaxNode::new_root(tree);
+        let mut writes: Vec<(u32, Option<ExprId>)> = self.ir.target_values.iter().map(|(&offset, &value)| (offset, Some(value)))
+            .chain(self.ir.annotated_targets.iter().map(|&offset| (offset, None)))
+            .collect();
+        writes.sort_unstable();
+        let mut out = Vec::new();
+        // A constructor's entries are writes of its table's fields, where a path
+        // names the table (`ns.Constants = { Flag = false }`).
+        let written: HashSet<ExprId> = writes.iter().filter_map(|&(_, value)| value).collect();
+        let mut tables: Vec<(&TableIndex, &FieldPath)> = paths.local.iter().collect();
+        tables.sort();
+        for (&table, path) in tables {
+            let Some(ext_table) = self.canonical_path(path.clone(), &paths).1 else { continue };
+            let mut entries: Vec<(&String, Option<ExprId>)> = self.table(table).fields.iter()
+                .filter(|(_, fi)| !fi.expr.is_external() && !written.contains(&fi.expr))
+                .map(|(name, fi)| (name, fi.annotation.is_none().then_some(fi.expr)))
+                .collect();
+            entries.sort();
+            out.extend(entries.into_iter().map(|(name, value)| (WrittenSlot::Field(ext_table, name.clone()), value)));
+        }
+        for (offset, value) in writes {
+            let Some(token) = root.token_at_offset(TextSize::from(offset)).right_biased() else { continue };
+            // The string key of a bracket target (`t["f"]`), a write of `t.f`.
+            if token.kind() == SyntaxKind::String {
+                let slot = token.parent().and_then(|key| key.parent()).filter(|b| b.kind() == SyntaxKind::BracketAccess).and_then(|bracket| {
+                    let field = crate::ast::extract_bracket_string_key(bracket)?;
+                    let receiver = self.syntax_value_path(tree, bracket.children().next()?, &paths, 0)?;
+                    self.written_field_slot(receiver, &field, &paths)
+                });
+                out.extend(slot.map(|slot| (slot, value)));
+                continue;
+            }
+            if token.kind() != SyntaxKind::Name { continue; }
+            let slot = if Self::is_field_position(tree, offset) {
+                let Some(parent) = token.parent() else { continue };
+                self.syntax_receiver_path(tree, parent, token, &paths)
+                    .or_else(|| self.field_owner(tree, offset, &paths).0)
+                    .and_then(|receiver| self.written_field_slot(receiver, token.text(), &paths))
+            } else {
+                self.find_symbol_at(tree, offset)
+                    .filter(|(sym_idx, ..)| self.is_global_symbol(*sym_idx))
+                    .map(|(_, name, _)| WrittenSlot::Global(name))
+            };
+            out.extend(slot.map(|slot| (slot, value)));
+        }
+        out
+    }
+
+    /// The slot a write of `field` through a receiver at `receiver` writes: `_G.X`
+    /// is the global `X`, else the field of the cross-file table the receiver's
+    /// path reaches.
+    fn written_field_slot(&self, receiver: FieldPath, field: &str, paths: &Paths) -> Option<WrittenSlot> {
+        let receiver = match &receiver.root {
+            PathRoot::Global(g) if g == "_G" => match receiver.fields.split_first() {
+                None => return Some(WrittenSlot::Global(field.to_string())),
+                Some((global, rest)) => FieldPath { root: PathRoot::Global(global.clone()), fields: rest.to_vec() },
+            },
+            _ => receiver,
+        };
+        let (_, table) = self.canonical_path(receiver, paths);
+        Some(WrittenSlot::Field(table?, field.to_string()))
     }
 
     /// A field access the IR records no read site for: the field an assignment
@@ -287,7 +368,7 @@ impl AnalysisResult {
                 (None, owner) => Err(self.unkeyed(owner.map(|t| ValueType::Table(Some(t))).as_ref())),
             },
         };
-        let display = self.access_display(tree, offset, &path);
+        let display = self.access_display(tree, offset, &path, write);
         let path = path.and_then(|p| self.unless_builtin(p));
         Some(PathAccess { offset, path, display, write })
     }
@@ -343,28 +424,38 @@ impl AnalysisResult {
         let offset = u32::from(token.text_range().start());
         let (sym_idx, name, token_start) = self.find_symbol_at(tree, offset)?;
         if !self.is_global_symbol(sym_idx) { return None; }
-        let display = self.global_display(sym_idx, token_start);
+        let display = self.global_display(sym_idx, token_start, write);
         let path = self.unless_builtin(FieldPath::root(PathRoot::Global(name)));
         Some(PathAccess { offset, path, display, write })
     }
 
     /// The type a global shows at `offset`, widened: a global's version holds
-    /// the literal last written to it.
-    fn global_display(&self, sym_idx: SymbolIndex, offset: u32) -> String {
+    /// the literal last written to it. At a write, the global's type as the file
+    /// writes it — every value it writes there, as a field's write shows the field —
+    /// rather than the value this one writes.
+    fn global_display(&self, sym_idx: SymbolIndex, offset: u32, write: bool) -> String {
         let _secrecy = self.secrecy_display_at(offset);
-        match self.symbol_resolved_type_at(sym_idx, offset) {
-            Some(vt) => collapse_shapes(&self.format_type_depth(&widen_literals(vt), 1)),
+        let written: Vec<ValueType> = match write && !sym_idx.is_external() {
+            true => self.sym(sym_idx).versions.iter()
+                .filter(|v| v.type_source.is_some())
+                .filter_map(|v| v.resolved_type.clone())
+                .collect(),
+            false => Vec::new(),
+        };
+        let vt = if written.is_empty() { self.symbol_resolved_type_at(sym_idx, offset).cloned() } else { Some(ValueType::make_union(written)) };
+        match vt {
+            Some(vt) => collapse_shapes(&self.format_type_depth(&vt.widen_literals(), 1)),
             None => "?".to_string(),
         }
     }
 
     /// The type a field access at `offset` shows, or for `_G.X`, which `path`
     /// keys as the global `X`, the global's.
-    fn access_display(&self, tree: &SyntaxTree, offset: u32, path: &Result<FieldPath, Unkeyed>) -> String {
+    fn access_display(&self, tree: &SyntaxTree, offset: u32, path: &Result<FieldPath, Unkeyed>, write: bool) -> String {
         match path {
             Ok(FieldPath { root: PathRoot::Global(name), fields }) if fields.is_empty() => {
                 match self.ir.scope0_global_symbol(&SymbolIdentifier::Name(name.clone())) {
-                    Some(sym_idx) => self.global_display(sym_idx, offset),
+                    Some(sym_idx) => self.global_display(sym_idx, offset, write),
                     None => "?".to_string(),
                 }
             }
@@ -393,6 +484,12 @@ impl AnalysisResult {
         let _secrecy = self.secrecy_display_at(offset);
         let chain = self.resolve_field_chain_at(tree, offset);
         let shown = match chain.as_ref().and_then(|(table_idx, field_name, ..)| self.get_field(*table_idx, field_name)) {
+            // Widened, as a global's: a field's writes hold the literals written. The
+            // type the scan gave a field is no author's: the field's writes type it.
+            Some(fi) if (fi.annotation.is_none() && fi.annotation_text.is_none()) || fi.scan_inferred() => match self.resolve_field_type(fi) {
+                Some(vt) => self.format_type_depth(&vt.widen_literals(), 1),
+                None => "?".to_string(),
+            },
             Some(fi) => self.format_field_type(fi, 0),
             None => match chain.and_then(|(.., expr_id, _, _)| self.resolve_expr_type(expr_id))
                 .or_else(|| self.field_access_type_at(offset))
@@ -685,16 +782,6 @@ impl AnalysisResult {
     }
 }
 
-/// `vt` with its literal types widened to their base type (`true` to `boolean`).
-fn widen_literals(vt: &ValueType) -> ValueType {
-    match vt {
-        ValueType::Boolean(Some(_)) => ValueType::Boolean(None),
-        ValueType::String(Some(_)) => ValueType::String(None),
-        ValueType::NumberLiteral(_) => ValueType::Number,
-        ValueType::Union(members) => ValueType::make_union(members.iter().map(widen_literals).collect()),
-        other => other.clone(),
-    }
-}
 
 /// Collapse every `{…}` table shape in a formatted type, so a path's type
 /// doesn't differ between files only by a field nested in it (that field is

@@ -35,10 +35,10 @@ ns.Other = CreateFrame("Frame", nil, UIParent, "CallFieldOtherTemplate")
 local other = CreateFrame("Frame", nil, UIParent, "CallFieldOtherTemplate")
 ns.OtherPanel = other
 
--- Other files read a field written several values as its calls' type only when it
--- is every value's: not a reassigned local's initializer, nor calls that disagree,
--- nor a call next to another value. Calls that agree (`ns.Same`, in defs_more.lua
--- too) keep it.
+-- Other files read a field written several values as every value written there:
+-- a reassigned local's value at the write, calls that disagree and a call next to
+-- another value alike. Calls that agree (`ns.Same`, in defs_more.lua too) keep
+-- their type.
 local reassigned = CreateFrame("Frame", nil, UIParent, "CallFieldRowTemplate")
 reassigned = CreateFrame("Frame", nil, UIParent, "CallFieldOtherTemplate")
 ns.Reassigned = reassigned

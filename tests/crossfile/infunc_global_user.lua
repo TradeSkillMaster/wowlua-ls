@@ -12,4 +12,4 @@ local s = scratch + 1
 -- An explicit `_G.EXPLICIT_GLOBAL = ...` inside a function body must register
 -- the global even though `EXPLICIT_GLOBAL` is also a local in the defs file.
 local eg = EXPLICIT_GLOBAL
---         ^ hover: (global) EXPLICIT_GLOBAL: ?  def: external
+--         ^ hover: (global) EXPLICIT_GLOBAL: string  def: external

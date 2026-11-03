@@ -1361,7 +1361,9 @@ fn path_accesses_key_a_field_alike_in_every_file() {
         let config = AnalysisConfig { addon_folder_name: configs.addon_name_for(&path), ..AnalysisConfig::default() };
         let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pg), config);
         a.resolve_types();
-        for access in a.into_result().path_accesses(&tree, &ext_paths) {
+        let mut result = a.into_result();
+        result.adopt_write_root_versions();
+        for access in result.path_accesses(&tree, &ext_paths) {
             let name: String = text[access.offset as usize..].chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
@@ -2329,6 +2331,31 @@ fn class_deep_method_crossfile() {
     });
 }
 
+// Fields of the addon namespace and of plain global tables, written anywhere (in a
+// function, through an alias, in two files building one table, in locale files
+// sharing a global) with any value, read in another file as their files type them.
+#[test]
+fn slot_fields_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/slot-fields/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/slot-fields"),
+    });
+}
+
+// A table a file exports, read in that file through its local: a field another
+// file writes through the export. The writer reaches it through a local alias of
+// the namespace field, which only the language server's build (`build_on_stubs`)
+// registers the field of.
+#[test]
+fn slot_fields_exported_local() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/slot-fields/owner.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/slot-fields"),
+    });
+}
+
 // Global table constructors' entries, and methods defined through a field assigned
 // a call (`R.f = Call()` + `function R.f:m()`), read the same from the cold `build`
 // the stub blob comes from as from `build_on_stubs`.
@@ -2786,7 +2813,8 @@ fn crossfile_generic_funcall_no_false_positive() {
 
 // The writing file tells the calls the workspace registered for a field as its own
 // by its path: an edit shifting the call keeps its type there until the workspace
-// is rebuilt, and the same text analyzed as another file doesn't take it.
+// is rebuilt, and the same text analyzed as another file reads the type the
+// writing file on disk gives the field.
 #[test]
 fn crossfile_own_call_field_by_path() {
     let dir = std::env::current_dir().unwrap().join("tests/crossfile");
@@ -2803,7 +2831,8 @@ fn crossfile_own_call_field_by_path() {
     };
     let shifted = hover_other(&format!("-- an edit above the write\n{text}"), path);
     assert!(shifted.starts_with("(field) Other: MixinA"), "{shifted}");
-    assert_eq!(hover_other(&text, dir.join("other_file.lua")), "(field) Other: any");
+    let other = hover_other(&text, dir.join("other_file.lua"));
+    assert!(other.starts_with("(field) Other: MixinA"), "{other}");
 }
 
 #[test]
@@ -3037,6 +3066,15 @@ fn correlated_return_inference_disabled() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/correlated-return-inference-disabled/test.lua",
         with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn backward_inference_string_methods() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/backward-inference-string-methods.lua",
+        with_stubs: true,
         scan_dir: None,
     });
 }
@@ -4406,6 +4444,20 @@ fn deferred_harvest_dense_cycle_is_linear() {
     assert_eq!(last_local_hover(&pg, dir, "reader.lua"), "(local) got: any");
     let analyses = pg.deferred_harvests.analyses();
     assert!(analyses <= 5 * 18, "{analyses} harvest analyses for an 18-file cycle");
+}
+
+#[test]
+fn deferred_harvest_missed_edge_cycle_once() {
+    // Each module reads the core cycle, directly or through a helper reading it, and
+    // the core reads every module back, but only through the registry's returns,
+    // which a discovery analysis cuts. A module's harvest reads the core as
+    // harvested before it, so the core cycle is harvested once, not again for each
+    // module in progress.
+    let dir = std::path::Path::new("tests/deferred-missed-edge");
+    let pg = fresh_workspace_globals(dir);
+    assert_eq!(last_local_hover(&pg, dir, "reader.lua"), "(local) got: number");
+    let analyses = pg.deferred_harvests.analyses();
+    assert!(analyses <= 3 * 12, "{analyses} harvest analyses for a 12-file workspace");
 }
 
 #[test]

@@ -336,7 +336,9 @@ fn file_accesses(
     if wowlua_ls::has_shebang(&text) { return Vec::new(); }
     let tree = syntax::parser::parse(&text);
     let accesses = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        analyze_file(&tree, pre_globals, configs, path).path_accesses(&tree, ext_paths)
+        let mut result = analyze_file(&tree, pre_globals, configs, path);
+        result.adopt_write_root_versions();
+        result.path_accesses(&tree, ext_paths)
     }));
     let Ok(accesses) = accesses else {
         error!("PANIC: {}", path.display());

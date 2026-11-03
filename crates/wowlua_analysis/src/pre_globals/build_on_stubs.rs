@@ -266,6 +266,24 @@ impl<'a> BuildOnStubsContext<'a> {
         }
     }
 
+    /// The registry of the tables slots live on (`shared::SlotTables`).
+    fn slot_tables(&self) -> super::shared::SlotTables<'_> {
+        super::shared::SlotTables {
+            tables: &self.tables,
+            exprs: &self.exprs,
+            symbols: &self.symbols,
+            non_class_tables: &self.non_class_tables,
+            stub_globals: Some(&self.stubs_base.scope0_symbols),
+            sub_tables: &self.sub_tables,
+            ctor_entries: &self.ctor_entries,
+            call_field_methods: &self.call_field_methods,
+            addon_table_idx: self.addon_table_idx,
+            scope0_symbols: &self.scope0_symbols,
+            stub_symbols_end: self.stubs_base.stub_symbols_end,
+            deferred_call_globals: &self.deferred_call_globals,
+        }
+    }
+
     /// Account for a write `g` of the field `field_name` of `table_idx` that another
     /// write typed first: when the field is registered for the call-field harvest, it
     /// may hold this write's value too. A call joins the harvest, which refines the
@@ -839,6 +857,17 @@ impl<'a> BuildOnStubsContext<'a> {
                     super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
+        }
+        // Fields written through another file's table global (`ForeignField`): their
+        // existence, `any` until what their files write types them.
+        for g in ws_globals {
+            let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
+            if self.is_stub_global(&g.name) { continue; }
+            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path) else { continue };
+            if super::shared::add_existence_field(&mut self.tables, &mut self.exprs, leaf_idx, field_name, g, self.implicit_protected_prefix) {
+                self.existence_fields.insert((leaf_idx, field_name.clone()));
+            }
+            record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
         }
     }
 
@@ -1738,6 +1767,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 Some((expr, paths))
             })
             .collect();
+        let (deferred_slot_fields, deferred_slot_globals) = self.slot_tables().deferred_slots(ws_globals);
         let mut deferred_field_calls_by_path: HashMap<PathBuf, Vec<(u32, crate::analysis::deferred::CallTarget)>> = HashMap::default();
         for call in self.deferred_call_fields.values().flatten() {
             let calls = deferred_field_calls_by_path.entry(call.path.clone()).or_default();
@@ -1879,6 +1909,9 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_field_type_args_by_path,
             deferred_class_field_paths,
             deferred_table_fields,
+            deferred_slot_fields,
+            deferred_slot_globals,
+            slot_table_paths: Default::default(),
             document_overrides: Default::default(),
             project_configs: None,
         }

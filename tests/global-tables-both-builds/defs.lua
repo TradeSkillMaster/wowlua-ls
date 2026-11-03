@@ -18,7 +18,7 @@ PanelConstants.Pending = "ready"
 -- constructor that has them stays untyped.
 PanelKeys = { ["Mode"] = 1, Label = "x" }
 PanelFactions = { [0] = "Horde", [1] = "Alliance", Horde = 0, Alliance = 1 }
--- With no named entry, nothing is scanned: a plain table.
+-- With no named entry, nothing is scanned: other files read the list it builds.
 PanelOrder = { "first", "second" }
 
 ---@class PanelFormatter

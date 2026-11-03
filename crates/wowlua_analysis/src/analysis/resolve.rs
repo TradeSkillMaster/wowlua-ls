@@ -29,6 +29,9 @@ struct FetchedField {
     /// A field written `{}` whose files may type it by the list they build there
     /// (`Ir::ensure_table_field_overlay`).
     deferred_table: bool,
+    /// A namespace or global-table field typed by what its files write there
+    /// (`Ir::ensure_slot_overlay`).
+    deferred_slot: bool,
     annotation: Option<ValueType>,
     primary: ExprId,
     extras: Vec<ExprId>,
@@ -45,6 +48,7 @@ impl FetchedField {
             placeholder: crate::analysis::deferred::field_is_coarse_placeholder(fi, ext),
             deferred_call: fi.expr.is_external() && ext.deferred_call_fields.contains_key(&fi.expr),
             deferred_table: fi.expr.is_external() && ext.deferred_table_fields.contains_key(&fi.expr),
+            deferred_slot: fi.expr.is_external() && ext.deferred_slot_fields.contains_key(&fi.expr),
             annotation: fi.annotation.clone(),
             primary: fi.expr,
             extras: fi.extra_exprs.clone(),
@@ -104,12 +108,12 @@ impl<'a> Analysis<'a> {
         // harvested call-return type is available throughout the fixpoint —
         // including for locals aliased from them (`local f = MyCreatedFrame`).
         // Gated on a non-empty registry so workspaces without them pay nothing.
-        if !self.ir.ext.deferred_call_globals.is_empty() {
+        if !self.ir.ext.deferred_call_globals.is_empty() || !self.ir.ext.deferred_slot_globals.is_empty() {
             let mut created: HashSet<SymbolIndex> = HashSet::default();
             for expr in &self.ir.exprs {
                 if let Expr::SymbolRef(s, _) = expr
                     && s.is_external()
-                    && self.ir.ext.deferred_call_globals.contains_key(s)
+                    && (self.ir.ext.deferred_call_globals.contains_key(s) || self.ir.ext.deferred_slot_globals.contains_key(s))
                 {
                     created.insert(*s);
                 }
@@ -485,6 +489,7 @@ impl<'a> Analysis<'a> {
             self.reresolve_unresolved_after_deferred();
         }
         self.warm_unresolved_field_reads();
+        self.warm_slot_write_targets();
         self.finalize_enum_kinds();
         self.populate_deferred_overlay();
     }
@@ -498,7 +503,9 @@ impl<'a> Analysis<'a> {
     /// the diagnostics so far left alone.
     fn warm_unresolved_field_reads(&mut self) {
         let ext = &self.ir.ext;
-        if ext.deferred_class_field_paths.is_empty() && ext.deferred_call_fields.is_empty() && ext.deferred_table_fields.is_empty() {
+        if ext.deferred_class_field_paths.is_empty() && ext.deferred_call_fields.is_empty() && ext.deferred_table_fields.is_empty()
+            && ext.deferred_slot_fields.is_empty()
+        {
             return;
         }
         let reads: Vec<(ExprId, String)> = self.ir.exprs.iter().enumerate()
@@ -514,6 +521,39 @@ impl<'a> Analysis<'a> {
                 self.fetch_cross_file_field(idx, &field);
             }
         }
+    }
+
+    /// Give the fields this file writes on the addon namespace and global tables
+    /// the type the files writing them give them (`Ir::ensure_slot_overlay`) where
+    /// the field is read at the write — through a table the write may not land on
+    /// (the namespace `@class`'s copy of one) — as at its reads. Only through
+    /// receivers known without resolving them, as `warm_unresolved_field_reads`.
+    fn warm_slot_write_targets(&mut self) {
+        if self.ir.ext.deferred_slot_fields.is_empty() {
+            return;
+        }
+        let targets = std::mem::take(&mut self.ir.field_write_targets);
+        for (scope, names) in &targets {
+            let Some((root, path)) = names.split_first() else { continue };
+            let Some((field, intermediates)) = path.split_last() else { continue };
+            let Some(sym) = self.ir.get_symbol(&SymbolIdentifier::Name(root.clone()), *scope) else { continue };
+            let ver = self.ir.version_for_scope(sym, *scope);
+            let Some(mut receiver) = self.sym(sym).versions.get(ver).and_then(|v| v.resolved_type.clone()) else { continue };
+            for name in intermediates {
+                let types: Vec<ValueType> = self.field_receiver_tables(&receiver.into_strip_opaque()).into_iter()
+                    .filter_map(|idx| self.ir.get_field(idx, name)?.annotation.clone())
+                    .collect();
+                if types.is_empty() {
+                    receiver = ValueType::Any;
+                    break;
+                }
+                receiver = ValueType::make_union(types);
+            }
+            for idx in self.field_receiver_tables(&receiver.into_strip_opaque()) {
+                self.ir.ensure_slot_overlay(idx, field);
+            }
+        }
+        self.ir.field_write_targets = targets;
     }
 
     /// The type of `expr` as known without resolving it: a symbol's, a resolved
@@ -2783,13 +2823,9 @@ impl<'a> Analysis<'a> {
                 let table_type = annotation.or_else(|| {
                     // Mirror FieldAccess resolution: if there are reassignments and the
                     // initial value is nil, skip the nil placeholder.
-                    let skip_primary = !extras.is_empty()
-                        && matches!(self.resolve_expr(expr), Some(ValueType::Nil));
-                    let all_exprs: Vec<ExprId> = if skip_primary {
-                        extras.clone()
-                    } else {
-                        std::iter::once(expr).chain(extras.iter().copied()).collect()
-                    };
+                    let nil_primary = !extras.is_empty() && matches!(self.resolve_expr(expr), Some(ValueType::Nil));
+                    let slot = self.slot_writes_choice(expr, &extras);
+                    let (all_exprs, skip_primary) = super::field_union_exprs(expr, &extras, nil_primary, slot);
                     let mut types: Vec<ValueType> = Vec::new();
                     let mut has_unresolvable = false;
                     for e in all_exprs {
@@ -4195,6 +4231,22 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// `Ir::slot_writes_choice`, resolving the writes in the fixpoint.
+    fn slot_writes_choice(&mut self, primary: ExprId, extras: &[ExprId]) -> Option<super::SlotWrites> {
+        if !self.ir.is_slot_primary(primary) {
+            return None;
+        }
+        let writes = std::iter::once(primary).chain(extras.iter().copied().filter(|e| !e.is_external()));
+        let types: Vec<(ExprId, Option<ValueType>)> = writes.map(|e| (e, self.resolve_expr(e))).collect();
+        // A write reading a local the fixpoint hasn't typed yet decides once it is.
+        for &(e, ref ty) in &types[1..] {
+            if ty.is_none() {
+                self.wait_on_local_write(e);
+            }
+        }
+        self.ir.slot_writes_choice(primary, extras, |e| types.iter().find(|(id, _)| *id == e).and_then(|(_, ty)| ty.clone()))
+    }
+
     /// A parent-class field type that must not override the child's own
     /// placeholder in the `resolve_field_access` parent-class fallback: `any`, a
     /// bare `table` placeholder, bare `nil`, or the empty `never` union that
@@ -4253,6 +4305,12 @@ impl<'a> Analysis<'a> {
     /// directly, so a non-placeholder external field access repeats no `get_field`
     /// lookups.
     fn fetch_cross_file_field(&mut self, idx: TableIndex, field: &str) -> Option<FetchedField> {
+        // A field this file's exported table lacks is the export's (`Ir::get_field`).
+        if let Some(&copy) = self.ir.exported_tables.get(&idx)
+            && !self.ir.table(idx).fields.contains_key(field)
+        {
+            self.fetch_cross_file_field(copy, field);
+        }
         let fetch = |ir: &super::Ir| ir.get_field(idx, field).map(|fi| FetchedField::of(fi, &ir.ext));
         let mut fetched = fetch(&self.ir);
         if fetched.as_ref().is_some_and(|f| f.placeholder) {
@@ -4263,6 +4321,9 @@ impl<'a> Analysis<'a> {
             fetched = fetch(&self.ir);
         }
         if fetched.as_ref().is_some_and(|f| f.deferred_table) && self.ir.ensure_table_field_overlay(idx, field) {
+            fetched = fetch(&self.ir);
+        }
+        if fetched.as_ref().is_some_and(|f| f.deferred_slot) && self.ir.ensure_slot_overlay(idx, field) {
             fetched = fetch(&self.ir);
         }
         fetched
@@ -4361,13 +4422,9 @@ impl<'a> Analysis<'a> {
                     let has_extras = !extras.is_empty();
                     // If there are reassignments and the initial value is nil,
                     // skip the nil — it's just a placeholder initializer.
-                    let skip_primary = has_extras
-                        && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
-                    let all_exprs: Vec<ExprId> = if skip_primary {
-                        extras
-                    } else {
-                        std::iter::once(primary).chain(extras).collect()
-                    };
+                    let nil_primary = has_extras && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
+                    let slot = self.slot_writes_choice(primary, &extras);
+                    let (all_exprs, skip_primary) = super::field_union_exprs(primary, &extras, nil_primary, slot);
                     let mut has_unresolvable = false;
                     for expr_id in all_exprs {
                         // The field's own in-progress write (`t.f = t.f or X()`)

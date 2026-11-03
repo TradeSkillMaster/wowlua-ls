@@ -25,11 +25,11 @@ local plain = ns.Plain
 ns.Plain:SetRowData()
 --       ^ diag: undefined-field
 local reassigned = ns.Reassigned
---    ^ hover: (local) reassigned: Frame {
+--    ^ hover: (local) reassigned: Frame & CallFieldOtherTemplate {
 local either = ns.Either
---    ^ hover: (local) either: Frame {
+--    ^ hover: (local) either: Frame & CallFieldRowTemplate | Frame & CallFieldOtherTemplate
 local mixed = ns.Mixed
---    ^ hover: (local) mixed: Frame {
+--    ^ hover: (local) mixed: Frame & CallFieldRowTemplate | UIParent
 local same = ns.Same
 --    ^ hover: (local) same: Frame & CallFieldRowTemplate
 local widgetFormatted = CallFieldWidgets.Formatter:Format()

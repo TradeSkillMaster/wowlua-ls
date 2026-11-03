@@ -8,10 +8,9 @@
 ---@class InFuncNS
 local addonTable = select(2, ...)
 
--- single-target in-function field (existence-only: the honest "unknown" `any`,
--- not a bare `table` that would leak into reads as a false type-mismatch)
+-- single-target in-function field: what the defining file writes there
 local t = addonTable.Title
---                   ^ hover: (field) Title: any
+--                   ^ hover: (field) Title: string
 -- multi-target in-function fields
 local w = addonTable.Width
 local h = addonTable.Height
@@ -24,14 +23,14 @@ addonTable.InFuncWidget:Ping()
 local mx = addonTable.MinX
 local mxx = addonTable.MaxX
 
--- forwarded-value fields are callable-or-unknown (`function & table`): calling
--- them must NOT false-positive as `cannot-call` (the exhaustive harness fails on
--- any unexpected diagnostic, so the absence of `cannot-call` on these calls is
--- itself the assertion).
+-- forwarded-value fields are callable-or-unknown (`function & table`) unless the
+-- defining file types the value: calling them must NOT false-positive as
+-- `cannot-call` (the exhaustive harness fails on any unexpected diagnostic, so
+-- the absence of `cannot-call` on these calls is itself the assertion).
 addonTable.OnClick("click")          -- forwarded from a parameter
 --         ^ hover: (field) OnClick: function & table
 local gv = addonTable.GetValue()     -- forwarded from another field
---                    ^ hover: (field) GetValue: function & table
+--                    ^ hover: (field) GetValue: fun(): string
 addonTable.Sub.Run()                 -- forwarded onto a deep path
 -- a function-literal field stays plain `function` (not the forwarded intersection)
 addonTable.Render()

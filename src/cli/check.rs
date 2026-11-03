@@ -342,6 +342,7 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
     }
 
     let elapsed = started.elapsed();
+    log::info!("deferred harvests: {} file analyses", pre_globals.deferred_harvests.analyses());
 
     // Print summary
     eprintln!();

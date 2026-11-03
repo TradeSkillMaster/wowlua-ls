@@ -390,13 +390,10 @@ fn resolve_expr_type_uncleared(
                         }
                     } else {
                         // Skip nil primary when there are reassignments
-                        let skip_primary = !extras.is_empty()
+                        let nil_primary = !extras.is_empty()
                             && matches!(resolve_expr_type_impl(ir, resolved_expr_cache, primary, visited, depth + 1), Some(ValueType::Nil));
-                        let all_exprs: Vec<ExprId> = if skip_primary {
-                            extras
-                        } else {
-                            std::iter::once(primary).chain(extras).collect()
-                        };
+                        let slot = ir.slot_writes_choice(primary, &extras, |e| resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1));
+                        let (all_exprs, skip_primary) = crate::analysis::field_union_exprs(primary, &extras, nil_primary, slot);
                         let mut has_unresolvable = false;
                         for eid in all_exprs {
                             if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
@@ -660,6 +657,15 @@ pub fn format_vararg_param(ann: &crate::annotations::AnnotationType) -> String {
 }
 
 impl AnalysisResult {
+    /// The writes the field `fi` unions, past a `nil` initializer or the scan's
+    /// value for a slot (`crate::analysis::field_union_exprs`), and whether its
+    /// primary is skipped.
+    pub(super) fn field_union_exprs(&self, fi: &FieldInfo) -> (Vec<ExprId>, bool) {
+        let nil_primary = !fi.extra_exprs.is_empty() && matches!(self.resolve_expr_type(fi.expr), Some(ValueType::Nil));
+        let slot = self.ir.slot_writes_choice(fi.expr, &fi.extra_exprs, |e| self.resolve_expr_type(e));
+        crate::analysis::field_union_exprs(fi.expr, &fi.extra_exprs, nil_primary, slot)
+    }
+
     /// Get the string literal value for a symbol, checking both local and external sources.
     pub(super) fn get_string_value(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&str> {
         // External symbol: look up in PreResolvedGlobals string_values
@@ -1055,13 +1061,7 @@ impl AnalysisResult {
             return Some(ann.clone());
         }
         let mut types: Vec<ValueType> = Vec::new();
-        let skip_primary = !fi.extra_exprs.is_empty()
-            && matches!(self.resolve_expr_type(fi.expr), Some(ValueType::Nil));
-        let exprs: Vec<ExprId> = if skip_primary {
-            fi.extra_exprs.clone()
-        } else {
-            std::iter::once(fi.expr).chain(fi.extra_exprs.clone()).collect()
-        };
+        let (exprs, _) = self.field_union_exprs(fi);
         for eid in exprs {
             if let Some(vt) = self.resolve_expr_type(eid)
                 && !types.contains(&vt) { types.push(vt); }
@@ -1405,14 +1405,8 @@ impl AnalysisResult {
         // Union original expr with any reassignment exprs.
         // If there are reassignments and the initial value is nil,
         // skip the nil — it's just a placeholder initializer.
-        let skip_primary = !field_info.extra_exprs.is_empty()
-            && matches!(self.resolve_expr_type(field_info.expr), Some(ValueType::Nil));
         let mut types: Vec<ValueType> = Vec::new();
-        let exprs: Vec<ExprId> = if skip_primary {
-            field_info.extra_exprs.clone()
-        } else {
-            std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
-        };
+        let (exprs, _) = self.field_union_exprs(field_info);
         for expr_id in exprs {
             if let Some(vt) = self.resolve_expr_type(expr_id)
                 && !types.contains(&vt) {

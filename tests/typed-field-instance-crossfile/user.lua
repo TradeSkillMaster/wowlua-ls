@@ -7,13 +7,13 @@ local steps = ns.state.steps
 local running = ns.state.running
 --    ^ hover: (local) running: boolean
 local extra = ns.state.inner.extra
---    ^ hover: (local) extra: any
+--    ^ hover: (local) extra: boolean
 local value = ns.state.inner.value
 --    ^ hover: (local) value: number
 local cached = ns.state.cached
 --    ^ hover: (local) cached: TypedInstInner?
 local cachedExtra = ns.state.cached.extra
---    ^ hover: (local) cachedExtra: any
+--    ^ hover: (local) cachedExtra: boolean
 local panelTitle = ns.Panel.title
 --    ^ hover: (local) panelTitle: string
 local statePanel = ns.state.Panel

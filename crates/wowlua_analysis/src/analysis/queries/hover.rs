@@ -128,15 +128,8 @@ impl AnalysisResult {
                             (self.format_type_accessible(ann, &[enclosing_class]), Some(ann.clone()), true)
                         }
                     } else {
-                        let has_extras = !field_info.extra_exprs.is_empty();
-                        let skip_primary = has_extras
-                            && matches!(self.resolve_expr_type(field_info.expr), Some(ValueType::Nil));
+                        let (exprs, skip_primary) = self.field_union_exprs(field_info);
                         let mut types: Vec<ValueType> = Vec::new();
-                        let exprs: Vec<ExprId> = if skip_primary {
-                            field_info.extra_exprs.clone()
-                        } else {
-                            std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
-                        };
                         let mut has_unresolvable = false;
                         for eid in exprs {
                             if let Some(vt) = self.resolve_expr_type(eid) {

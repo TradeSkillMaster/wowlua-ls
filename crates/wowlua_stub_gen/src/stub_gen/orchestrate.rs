@@ -725,8 +725,10 @@ pub fn regenerate_stubs() {
     apply_flavor_data(&mut globals, &branch_data.flavor_map);
 
     // Filter out addon-namespace globals from FrameXML files — those are
-    // FrameXML-internal and should not leak into user addon namespaces.
-    globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
+    // FrameXML-internal and should not leak into user addon namespaces — and the
+    // fields its function bodies write on other files' tables, which aren't the
+    // stubs' to declare.
+    globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME && !is_foreign_field(g));
 
     // Register event type aliases (e.g. FrameEvent → string) before building
     // PreResolvedGlobals so that aliases referencing event types (e.g. WowEvent →
@@ -801,7 +803,7 @@ pub fn regenerate_stubs() {
         globals = globals2;
         remap_mixin_data_params(&mut globals, &mut classes);
         apply_flavor_data(&mut globals, &branch_data.flavor_map);
-        globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
+        globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME && !is_foreign_field(g));
         aliases = aliases2;
         crate::annotations::register_event_type_aliases(&mut aliases, &stub_events2);
 
@@ -975,4 +977,7 @@ pub fn regenerate_stubs() {
     log::info!("Done!");
 }
 
-
+/// A field write through another file's table global (`ExternalGlobalKind::ForeignField`).
+fn is_foreign_field(g: &crate::annotations::ExternalGlobal) -> bool {
+    matches!(g.kind, crate::annotations::ExternalGlobalKind::ForeignField(..))
+}

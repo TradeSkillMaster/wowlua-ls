@@ -26,7 +26,7 @@ local factionName = PanelFactions[0]
 local function takeNames(names) return names end
 takeNames(PanelOrder)
 local order = PanelOrder
---    ^ hover: (local) order: table
+--    ^ hover: (local) order: string[]
 
 local minInterval = PanelMixin.TimeFormatter:GetMinInterval(5)
 --    ^ hover: (local) minInterval: number
@@ -59,4 +59,4 @@ local cloned = PanelUtil.ClonedFormatter
 local presetFormatter = PanelPresets.Formatter
 --    ^ hover: (local) presetFormatter: PanelFormatter
 local copy = PanelUtil.Copy
---    ^ hover: (local) copy: table
+--    ^ hover: (local) copy: { Insets: { Left: number }, Padding: number, Pending: string, WrapText: boolean }

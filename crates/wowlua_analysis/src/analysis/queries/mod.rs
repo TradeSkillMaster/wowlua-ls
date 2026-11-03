@@ -35,7 +35,7 @@ pub(crate) use references::local_declaration_site;
 pub use highlights::HighlightKind;
 pub use completion::{CallSnippets, Snippets};
 pub use call_hierarchy::{CallSiteResult, OutgoingCallResult};
-pub use path_accesses::{ext_table_paths, FieldPath, PathAccess, PathRoot, TablePaths, Unkeyed};
+pub use path_accesses::{ext_table_paths, FieldPath, PathAccess, PathRoot, TablePaths, Unkeyed, WrittenSlot};
 pub use format::return_type_at_slot;
 pub use format::dedup_return_types;
 pub use format::{format_vararg_return, format_vararg_param};

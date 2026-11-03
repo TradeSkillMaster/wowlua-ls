@@ -838,6 +838,26 @@ pub struct Ir {
     /// Writes to a field of a table field (`self.header.cells = ...`), read by
     /// the cross-file `@class` field harvest. See `SubFieldWrite`.
     pub sub_field_writes: Vec<SubFieldWrite>,
+    /// The value each assignment target is written, by the start of the target's
+    /// last name (`f` in `t.f = v`, `X` in `X = v`): what the cross-file slot
+    /// harvest types a namespace or global field, or a global, by (`deferred.rs`).
+    pub target_values: HashMap<u32, ExprId>,
+    /// The version of a field write's root the write goes through, by the root's
+    /// start: hover at a reassigned root keeps the declaration's version, while
+    /// cross-file readers adopt this one (`AnalysisResult::adopt_write_root_versions`).
+    pub write_root_versions: HashMap<u32, usize>,
+    /// The scan's copy of each table of this file a file-level write exports
+    /// (`ns.M = M`, see `ctor_overlays`): a field the file's table lacks, written
+    /// by another file through the export, is read off the copy.
+    pub exported_tables: HashMap<TableIndex, TableIndex>,
+    /// The assignment targets whose value an author annotation types (`---@type`,
+    /// `---@class`), by the same offset: the slot harvest leaves their slot the
+    /// annotation's.
+    pub annotated_targets: HashSet<u32>,
+    /// Each field write target's name chain, root first, and scope: the field
+    /// read there (its hover, a write's diagnostics) sees what other files write
+    /// it once warmed (`warm_slot_write_targets`).
+    pub field_write_targets: Vec<(ScopeIndex, Vec<String>)>,
     /// The table holding the methods defined through a field a call is assigned
     /// (`R.f = Call()` + `function R.f:m()`), by that call. See
     /// [`Self::call_object_table`].
@@ -998,6 +1018,12 @@ pub struct Ir {
     /// The deferred table fields (by the table read and the field's coarse expr)
     /// `ensure_table_field_overlay` has consulted, so each is harvested once.
     pub table_fields_checked: HashSet<(TableIndex, ExprId)>,
+    /// The deferred slot fields (by the table read and the field's coarse expr)
+    /// `ensure_slot_overlay` has consulted, so each is harvested once.
+    pub slot_fields_checked: HashSet<(TableIndex, ExprId)>,
+    /// The fields (likewise) the call-field or table-field harvest typed, which
+    /// the slot harvest leaves to them.
+    pub harvest_refined_fields: HashSet<(TableIndex, ExprId)>,
     /// Defining files this file harvested a deferred cross-file type from during
     /// analysis (a body-derived return, a `@creates-global`, a `@class` or table
     /// field, or a constructor generic type-arg — recorded by the `ensure_*_overlay` /
@@ -1046,6 +1072,31 @@ pub(super) fn block_comment_inner(text: &str) -> Option<&str> {
         return None;
     }
     Some(inner)
+}
+
+/// Which writes type a slot field in a file writing it ([`Ir::slot_writes_choice`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotWrites {
+    /// The file's own writes.
+    Own,
+    /// The scan's value for it.
+    Scanned,
+}
+
+/// The writes a field with `primary` and `extras` unions, given whether a `nil`
+/// primary initializes it (`nil_primary`) and the slot choice
+/// ([`Ir::slot_writes_choice`]).
+pub fn field_union_exprs(primary: ExprId, extras: &[ExprId], nil_primary: bool, slot: Option<SlotWrites>) -> (Vec<ExprId>, bool) {
+    if slot == Some(SlotWrites::Scanned) {
+        return (vec![primary], false);
+    }
+    let skip_primary = !extras.is_empty() && (nil_primary || slot == Some(SlotWrites::Own));
+    let exprs = if skip_primary {
+        extras.to_vec()
+    } else {
+        std::iter::once(primary).chain(extras.iter().copied()).collect()
+    };
+    (exprs, skip_primary)
 }
 
 /// Extract all `TableIndex` values reachable from a `ValueType`.
@@ -2278,6 +2329,45 @@ impl Ir {
         true
     }
 
+    /// Whether this file's writes of the external field `fi` type it here: a slot
+    /// other files read the written values of, which the workspace scan typed —
+    /// or only registered the existence of — without an annotation
+    /// (`PreResolvedGlobals::deferred_slot_fields`).
+    pub fn writes_type_field(&self, fi: &FieldInfo) -> bool {
+        fi.annotation.is_none() && fi.annotation_text.is_none() && self.is_slot_primary(fi.expr)
+    }
+
+    /// Whether a field's primary write `primary` is the workspace scan's value for
+    /// a slot other files read the written values of
+    /// (`PreResolvedGlobals::deferred_slot_fields`), which a namespace field's copy
+    /// in a file writing it carries (`ns.x = v`; see [`Self::slot_writes_choice`]).
+    pub fn is_slot_primary(&self, primary: ExprId) -> bool {
+        primary.is_external() && self.ext.deferred_slot_fields.contains_key(&primary)
+    }
+
+    /// Which writes type a field whose primary write is the scan's value for a slot
+    /// ([`Self::is_slot_primary`]) in this file, which writes it too (`extras`;
+    /// `resolve` types the primary, then each of this file's writes in order): its
+    /// own once one resolves to a type other than a function or `any`, as past a
+    /// `nil` initializer, or when it writes a function where the scan has none; the
+    /// scan's when those that resolve are functions it typed, whose signatures cross
+    /// files on their own, or say no more than `any`. `None` otherwise.
+    pub fn slot_writes_choice(&self, primary: ExprId, extras: &[ExprId], mut resolve: impl FnMut(ExprId) -> Option<ValueType>) -> Option<SlotWrites> {
+        if !self.is_slot_primary(primary) {
+            return None;
+        }
+        let scanned_function = resolve(primary).is_some_and(|ty| deferred::is_function_value(&ty) && !deferred::contains_untyped(&ty));
+        let mut scanned = false;
+        for &e in extras.iter().filter(|e| !e.is_external()) {
+            match resolve(e) {
+                Some(ty) if ty.contains_any() || (scanned_function && deferred::is_function_value(&ty)) => scanned = true,
+                Some(_) => return Some(SlotWrites::Own),
+                None => {}
+            }
+        }
+        scanned.then_some(SlotWrites::Scanned)
+    }
+
     /// A scan-fabricated bare `table` placeholder that is never an authoritative
     /// field type: either `Table(None)` (a parked bare `table` with no `TableInfo`
     /// to flag), or a `Table(Some(idx))` whose table carries [`TableInfo::placeholder`]
@@ -2635,6 +2725,7 @@ impl Ir {
         // Walk metatable __index chain with cycle detection
         let mut visited = HashSet::default();
         self.get_field_via_metatable(table_idx, field_name, &mut visited)
+            .or_else(|| self.get_field(*self.exported_tables.get(&table_idx)?, field_name))
     }
 
     /// The start of the call whose object `expr` is: the call itself, or the one
@@ -2999,15 +3090,20 @@ impl Ir {
 
     /// Add `write` to the field `field_name` of `table` (its own or a parent's)
     /// when the workspace scan typed it `any`, so this file's write types it
-    /// (`AnyFieldWrites`): to the field itself when its table is this file's, else
-    /// to the per-file overlay copy of it.
+    /// (`AnyFieldWrites`), or it is a slot this file's writes type
+    /// ([`Self::writes_type_field`]; not by a function, as on a path write): to the
+    /// field itself when its table is this file's, else to the per-file overlay
+    /// copy of it.
     pub(super) fn add_scan_any_field_write(&mut self, table: TableIndex, field_name: &str, write: ExprId) {
         let Some(owner) = std::iter::once(table).chain(self.table(table).parent_classes.iter().copied())
             .find(|&t| self.overlay_fields.get(&t).is_some_and(|fields| fields.contains_key(field_name))
                 || self.table(t).fields.contains_key(field_name))
         else { return };
         let Some(mut fi) = self.get_field_direct(owner, field_name)
-            .filter(|fi| fi.scan_inferred() && matches!(fi.annotation, Some(ValueType::Any)))
+            .filter(|fi| {
+                (fi.scan_inferred() && matches!(fi.annotation, Some(ValueType::Any)))
+                    || (self.writes_type_field(fi) && self.named_function(write, 0).is_none())
+            })
             .cloned()
         else { return };
         if !owner.is_external() {
@@ -3513,6 +3609,15 @@ pub struct AnalysisStats {
 }
 
 impl AnalysisResult {
+    /// Resolve every field write's root at the version the write goes through
+    /// ([`Ir::write_root_versions`]), as the reads beside it do: what the write is to
+    /// cross-file consumers (the slot harvest, `crossfile-types`).
+    pub fn adopt_write_root_versions(&mut self) {
+        for (&start, &version) in &self.ir.write_root_versions {
+            self.symbol_version_at.entry(start).or_insert(version);
+        }
+    }
+
     /// Collect summary statistics for the `check` command.
     pub fn stats(&self) -> AnalysisStats {
         let functions = self.ir.functions.len();
@@ -4126,6 +4231,11 @@ impl<'a> Analysis<'a> {
                 g_table_idx,
                 field_assignments: Vec::new(),
                 sub_field_writes: Vec::new(),
+                target_values: HashMap::default(),
+                write_root_versions: HashMap::default(),
+                exported_tables: HashMap::default(),
+                annotated_targets: HashSet::default(),
+                field_write_targets: Vec::new(),
                 call_objects: HashMap::default(),
                 narrowed_calls: HashMap::default(),
                 call_resolutions: HashMap::default(),
@@ -4166,6 +4276,8 @@ impl<'a> Analysis<'a> {
                 call_fields_checked: HashSet::default(),
                 scan_field_takeovers: HashMap::default(),
                 table_fields_checked: HashSet::default(),
+                slot_fields_checked: HashSet::default(),
+                harvest_refined_fields: HashSet::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),

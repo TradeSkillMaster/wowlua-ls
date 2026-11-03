@@ -537,6 +537,81 @@ fn expand_field_alias(names: &mut Vec<String>, aliases: &FieldAliases, offset: u
     }
 }
 
+/// Locals bound once in the whole file, at file level, to a global (`local MT =
+/// MyAddon`), never reassigned: the global, and the offset of the declaration. A
+/// field written through one is the global's (`ExternalGlobalKind::ForeignField`).
+type GlobalAliases = HashMap<String, (String, u32)>;
+
+fn collect_global_aliases(stmts: &[Statement<'_>], root: &SyntaxNode<'_>, locals: &HashSet<String>) -> GlobalAliases {
+    let candidates: Vec<(String, String, u32)> = stmts.iter().filter_map(|stmt| {
+        let Statement::LocalAssign(assign) = stmt else { return None };
+        let names = assign.name_list()?.names();
+        let exprs = assign.expression_list()?.expressions();
+        let ([name], [Expression::Identifier(ident)]) = (names.as_slice(), exprs.as_slice()) else { return None };
+        if ident.has_non_string_bracket_in_chain() || ident.has_prefix_expr_base() {
+            return None;
+        }
+        let [global]: [String; 1] = ident.names().try_into().ok()?;
+        (global == *name || !locals.contains(&global))
+            .then(|| (name.clone(), global, u32::from(assign.syntax().text_range().start())))
+    }).collect();
+    let mut aliases = GlobalAliases::default();
+    if candidates.is_empty() {
+        return aliases;
+    }
+    let mut bindings: HashMap<String, usize> = HashMap::default();
+    for node in root.descendants() {
+        let reassigned: Vec<String> = Assign::cast(node).and_then(|assign| assign.variable_list())
+            .map(|vl| vl.identifiers().iter()
+                .filter(|ident| !ident.has_non_string_bracket_tail() && !ident.has_prefix_expr_base())
+                .map(|ident| ident.names())
+                .filter(|names| names.len() == 1).flatten().collect())
+            .unwrap_or_default();
+        for name in local_bindings(node).into_iter().chain(reassigned) {
+            *bindings.entry(name).or_default() += 1;
+        }
+    }
+    for (name, global, offset) in candidates {
+        if bindings.get(&name) == Some(&1) {
+            aliases.insert(name, (global, offset));
+        }
+    }
+    aliases
+}
+
+/// The global a field write rooted at `root` at `offset` writes through a global
+/// alias (`MT.x = v` after `local MT = MyAddon`).
+fn aliased_global<'g>(aliases: &'g GlobalAliases, root: &str, offset: u32) -> Option<&'g str> {
+    aliases.get(root).filter(|(_, decl)| offset >= *decl).map(|(global, _)| global.as_str())
+}
+
+/// The existence-only write of the field `names` (root first) through a global
+/// another file may build (`ExternalGlobalKind::ForeignField`), at `assign`.
+fn foreign_field_global(names: &[String], assign: &Assign<'_>, ident: &crate::ast::Identifier<'_>, in_function: bool, source_path: Option<std::path::PathBuf>) -> ExternalGlobal {
+    let range = assign.syntax().text_range();
+    let (name_start, name_end) = ident.syntax().descendants_with_tokens()
+        .filter_map(|c| match c {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                let r = t.text_range();
+                Some((u32::from(r.start()), u32::from(r.end())))
+            }
+            _ => None,
+        })
+        .last()
+        .unwrap_or((u32::from(range.start()), u32::from(range.end())));
+    let intermediates = names[1..names.len() - 1].to_vec();
+    let field = names[names.len() - 1].clone();
+    ExternalGlobal {
+        source_path,
+        def_start: u32::from(range.start()),
+        def_end: u32::from(range.end()),
+        name_start,
+        name_end,
+        in_function,
+        ..ExternalGlobal::bare(names[0].clone(), ExternalGlobalKind::ForeignField(intermediates, field))
+    }
+}
+
 /// Collect the full dotted paths of every *named table-constructor key* assigned
 /// to a namespace/field path in the file — e.g. `NS.sel = { encounterIndex = 1 }`
 /// yields `"NS.sel.encounterIndex"`. A field listed here has a *structural data
@@ -1855,6 +1930,7 @@ pub fn scan_file_globals_with_synth(
     let field_aliases = collect_field_aliases(
         &all_stmts, &root, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
     );
+    let global_alias_roots = collect_global_aliases(&all_stmts, &root, &local_vars);
 
     // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
     // so that `local x = X.bar(); Class.field = x` propagates `Foo` as the field type cross-file.
@@ -2414,6 +2490,18 @@ pub fn scan_file_globals_with_synth(
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
                             let assign_offset: u32 = assign.syntax().text_range().start().into();
+                            if let Some(global) = aliased_global(&global_alias_roots, root_name, assign_offset)
+                                && !renamed_local(root_name)
+                                && !field_aliases.contains_key(root_name)
+                            {
+                                if idents[0].has_non_string_bracket_in_chain() {
+                                    continue;
+                                }
+                                let mut names = names.clone();
+                                names[0] = global.to_string();
+                                globals.push(foreign_field_global(&names, assign, &idents[0], false, owned_path.clone()));
+                                continue;
+                            }
                             if unrouted_local(root_name, assign_offset) {
                                 continue;
                             }
@@ -2939,6 +3027,7 @@ pub fn scan_file_globals_with_synth(
             if names.len() < 2 { continue; }
             let root_name = &names[0];
             let mut global_root = false;
+            let mut foreign_root = false;
             let canonical_name = if let Some(i) = call_root {
                 function_locals.call_locals[i].key.clone()
             } else if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -3017,6 +3106,10 @@ pub fn scan_file_globals_with_synth(
                         continue;
                     }
                 }
+            } else if let Some(global) = aliased_global(&global_alias_roots, root_name, u32::from(node.text_range().start())) {
+                // Through a local bound to a global (`local MT = MyAddon`).
+                foreign_root = true;
+                global.to_string()
             } else if table_globals
                 .get_or_insert_with(|| collect_table_globals(&root, all_local_names.get_or_insert_with(|| collect_all_local_names(&root))))
                 .contains(root_name)
@@ -3026,6 +3119,11 @@ pub fn scan_file_globals_with_synth(
                 // level. Not of a global only another file or the game defines (a
                 // Blizzard frame).
                 global_root = true;
+                root_name.clone()
+            } else if !all_local_names.get_or_insert_with(|| collect_all_local_names(&root)).contains(root_name) {
+                // A global the file neither declares nor builds: another file's table,
+                // if a workspace file builds one.
+                foreign_root = true;
                 root_name.clone()
             } else {
                 // Not a known namespace/class root (e.g. a function-local table):
@@ -3056,6 +3154,16 @@ pub fn scan_file_globals_with_synth(
                 _ => None,
             };
             if global_root && written.is_none() {
+                continue;
+            }
+            if foreign_root {
+                // An element's field (`G.list[i].f = v`) is no field of the list.
+                if ident.has_non_string_bracket_in_chain() {
+                    continue;
+                }
+                let mut names = names.clone();
+                names[0] = canonical_name;
+                globals.push(foreign_field_global(&names, &assign, ident, in_function, owned_path.clone()));
                 continue;
             }
             let existence_kind = match rhs_exprs.get(target_idx) {

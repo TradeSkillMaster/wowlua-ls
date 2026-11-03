@@ -4,6 +4,8 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 
 For deep architecture internals, see [ARCHITECTURE.md](.claude/ARCHITECTURE.md) — type inference, narrowing, generics, builder pattern, cross-file references, metatable inference, flavor filtering, plus the relocated source-file deep notes, config internals, inlay hints, the per-feature annotation/type-system reference, and the diagnostics module reference. Pointers below lead to the relevant section.
 
+The cross-file typing **inversion** (one inference engine, the file boundary as a cache of per-file engine results, the coarse scan reduced to slot discovery) is the active architectural effort; its principle, slice order, rules and per-slice acceptance are in [INVERSION.md](.claude/INVERSION.md). A type lost at the file boundary is fixed through that plan, never by a new scan pattern or build pass.
+
 For the full test-file catalog and the embedded-assertion (`hover:`/`def:`/`diag:`/…) format, see [TESTING.md](.claude/TESTING.md).
 
 For Neovim diagnostic integration details (push/pull namespaces, `workspace_diagnostics` flag, line-shifting, edit zone handling), see [NEOVIM_DIAGNOSTICS.md](.claude/NEOVIM_DIAGNOSTICS.md).

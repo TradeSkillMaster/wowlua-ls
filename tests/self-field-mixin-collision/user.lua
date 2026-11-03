@@ -5,7 +5,7 @@
 local leaked = Collision.deep
 --                       ^ hover: (field) deep: ?
 local ok = PlainMixin.shallow
---                    ^ hover: (field) shallow: any
+--                    ^ hover: (field) shallow: number
 -- The deeply-nested @class `Outer.Sub.Widget`'s control-flow-nested `self.nested`
 -- write must resolve on a NestedClass-typed value (re-keyed via var_to_class).
 -- The write is `self.nested = 1`, so the cross-file `@class` field-type harvester

@@ -40,7 +40,7 @@ local directWidget = ns.DirectWidget
 local localWidget = ns.LocalWidget
 --    ^ hover: (local) localWidget: { custom: number }
 local made = ns.Made
---    ^ hover: (local) made: any
+--    ^ hover: (local) made: { custom: number }
 local madeTop = ns.MadeTop
 --    ^ hover: (local) madeTop: { custom: number }
 local startTime = ns.StartTime
