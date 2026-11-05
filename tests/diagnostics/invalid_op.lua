@@ -168,6 +168,53 @@ _use(0 < numOrEnum)
 ---@diagnostic disable-next-line: invalid-op
 _use(nil < 1)
 
+-- A numeric alias (a union of number literals) is a number under operators.
+--- @alias KeySize
+--- | 100
+--- | 80
+--- | 60
+
+---@type KeySize
+local _sizeA = 100
+---@type KeySize
+local _sizeB = 80
+_use(_sizeA > _sizeB)
+local _sizeDiff = _sizeA - _sizeB
+--    ^ hover: (local) _sizeDiff: number
+local _sizeStep = _sizeA + 1
+--    ^ hover: (local) _sizeStep: number
+local _sizeNeg = -_sizeA
+--    ^ hover: (local) _sizeNeg: number
+_use(_sizeDiff, _sizeStep, _sizeNeg)
+
+-- A nilable numeric alias still errors: the literals decay, nil does not.
+---@type KeySize?
+local _sizeMaybe
+_use(_sizeMaybe + 1)
+--   ^ diag: invalid-op
+
+-- `or`/`and` pass an operand through, so it keeps its literals.
+local _sizeOr = _sizeMaybe or _sizeB
+--    ^ hover: (local) _sizeOr: 100 | 80 | 60
+
+-- A numeric alias operand types the other side as a number: an unresolved
+-- operand still gives a number, and an unannotated parameter is inferred one.
+local _sizeUnknown = _sizeA + _unknownSize()
+--    ^ hover: (local) _sizeUnknown: number
+local function _sizeScale(p)
+--                        ^ hover: (param) p: number
+    return p * _sizeA
+end
+_use(_sizeOr, _sizeUnknown, _sizeScale)
+
+-- Unary minus sees through an opaque alias, as the binary operators do.
+---@alias (opaque) InvalidOpId number
+---@type InvalidOpId
+local _opId
+local _opNeg = -_opId
+--    ^ hover: (local) _opNeg: number
+_use(_opNeg)
+
 -- `(field or 0) > 0` narrows a nilable field to non-nil — concat is then valid
 ---@class ConcatNarrow
 ---@field count number?

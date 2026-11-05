@@ -4149,8 +4149,8 @@ impl<'a> Analysis<'a> {
                         })
                     }
                     (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
-                    (Some(ValueType::Number | ValueType::NumberLiteral(_)), None) | (None, Some(ValueType::Number | ValueType::NumberLiteral(_)))
-                        if op.is_arithmetic() => Some(ValueType::Number),
+                    (Some(ref t), None) | (None, Some(ref t))
+                        if op.is_arithmetic() && t.decays_to_number() => Some(ValueType::Number),
                     (Some(ref t), None) | (None, Some(ref t))
                         if op == Operator::Concatenate && t.concat_yields_string() => Some(ValueType::String(None)),
                     _ if op.is_comparison() => Some(ValueType::Boolean(None)),
@@ -4172,9 +4172,10 @@ impl<'a> Analysis<'a> {
                         let plain = match op {
                             Operator::Not => Some(ValueType::Boolean(None)),
                             Operator::Subtract => {
-                                match plain_ot {
-                                    ValueType::Number | ValueType::NumberLiteral(_) => Some(ValueType::Number),
-                                    _ => self.resolve_unary_metamethod(op, plain_ot),
+                                if plain_ot.strip_opaque().decays_to_number() {
+                                    Some(ValueType::Number)
+                                } else {
+                                    self.resolve_unary_metamethod(op, plain_ot)
                                 }
                             }
                             Operator::ArrayLength => {
@@ -5216,9 +5217,13 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
     // Unwrap opaque aliases — operators work on the inner type, results decay to base type
     let lhs_type = lhs_type.into_strip_opaque();
     let rhs_type = rhs_type.into_strip_opaque();
-    // Number literals decay to plain numbers under operators (we don't track ranges).
-    let lhs_type = lhs_type.into_decay_number_literal();
-    let rhs_type = rhs_type.into_decay_number_literal();
+    // Number literals decay to plain numbers under arithmetic and comparison (we
+    // don't track ranges). `and`/`or` pass an operand through, literals intact.
+    let (lhs_type, rhs_type) = if matches!(op, Operator::And | Operator::Or) {
+        (lhs_type, rhs_type)
+    } else {
+        (lhs_type.into_decay_number_literal(), rhs_type.into_decay_number_literal())
+    };
     match op {
         Operator::Or => {
             match (&lhs_type, &rhs_type) {

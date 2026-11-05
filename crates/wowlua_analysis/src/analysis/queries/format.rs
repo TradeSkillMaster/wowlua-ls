@@ -312,8 +312,8 @@ fn resolve_expr_type_uncleared(
             let rhs_type = resolve_expr_type_impl(ir, resolved_expr_cache, rhs, visited, depth + 1);
             match (lhs_type, rhs_type) {
                 (Some(l), Some(r)) => crate::analysis::resolve::resolve_binary_op_standalone(op, l, r),
-                (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
-                    if op.is_arithmetic() => Some(ValueType::Number),
+                (Some(ref t), None) | (None, Some(ref t))
+                    if op.is_arithmetic() && t.decays_to_number() => Some(ValueType::Number),
                 (Some(ref t), None) | (None, Some(ref t))
                     if op == Operator::Concatenate && t.concat_yields_string() => Some(ValueType::String(None)),
                 _ if op.is_comparison() => Some(ValueType::Boolean(None)),
@@ -325,12 +325,7 @@ fn resolve_expr_type_uncleared(
             let operand_type = resolve_expr_type_impl(ir, resolved_expr_cache, operand, visited, depth + 1)?;
             let plain = match op {
                 Operator::Not => Some(ValueType::Boolean(None)),
-                Operator::Subtract => {
-                    match operand_type.strip_secret() {
-                        ValueType::Number => Some(ValueType::Number),
-                        _ => None,
-                    }
-                }
+                Operator::Subtract => operand_type.strip_secret().strip_opaque().decays_to_number().then_some(ValueType::Number),
                 Operator::ArrayLength => Some(ValueType::Number),
                 _ => None,
             };

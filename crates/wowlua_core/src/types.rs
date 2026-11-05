@@ -509,12 +509,27 @@ impl ValueType {
 
     /// Decay a number-literal type to plain `Number`. We don't model numeric
     /// ranges, so under arithmetic/comparison a literal behaves like any number
-    /// and the result is a plain number, not a literal.
+    /// and the result is a plain number, not a literal. A union decays member-wise,
+    /// so a numeric `@alias` (`100 | 80 | 60`) is `number` and `100 | nil` is
+    /// `number | nil`.
     pub fn into_decay_number_literal(self) -> ValueType {
         match self {
             ValueType::NumberLiteral(_) => ValueType::Number,
             ValueType::Secret(inner) => ValueType::Secret(Box::new(inner.into_decay_number_literal())),
+            ValueType::Union(members) if members.iter().any(|m| matches!(m, ValueType::NumberLiteral(_))) => {
+                ValueType::make_union(members.into_iter().map(ValueType::into_decay_number_literal).collect())
+            }
             other => other,
+        }
+    }
+
+    /// Whether [`Self::into_decay_number_literal`] gives plain `number`: a number,
+    /// a number literal, or a union of them (a numeric `@alias`).
+    pub fn decays_to_number(&self) -> bool {
+        match self {
+            ValueType::Number | ValueType::NumberLiteral(_) => true,
+            ValueType::Union(members) => !members.is_empty() && members.iter().all(ValueType::decays_to_number),
+            _ => false,
         }
     }
 
