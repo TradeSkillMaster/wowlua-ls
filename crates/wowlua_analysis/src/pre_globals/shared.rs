@@ -977,14 +977,22 @@ impl SlotTables<'_> {
     /// there: not a function (its signature crosses on its own) nor a table other
     /// slots hang off (`ns.Module = {}` with fields written, whose fields are slots;
     /// the class the scan names after a global holding a table is one). A table
-    /// the scan saw nothing of (`ns.list = { ... }` of positional entries) holds
-    /// what its files build.
+    /// the scan saw nothing of (`ns.list = { ... }` of positional entries), or only
+    /// the keys of (a map of bracket keys whose values it couldn't type), holds what
+    /// its files build.
     fn slot_holds_value(&self, name: &str, vt: Option<&ValueType>) -> bool {
         match vt {
             Some(ValueType::Function(_) | ValueType::FunctionSig(_)) => false,
             Some(ValueType::Table(Some(idx))) => {
                 let table = &self.tables[idx.ext_offset()];
-                table.is_shapeless() || table.class_name.as_deref().is_some_and(|class| class != name)
+                let untyped_map = table.class_name.is_none()
+                    && matches!(table.value_type, Some(ValueType::Any))
+                    && table.parent_classes.is_empty()
+                    && table.metatable_index.is_none()
+                    && table.fields.iter().all(|(field, fi)| self.ctor_entries.contains(&(*idx, field.clone()))
+                        && fi.annotation.is_none()
+                        && matches!(self.exprs[fi.expr.ext_offset()], Expr::Literal(ValueType::Any)));
+                table.is_shapeless() || untyped_map || table.class_name.as_deref().is_some_and(|class| class != name)
             }
             _ => true,
         }
@@ -994,8 +1002,10 @@ impl SlotTables<'_> {
     /// workspace globals, typed by the values the files writing them write there
     /// (`PreResolvedGlobals::deferred_slot_fields` / `deferred_slot_globals`), each
     /// with those files. A field an author annotation types, a constructor entry
-    /// (typed by its constructor), a call's object methods are defined through, a
-    /// function and a table holding other slots are none.
+    /// (typed by its constructor, unless it is an empty table a statement writes),
+    /// a call's object methods are defined through, a function and a table holding
+    /// other slots are none — but a global holding one that a file writes another
+    /// value is.
     pub fn deferred_slots(
         &self,
         ws_globals: &[crate::annotations::ExternalGlobal],
@@ -1012,6 +1022,18 @@ impl SlotTables<'_> {
                 slot.writers.push(path.clone());
             }
         };
+        // The table globals written more than once, one write a value other than a
+        // table it builds (`X = nil`, `X = OtherMixin`, `X = param`): what they hold
+        // besides their table is what their files write there.
+        let mut root_writes: HashMap<&str, (usize, bool)> = HashMap::default();
+        for g in ws_globals {
+            if let ExternalGlobalKind::Table | ExternalGlobalKind::Variable(_) | ExternalGlobalKind::FieldRef(..) = g.kind {
+                let entry = root_writes.entry(g.name.as_str()).or_default();
+                entry.0 += 1;
+                entry.1 |= !matches!(g.kind, ExternalGlobalKind::Table);
+            }
+        }
+        let reassigned = |name: &str| root_writes.get(name).is_some_and(|&(writes, other)| writes > 1 && other);
         for g in ws_globals {
             let Some(path) = &g.source_path else { continue };
             match &g.kind {
@@ -1022,8 +1044,13 @@ impl SlotTables<'_> {
                         annotated_fields.insert(fi.expr);
                     }
                     let key = (table, field.clone());
+                    // An empty table a constructor holds there says nothing of what
+                    // a statement writes it (`App = { Store = {} }`, `App.Store =
+                    // CreateStore()` in a function).
+                    let empty_entry = || matches!(self.built_type(fi.annotation.as_ref(), fi.expr),
+                        Some(ValueType::Table(Some(idx))) if self.tables[idx.ext_offset()].is_shapeless());
                     if fi.annotation_text.is_some()
-                        || self.ctor_entries.contains(&key)
+                        || (self.ctor_entries.contains(&key) && !empty_entry())
                         || self.call_field_methods.contains(&key)
                         || !self.slot_holds_value(field, self.built_type(fi.annotation.as_ref(), fi.expr).as_ref())
                     {
@@ -1050,7 +1077,9 @@ impl SlotTables<'_> {
                         continue;
                     }
                     let built = self.symbols[sym_idx.ext_offset()].versions.last().and_then(|v| v.resolved_type.clone());
-                    if !self.slot_holds_value(&g.name, built.as_ref()) {
+                    let holds_value = self.slot_holds_value(&g.name, built.as_ref())
+                        || (matches!(built, Some(ValueType::Table(Some(_)))) && reassigned(&g.name));
+                    if !holds_value {
                         continue;
                     }
                     let slot = globals.entry(sym_idx).or_insert_with(|| DeferredSlot { writers: Vec::new(), in_namespace: false });
@@ -1066,6 +1095,47 @@ impl SlotTables<'_> {
         }
         (fields, globals)
     }
+}
+
+/// The table `path` reaches from `root` (the table [`SlotTables::slot_table`] gives
+/// the root `name`), walked as that does, each field on the way the scan only knew
+/// exists (`existence_fields`) made an empty table: a field fields are written
+/// through (`App.Internals.scan = ...` after `App.Internals = {}`, in a function)
+/// holds a table, whose fields are slots of their own.
+pub fn materialize_slot_path(
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &mut LayeredVec<Expr>,
+    existence_fields: &mut HashSet<(TableIndex, String)>,
+    sub_tables: &mut HashMap<(String, String), TableIndex>,
+    root: TableIndex,
+    name: &str,
+    path: &[String],
+) -> Option<TableIndex> {
+    let mut current = root;
+    let mut current_name = name.to_string();
+    for seg in path {
+        let key = (current_name.clone(), seg.clone());
+        current = match sub_tables.get(&key) {
+            Some(&idx) => idx,
+            None => {
+                let fi = tables[current.ext_offset()].fields.get(seg)?;
+                let expr = fi.expr;
+                match &exprs[expr.ext_offset()] {
+                    Expr::Literal(ValueType::Table(Some(idx))) => *idx,
+                    Expr::Literal(ValueType::Any) if fi.annotation.is_none() && existence_fields.remove(&(current, seg.clone())) => {
+                        let sub_idx = TableIndex(EXT_BASE + tables.len());
+                        tables.push(TableInfo::default());
+                        exprs[expr.ext_offset()] = Expr::Literal(ValueType::Table(Some(sub_idx)));
+                        sub_tables.insert(key, sub_idx);
+                        sub_idx
+                    }
+                    _ => return None,
+                }
+            }
+        };
+        current_name = format!("{current_name}.{seg}");
+    }
+    Some(current)
 }
 
 /// Register the field `field_name` of `table` that `g` only says exists (`any`),

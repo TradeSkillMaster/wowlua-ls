@@ -254,7 +254,7 @@ impl AnalysisResult {
                 Some(receiver) => self.field_path(receiver, field, &paths),
                 None => Err(self.unkeyed(self.resolve_expr_type(*table).as_ref())),
             };
-            let display = self.access_display(tree, *start, &path, false);
+            let display = self.access_display(tree, *start, &path);
             let path = path.and_then(|p| self.unless_builtin(p));
             accesses.push(PathAccess { offset: *start, path, display, write: false });
         }
@@ -368,7 +368,7 @@ impl AnalysisResult {
                 (None, owner) => Err(self.unkeyed(owner.map(|t| ValueType::Table(Some(t))).as_ref())),
             },
         };
-        let display = self.access_display(tree, offset, &path, write);
+        let display = self.access_display(tree, offset, &path);
         let path = path.and_then(|p| self.unless_builtin(p));
         Some(PathAccess { offset, path, display, write })
     }
@@ -423,26 +423,49 @@ impl AnalysisResult {
         };
         let offset = u32::from(token.text_range().start());
         let (sym_idx, name, token_start) = self.find_symbol_at(tree, offset)?;
-        if !self.is_global_symbol(sym_idx) { return None; }
-        let display = self.global_display(sym_idx, token_start, write);
+        // `_` is the conventional discard (`_, x = f()`), no value any file reads.
+        if !self.is_global_symbol(sym_idx) || name == "_" { return None; }
+        let display = self.global_display(sym_idx, token_start);
         let path = self.unless_builtin(FieldPath::root(PathRoot::Global(name)));
         Some(PathAccess { offset, path, display, write })
     }
 
     /// The type a global shows at `offset`, widened: a global's version holds
-    /// the literal last written to it. At a write, the global's type as the file
-    /// writes it — every value it writes there, as a field's write shows the field —
-    /// rather than the value this one writes.
-    fn global_display(&self, sym_idx: SymbolIndex, offset: u32, write: bool) -> String {
+    /// the literal last written to it. Its type in this file rather than at one
+    /// access, as a field shows the field's: in a file writing it, every value the
+    /// file writes there — as a field's write shows the field — and what the other
+    /// files writing it write (`Ir::slot_global_other_writes`), an untyped one
+    /// saying nothing; in one reading it, the workspace's, past the narrowing of
+    /// one read.
+    fn global_display(&self, sym_idx: SymbolIndex, offset: u32) -> String {
         let _secrecy = self.secrecy_display_at(offset);
-        let written: Vec<ValueType> = match write && !sym_idx.is_external() {
-            true => self.sym(sym_idx).versions.iter()
-                .filter(|v| v.type_source.is_some())
-                .filter_map(|v| v.resolved_type.clone())
-                .collect(),
-            false => Vec::new(),
+        let (ext_sym, name) = match &self.sym(sym_idx).id {
+            id @ SymbolIdentifier::Name(name) => (self.ir.ext.scope0_symbols.get(id).copied(), name.as_str()),
+            _ => (None, ""),
         };
-        let vt = if written.is_empty() { self.symbol_resolved_type_at(sym_idx, offset).cloned() } else { Some(ValueType::make_union(written)) };
+        let writes: Vec<usize> = match sym_idx.is_external() {
+            true => Vec::new(),
+            false => (0..self.sym(sym_idx).versions.len()).filter(|&ver| self.ir.is_write_version(sym_idx, ver)).collect(),
+        };
+        // A table the file builds there is the global's to other files.
+        let table = ext_sym.and_then(|s| crate::analysis::deferred::global_table(&self.ir.ext, s))
+            .filter(|_| ext_sym.is_some_and(|s| self.ir.ext.deferred_slot_globals.contains_key(&s)));
+        let vt = if !writes.is_empty() {
+            let mut written: Vec<ValueType> = writes.iter()
+                .filter_map(|&ver| self.sym(sym_idx).versions[ver].resolved_type.as_ref())
+                .map(|ty| table.map_or_else(|| ty.clone(), |table| crate::analysis::deferred::as_global_table(ty, table, &self.ir, name)))
+                .chain(ext_sym.and_then(|s| self.ir.slot_global_other_writes(s)))
+                .collect();
+            // An untyped value says nothing of the global, as to the slot harvest.
+            if written.iter().any(|ty| !ty.contains_any()) {
+                written.retain(|ty| !ty.contains_any());
+            }
+            (!written.is_empty()).then(|| ValueType::make_union(written))
+        } else if let Some(ext_sym) = ext_sym {
+            self.sym(ext_sym).versions.last().and_then(|v| v.resolved_type.clone())
+        } else {
+            self.symbol_resolved_type_at(sym_idx, offset).cloned()
+        };
         match vt {
             Some(vt) => collapse_shapes(&self.format_type_depth(&vt.widen_literals(), 1)),
             None => "?".to_string(),
@@ -451,11 +474,11 @@ impl AnalysisResult {
 
     /// The type a field access at `offset` shows, or for `_G.X`, which `path`
     /// keys as the global `X`, the global's.
-    fn access_display(&self, tree: &SyntaxTree, offset: u32, path: &Result<FieldPath, Unkeyed>, write: bool) -> String {
+    fn access_display(&self, tree: &SyntaxTree, offset: u32, path: &Result<FieldPath, Unkeyed>) -> String {
         match path {
             Ok(FieldPath { root: PathRoot::Global(name), fields }) if fields.is_empty() => {
                 match self.ir.scope0_global_symbol(&SymbolIdentifier::Name(name.clone())) {
-                    Some(sym_idx) => self.global_display(sym_idx, offset, write),
+                    Some(sym_idx) => self.global_display(sym_idx, offset),
                     None => "?".to_string(),
                 }
             }
@@ -785,7 +808,8 @@ impl AnalysisResult {
 
 /// Collapse every `{…}` table shape in a formatted type, so a path's type
 /// doesn't differ between files only by a field nested in it (that field is
-/// compared on its own path).
+/// compared on its own path), and list a union's members once each, in one
+/// order (see [`canonical_union`]).
 fn collapse_shapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut depth = 0usize;
@@ -800,5 +824,67 @@ fn collapse_shapes(s: &str) -> String {
             _ => {}
         }
     }
-    out
+    canonical_union(&out)
+}
+
+/// A collapsed union with its members sorted, each once, and `nil` last (`X?` for
+/// one other member): the order of a union's members is no difference between
+/// files, nor are the records one file writes and another reads merged into one
+/// (`{…} | {…}` and `{…}`), nor a bare `table` beside a typed list or map. A
+/// display holding a signature is kept, its return's union being
+/// indistinguishable from the whole's.
+fn canonical_union(s: &str) -> String {
+    if s.contains("fun(") {
+        return s.to_string();
+    }
+    let mut members: Vec<&str> = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut i = 0;
+    while i < s.len() {
+        match s.as_bytes()[i] {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => depth = depth.saturating_sub(1),
+            b' ' if depth == 0 && s[i..].starts_with(" | ") => {
+                members.push(&s[start..i]);
+                i += 3;
+                start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    members.push(&s[start..]);
+    if members.len() < 2 {
+        return s.to_string();
+    }
+    let mut nil = false;
+    let mut out: Vec<&str> = Vec::new();
+    for member in members {
+        let member = match member.strip_suffix('?') {
+            Some(inner) if !inner.is_empty() => {
+                nil = true;
+                inner
+            }
+            _ => member,
+        };
+        if member == "nil" {
+            nil = true;
+        } else if !out.contains(&member) {
+            out.push(member);
+        }
+    }
+    // A bare `table` says nothing next to a list or map whose elements are typed,
+    // as to the slot harvest.
+    if out.iter().any(|m| m.ends_with("[]") || m.starts_with("table<")) {
+        out.retain(|m| *m != "table");
+    }
+    out.sort_unstable();
+    match (out.as_slice(), nil) {
+        ([], _) => "nil".to_string(),
+        ([only], true) => format!("{only}?"),
+        (_, true) => format!("{} | nil", out.join(" | ")),
+        (_, false) => out.join(" | "),
+    }
 }

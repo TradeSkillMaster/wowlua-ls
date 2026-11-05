@@ -392,8 +392,7 @@ fn resolve_expr_type_uncleared(
                         // Skip nil primary when there are reassignments
                         let nil_primary = !extras.is_empty()
                             && matches!(resolve_expr_type_impl(ir, resolved_expr_cache, primary, visited, depth + 1), Some(ValueType::Nil));
-                        let slot = ir.slot_writes_choice(primary, &extras, |e| resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1));
-                        let (all_exprs, skip_primary) = crate::analysis::field_union_exprs(primary, &extras, nil_primary, slot);
+                        let (all_exprs, skip_primary) = ir.slot_union_exprs(primary, &extras, nil_primary, |e| resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1));
                         let mut has_unresolvable = false;
                         for eid in all_exprs {
                             if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
@@ -658,12 +657,11 @@ pub fn format_vararg_param(ann: &crate::annotations::AnnotationType) -> String {
 
 impl AnalysisResult {
     /// The writes the field `fi` unions, past a `nil` initializer or the scan's
-    /// value for a slot (`crate::analysis::field_union_exprs`), and whether its
-    /// primary is skipped.
+    /// value for a slot (`Ir::slot_union_exprs`), and whether its primary is
+    /// skipped.
     pub(super) fn field_union_exprs(&self, fi: &FieldInfo) -> (Vec<ExprId>, bool) {
         let nil_primary = !fi.extra_exprs.is_empty() && matches!(self.resolve_expr_type(fi.expr), Some(ValueType::Nil));
-        let slot = self.ir.slot_writes_choice(fi.expr, &fi.extra_exprs, |e| self.resolve_expr_type(e));
-        crate::analysis::field_union_exprs(fi.expr, &fi.extra_exprs, nil_primary, slot)
+        self.ir.slot_union_exprs(fi.expr, &fi.extra_exprs, nil_primary, |e| self.resolve_expr_type(e))
     }
 
     /// Get the string literal value for a symbol, checking both local and external sources.
@@ -677,7 +675,7 @@ impl AnalysisResult {
         let version = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
             symbol.versions.get(ver_idx)
         } else {
-            self.version_at_def_site(symbol, token_start)
+            self.version_at_def_site(symbol_idx, token_start)
                 .or_else(|| symbol.versions.last())
         };
         version
@@ -695,7 +693,7 @@ impl AnalysisResult {
         let version = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
             symbol.versions.get(ver_idx)
         } else {
-            self.version_at_def_site(symbol, token_start)
+            self.version_at_def_site(symbol_idx, token_start)
                 .or_else(|| symbol.versions.last())
         };
         version

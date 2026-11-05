@@ -133,7 +133,7 @@ impl Ir {
     /// narrowing, restoring or merging its earlier ones. Unlike
     /// [`Self::is_narrowing_only_version`], a narrowed read of another variable
     /// (`x = y` under `if type(y) == "string"`) is a write.
-    fn is_write_version(&self, sym: SymbolIndex, ver: usize) -> bool {
+    pub(crate) fn is_write_version(&self, sym: SymbolIndex, ver: usize) -> bool {
         if self.narrowing_only_versions.contains(&(sym, ver)) {
             return false;
         }

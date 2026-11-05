@@ -188,22 +188,21 @@ enum SlotKey {
 }
 
 /// The values a file writes a slot, in ext space, as its own analysis types the
-/// field: the ones that resolve. Whether one is a function where the scan typed
-/// the slot one, whose signature isn't the harvest's to carry, one an author
-/// annotation types, and one didn't resolve.
+/// field: the ones that resolve to more than `any` (one that doesn't says nothing
+/// of the slot). Whether one is a function where the scan typed the slot one, whose
+/// signature isn't the harvest's to carry, and one an author annotation types.
 #[derive(Debug, Default, PartialEq)]
 struct SlotValues {
     tys: Vec<ValueType>,
     function: bool,
     annotated: bool,
-    unresolved: bool,
 }
 
 impl SlotValues {
-    /// Whether the file's writes say nothing a reader can take: a function where the
-    /// scan typed one or an annotated value among them, or none that resolves.
+    /// Whether the file's writes leave the slot a reader can't take: a function where
+    /// the scan typed one or an annotated value among them.
     fn opaque(&self) -> bool {
-        self.function || self.annotated || (self.unresolved && self.tys.is_empty())
+        self.function || self.annotated
     }
 }
 
@@ -748,6 +747,12 @@ impl Ir {
             self.deferred_dep_files.insert(path);
             ty
         } else if let Some(spec) = self.ext.deferred_slot_globals.get(&sym_idx) {
+            // A harvest reads a global the workspace build gives a table as that
+            // table: what other values files write it matter where it is read,
+            // not to what a file writes elsewhere.
+            if harvesting() && global_table(&self.ext, sym_idx).is_some() {
+                return;
+            }
             let ext = Arc::clone(&self.ext);
             let scanned_table = matches!(
                 ext.sym(sym_idx).versions.last().and_then(|v| v.resolved_type.as_ref()),
@@ -1183,11 +1188,59 @@ fn deferred_slot_type(
     reader: Option<&Path>,
     deps: &mut HashSet<PathBuf>,
 ) -> Option<ValueType> {
+    let per_file = slot_values_by_file(ext, slot, key, reader, None, deps)?;
+    gate_harvested_field(without_bare_tables(merge_records(per_file), ext), false)
+}
+
+/// `tys` without its bare `table` members — and lists of `any`, as bare — when
+/// another is a list or map whose elements are typed (`string[]`): a list one
+/// writer's analysis couldn't type the elements of says nothing of the others'.
+fn without_bare_tables(tys: Vec<ValueType>, ext: &PreResolvedGlobals) -> Vec<ValueType> {
+    let bare = |ty: &ValueType| match ty {
+        ValueType::Table(None) => true,
+        ValueType::TableShape(shape) => shape.fields.is_empty() && shape.value_type.as_ref().is_some_and(|v| v.contains_any()),
+        _ => false,
+    };
+    let typed_elements = |ty: &ValueType| match ty {
+        ValueType::TableShape(shape) => shape.value_type.as_ref().is_some_and(|v| !v.contains_any()),
+        ValueType::Table(Some(idx)) => ext.try_table(*idx).is_some_and(|t| t.value_type.as_ref().is_some_and(|v| !v.contains_any())),
+        _ => false,
+    };
+    let members = || tys.iter().flat_map(|ty| match ty {
+        ValueType::Union(members) => members.as_slice(),
+        other => std::slice::from_ref(other),
+    });
+    if !members().any(typed_elements) {
+        return tys;
+    }
+    tys.into_iter()
+        .filter(|ty| !bare(ty))
+        .map(|ty| match ty {
+            ValueType::Union(members) => ValueType::make_union(members.into_iter().filter(|m| !bare(m)).collect()),
+            other => other,
+        })
+        .collect()
+}
+
+/// The values the files writing a slot write there, one list per file, but
+/// `skip`'s — for a namespace field, the files of `reader`'s addon — adding those
+/// files to `deps`. `None` when a file can't be read or its writes are opaque
+/// ([`SlotValues::opaque`]).
+fn slot_values_by_file(
+    ext: &Arc<PreResolvedGlobals>,
+    slot: &DeferredSlot,
+    key: SlotKey,
+    reader: Option<&Path>,
+    skip: Option<&Path>,
+    deps: &mut HashSet<PathBuf>,
+) -> Option<Vec<Vec<ValueType>>> {
     let addon_root = match (slot.in_namespace, reader, &ext.project_configs) {
         (true, Some(reader), Some(configs)) => configs.addon_root_for(reader).map(Path::to_path_buf),
         _ => None,
     };
-    let writers = slot.writers.iter().filter(|w| addon_root.as_ref().is_none_or(|root| w.starts_with(root)));
+    let writers = slot.writers.iter()
+        .filter(|w| addon_root.as_ref().is_none_or(|root| w.starts_with(root)))
+        .filter(|w| skip.is_none_or(|skip| w.as_path() != skip));
     // A discovery analysis records every writer, past the first read it cuts.
     if discovering() {
         for writer in writers {
@@ -1206,7 +1259,50 @@ fn deferred_slot_type(
         }
         per_file.push(written);
     }
-    gate_harvested_field(merge_records(per_file), false)
+    Some(per_file)
+}
+
+/// What the files writing a slot other than `writer`, which writes it too, write
+/// there (see [`deferred_slot_type`]): what `writer` reads the slot as besides its
+/// own writes. `None` when no other file writes it, one's writes can't be read or
+/// are opaque, or they say no more than `any`; and in a harvest, which takes the
+/// file's own writes only.
+fn other_writes_type(
+    ext: &Arc<PreResolvedGlobals>,
+    slot: &DeferredSlot,
+    key: SlotKey,
+    writer: &Path,
+    deps: &mut HashSet<PathBuf>,
+) -> Option<ValueType> {
+    if harvesting() {
+        return None;
+    }
+    let tys = without_bare_tables(merge_records(slot_values_by_file(ext, slot, key, Some(writer), Some(writer), deps)?), ext);
+    if tys.is_empty() {
+        return None;
+    }
+    let ty = ValueType::make_union(tys);
+    // An empty table says nothing besides the writer's own writes, as to readers.
+    (!contains_untyped(&ty) && ty != ValueType::Table(None)).then_some(ty)
+}
+
+impl Ir {
+    /// The type of what the files other than this one write the slot field whose
+    /// workspace value is `primary` (`PreResolvedGlobals::deferred_slot_fields`), for
+    /// a file writing it too: see [`other_writes_type`].
+    pub fn slot_field_other_writes(&mut self, primary: ExprId) -> Option<ValueType> {
+        let ext = Arc::clone(&self.ext);
+        let slot = ext.deferred_slot_fields.get(&primary)?;
+        let path = self.file_path.clone()?;
+        other_writes_type(&ext, slot, SlotKey::Field(primary), &path, &mut self.deferred_dep_files)
+    }
+
+    /// As [`Self::slot_field_other_writes`], for the workspace global `sym`.
+    pub fn slot_global_other_writes(&self, sym: SymbolIndex) -> Option<ValueType> {
+        let slot = self.ext.deferred_slot_globals.get(&sym)?;
+        let path = self.file_path.as_deref()?;
+        other_writes_type(&self.ext, slot, SlotKey::Global(sym), path, &mut HashSet::default())
+    }
 }
 
 /// The types the files writing a slot write there (`per_file`, one list per file)
@@ -1305,20 +1401,20 @@ fn harvest_slots(
         if value.is_some_and(|v| nil_initializers.contains(&v)) {
             continue;
         }
-        let key = match slot {
+        let (key, global) = match slot {
             WrittenSlot::Field(table, field) => {
                 let Some(fi) = ext.try_table(table).and_then(|t| t.fields.get(&field)) else { continue };
                 if !ext.deferred_slot_fields.contains_key(&fi.expr) {
                     continue;
                 }
-                SlotKey::Field(fi.expr)
+                (SlotKey::Field(fi.expr), None)
             }
             WrittenSlot::Global(name) => {
-                let Some(&sym) = ext.scope0_symbols.get(&crate::types::SymbolIdentifier::Name(name)) else { continue };
+                let Some(&sym) = ext.scope0_symbols.get(&crate::types::SymbolIdentifier::Name(name.clone())) else { continue };
                 if !ext.deferred_slot_globals.contains_key(&sym) {
                     continue;
                 }
-                SlotKey::Global(sym)
+                (SlotKey::Global(sym), Some(name))
             }
         };
         // A function the scan typed the slot crosses files on its own.
@@ -1328,6 +1424,10 @@ fn harvest_slots(
                 SlotKey::Global(sym) => ext.sym(sym).versions.last().and_then(|v| v.resolved_type.clone()),
             };
             scanned.is_some_and(|ty| is_function_value(&ty) && !contains_untyped(&ty))
+        };
+        let container = match (key, &global) {
+            (SlotKey::Global(sym), Some(name)) => global_table(ext, sym).map(|table| (table, name.as_str())),
+            _ => None,
         };
         let values = slots.entry(key).or_default();
         let Some(value) = value else {
@@ -1339,7 +1439,15 @@ fn harvest_slots(
             Expr::FunctionCall { call_range, ret_index: 0, .. } => ir.narrowed_calls.get(&call_range.0).copied().unwrap_or(value),
             _ => value,
         };
-        match result.resolve_expr_type(value) {
+        // Of an `or` chain, the operands saying more than `any` (`DB = DB or {}`).
+        let operands = ir.typed_operands(value, &mut |e| result.resolve_expr_type(e));
+        let resolved = match operands.as_slice() {
+            [] => result.resolve_expr_type(value),
+            [only] => result.resolve_expr_type(*only),
+            _ => operands.iter().map(|&e| result.resolve_expr_type(e)).collect::<Option<Vec<_>>>().map(ValueType::make_union),
+        }
+            .map(|ty| container.map_or_else(|| ty.clone(), |(table, name)| as_global_table(&ty, table, ir, name)));
+        match resolved {
             Some(ty) if scanned_function && is_function_value(&ty) => values.function = true,
             // A map whose elements the file reads as unknown (its keyed writes fill
             // it) is a plain `table` there; a list's constructor types its elements.
@@ -1355,14 +1463,55 @@ fn harvest_slots(
             Some(ty) => {
                 // A literal written is the slot's base type in other files.
                 let lifted = lift_local_type_to_ext_with(&ty.widen_literals(), ir, ext, result, path, globals);
-                if !values.tys.contains(&lifted) {
+                // An untyped value (an unannotated parameter stored there) says
+                // nothing of the slot, as one that doesn't resolve.
+                if !lifted.contains_any() && !values.tys.contains(&lifted) {
                     values.tys.push(lifted);
                 }
             }
-            None => values.unresolved = true,
+            None => {}
         }
     }
     slots
+}
+
+/// The table the workspace build gives the global `sym`, when it holds one with
+/// something in it (fields other files write, its constructor's entries) — not a
+/// map whose values the scan couldn't type, which is what its files build.
+pub(crate) fn global_table(ext: &PreResolvedGlobals, sym: SymbolIndex) -> Option<TableIndex> {
+    match ext.sym(sym).versions.last()?.resolved_type.as_ref()? {
+        ValueType::Table(Some(idx)) if !ext.table(*idx).is_shapeless() && !matches!(ext.table(*idx).value_type, Some(ValueType::Any)) => Some(*idx),
+        _ => None,
+    }
+}
+
+/// A value a file writes the global `global` whose workspace table is `table`
+/// ([`global_table`]), each table in it that is that table to other files as
+/// `table`: one the file builds there (the class it may declare on it included:
+/// `---@class Locale local L = {}` assigned the global another file fills) but
+/// not another global's (`X = Other`), or one with nothing in it (another
+/// global's empty table), which says nothing of its shape.
+pub(crate) fn as_global_table(ty: &ValueType, table: TableIndex, ir: &Ir, global: &str) -> ValueType {
+    match ty {
+        ValueType::Table(None) => ValueType::Table(Some(table)),
+        ValueType::Table(Some(idx))
+            if (!idx.is_external() && !held_by_other_global(ir, *idx, global)) || ir.table(*idx).is_shapeless() =>
+        {
+            ValueType::Table(Some(table))
+        }
+        ValueType::Union(members) => ValueType::make_union(members.iter().map(|m| as_global_table(m, table, ir, global)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Whether the file's table `idx` is the value of a global it writes other than
+/// `global`.
+fn held_by_other_global(ir: &Ir, idx: TableIndex, global: &str) -> bool {
+    ir.scope0_local_symbols().any(|(id, sym)| {
+        matches!(id, crate::types::SymbolIdentifier::Name(name) if name != global)
+            && !ir.local_decl_symbols.contains(&sym)
+            && ir.sym(sym).versions.iter().any(|v| v.resolved_type == Some(ValueType::Table(Some(idx))))
+    })
 }
 
 /// Whether `ty` is a function, whose signature crosses files on its own.

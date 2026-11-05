@@ -2343,6 +2343,43 @@ fn slot_fields_crossfile() {
     });
 }
 
+// Workspace globals written in several files and functions — saved variables reset
+// elsewhere, a value stored from an unannotated parameter, a map the scan sees only
+// the keys of, a mixin global assigned another mixin — and tables built in functions
+// or filled from other files, read alike in every file: a writer shows the other
+// files' writes beside its own (also where it never reads the field), and each
+// write still shows the value it writes.
+#[test]
+fn slot_globals_crossfile() {
+    for lua_file in [
+        "tests/slot-globals/reader.lua",
+        "tests/slot-globals/config.lua",
+        "tests/slot-globals/slash.lua",
+        "tests/slot-globals/rates.lua",
+        "tests/slot-globals/cache.lua",
+        "tests/slot-globals/counter_write.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: false,
+            scan_dir: Some("tests/slot-globals"),
+        });
+    }
+}
+
+// `crossfile-types` finds no path of `tests/slot-globals` whose type differs
+// between the files reading and writing it.
+#[test]
+fn slot_globals_agree_across_files() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
+        .args(["crossfile-types", "tests/slot-globals"])
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("run crossfile-types");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains(", 0 of which disagree"), "{report}");
+}
+
 // A table a file exports, read in that file through its local: a field another
 // file writes through the export. The writer reaches it through a local alias of
 // the namespace field, which only the language server's build (`build_on_stubs`)

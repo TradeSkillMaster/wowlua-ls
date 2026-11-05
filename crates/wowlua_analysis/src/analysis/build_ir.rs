@@ -2255,8 +2255,10 @@ impl<'a> Analysis<'a> {
             // intermediate can't be resolved yet.
             if let Some(cur_table) = self.walk_field_chain(table_idx, &names[1..names.len()-1]) {
                 // Insert field directly (matching the deferred
-                // resolve_deep_field_injections path).
-                if !self.ir.has_field(cur_table, field_name) {
+                // resolve_deep_field_injections path). A field of the copy
+                // other files read of a table this file exports is no field of
+                // the table this write lands on.
+                if !self.ir.has_field_unexported(cur_table, field_name) {
                     let assign_range = ident.syntax().text_range();
                     let fi = FieldInfo {
                         expr: expr_id,
@@ -2447,6 +2449,17 @@ impl<'a> Analysis<'a> {
                     if inline_is_lateinit { overlay_fi.lateinit = true; }
                     overlay_fi.flavor_guard = self.inferred_flavor_guards
                         .field_write(table_idx, field_name, overlay_fi.flavor_guard, annotated_flavor_guard, expr);
+                } else if inline_annotation.is_none()
+                    && let Some(slot_fi) = self.ir.ext.table(table_idx).fields.get(field_name)
+                        .filter(|f| self.ir.writes_type_field(f))
+                        .filter(|_| self.ir.named_function(expr_id, 0).is_none())
+                {
+                    // A slot other files type by what their files write: this file's
+                    // writes type it here past the scan's value, with the other files'
+                    // (`Ir::slot_union_exprs`), as through a deep path.
+                    let mut fi = slot_fi.clone();
+                    fi.extra_exprs.push(expr_id);
+                    self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                 } else {
                     let assign_range = ident.syntax().text_range();
                     let overlay_vis = if assign_visibility != Visibility::Public {
@@ -2475,6 +2488,19 @@ impl<'a> Analysis<'a> {
                         description: None,
                         from_scan: scanned,
                     });
+                }
+                // A table this file builds there is the workspace's at that path
+                // (`App.Mill = {}`, another file writing `App.Mill.Table`): the
+                // fields it lacks are that table's.
+                if inline_annotation.is_none()
+                    && func_id.is_none()
+                    && let Some(scan_table) = self.ir.ext.table(table_idx).fields.get(field_name)
+                        .and_then(|f| match (&f.annotation, self.ir.ext.expr(f.expr)) {
+                            (Some(ValueType::Table(Some(t))), _) | (None, Expr::Literal(ValueType::Table(Some(t)))) => Some(*t),
+                            _ => None,
+                        })
+                {
+                    self.overlay_ctor_functions(scan_table, expr_id, false);
                 }
             }
             let ident_r = ident.syntax().text_range();
@@ -2803,7 +2829,7 @@ impl<'a> Analysis<'a> {
             } else {
                 None
             };
-            let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+            let symbol_idx = self.ir.insert_or_version_global(SymbolIdentifier::Name(root_name.clone()), scope_idx, node, func_id.is_some());
             let current_guard = self.ir.symbols[symbol_idx.val()].flavor_guard;
             self.ir.symbols[symbol_idx.val()].flavor_guard = self.inferred_flavor_guards
                 .symbol_write(symbol_idx, current_guard, annotated_flavor_guard, expression);
@@ -2849,11 +2875,21 @@ impl<'a> Analysis<'a> {
                 // the workspace's table, which `DB` reads as, is the scan's copy of
                 // it. A same-named local's constructor is another table.
                 if !self.ir.local_decl_symbols.contains(&symbol_idx)
-                    && self.ir.defines_global_alone(root_name)
                     && let Some(scan_table) = self.ir.external_table_for(root_name)
-                    && let Some(ctor) = self.constructor_operand(expr_id)
                 {
-                    self.overlay_ctor_functions(scan_table, ctor, true);
+                    if self.ir.defines_global_alone(root_name)
+                        && let Some(ctor) = self.constructor_operand(expr_id)
+                    {
+                        self.overlay_ctor_functions(scan_table, ctor, true);
+                    } else if let Some(local) = self.ir.find_table_index(expr_id).filter(|t| !t.is_external())
+                        && scan_table.is_external()
+                        && self.ir.table(scan_table).class_name.is_none()
+                    {
+                        // Another file writes it too: the table this one builds is
+                        // still the global's, whose fields others fill
+                        // (`if type(DB) ~= "table" then DB = {} end`).
+                        self.ir.exported_tables.entry(local).or_insert(scan_table);
+                    }
                 }
                 if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
                     // Reassignment path for @type-annotated variables:
@@ -2915,6 +2951,8 @@ impl<'a> Analysis<'a> {
                     ValueType::Table(Some(ext_class_idx))
                 ));
                 self.ir.set_type_source(symbol_idx, expr_id);
+                // Its own class is what the write gives the global to other files.
+                self.record_target_value(ident, expr_id, false);
             }
         }
     }

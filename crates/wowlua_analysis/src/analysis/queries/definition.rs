@@ -126,7 +126,7 @@ impl AnalysisResult {
                 return self.external_symbol_definitions(symbol_idx);
             }
             let symbol = self.sym(symbol_idx);
-            if let Some(version) = self.version_at_def_site(symbol, token_start)
+            if let Some(version) = self.version_at_def_site(symbol_idx, token_start)
                 .or_else(|| symbol.versions.first())
             {
                 return vec![DefinitionResult::Local(TextRange::new(

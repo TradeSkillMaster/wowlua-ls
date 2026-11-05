@@ -93,6 +93,7 @@ impl<'a> Analysis<'a> {
     }
 
     pub fn resolve_types(&mut self) {
+        self.fill_slot_others();
         // Pre-size the expression cache and cycle-detection bitmap as dense Vecs.
         // Only local expressions (< EXT_BASE) are indexed; external ones resolve via fast paths.
         // Cache slots are initialized to None (= "not yet resolved"). Only Some(_) results
@@ -2824,8 +2825,7 @@ impl<'a> Analysis<'a> {
                     // Mirror FieldAccess resolution: if there are reassignments and the
                     // initial value is nil, skip the nil placeholder.
                     let nil_primary = !extras.is_empty() && matches!(self.resolve_expr(expr), Some(ValueType::Nil));
-                    let slot = self.slot_writes_choice(expr, &extras);
-                    let (all_exprs, skip_primary) = super::field_union_exprs(expr, &extras, nil_primary, slot);
+                    let (all_exprs, skip_primary) = self.slot_union_exprs(expr, &extras, nil_primary);
                     let mut types: Vec<ValueType> = Vec::new();
                     let mut has_unresolvable = false;
                     for e in all_exprs {
@@ -4231,20 +4231,59 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// `Ir::slot_writes_choice`, resolving the writes in the fixpoint.
-    fn slot_writes_choice(&mut self, primary: ExprId, extras: &[ExprId]) -> Option<super::SlotWrites> {
+    /// `Ir::slot_union_exprs`, resolving the writes in the fixpoint.
+    fn slot_union_exprs(&mut self, primary: ExprId, extras: &[ExprId], nil_primary: bool) -> (Vec<ExprId>, bool) {
         if !self.ir.is_slot_primary(primary) {
-            return None;
+            return super::field_union_exprs(primary, extras, nil_primary);
         }
+        self.ensure_slot_others(primary, extras);
         let writes = std::iter::once(primary).chain(extras.iter().copied().filter(|e| !e.is_external()));
-        let types: Vec<(ExprId, Option<ValueType>)> = writes.map(|e| (e, self.resolve_expr(e))).collect();
+        let mut types: Vec<(ExprId, Option<ValueType>)> = writes.map(|e| (e, self.resolve_expr(e))).collect();
         // A write reading a local the fixpoint hasn't typed yet decides once it is.
         for &(e, ref ty) in &types[1..] {
             if ty.is_none() {
                 self.wait_on_local_write(e);
             }
         }
-        self.ir.slot_writes_choice(primary, extras, |e| types.iter().find(|(id, _)| *id == e).and_then(|(_, ty)| ty.clone()))
+        // The operands of an `or` chain written there, which `Ir::typed_operands`
+        // takes a write's typed parts from.
+        let mut operands = Vec::new();
+        for &(e, _) in &types[1..] {
+            self.ir.or_operands(e, &mut operands);
+        }
+        for e in operands {
+            if !types.iter().any(|(id, _)| *id == e) {
+                let ty = self.resolve_expr(e);
+                types.push((e, ty));
+            }
+        }
+        self.ir.slot_union_exprs(primary, extras, nil_primary, |e| types.iter().find(|(id, _)| *id == e).and_then(|(_, ty)| ty.clone()))
+    }
+
+    /// Record what the other files writing the slot field `primary` write there
+    /// (`Ir::slot_others`), when this file writes it (`extras`).
+    fn ensure_slot_others(&mut self, primary: ExprId, extras: &[ExprId]) {
+        if !self.ir.slot_others.contains_key(&primary) && extras.iter().any(|e| !e.is_external()) {
+            let others = self.ir.slot_field_other_writes(primary).map(|ty| self.ir.push_expr(Expr::Literal(ty)));
+            self.ir.slot_others.insert(primary, others);
+        }
+    }
+
+    /// [`Self::ensure_slot_others`] for every slot field this file writes, before the
+    /// fixpoint: what it shows there doesn't depend on whether it also reads it.
+    fn fill_slot_others(&mut self) {
+        if self.ir.ext.deferred_slot_fields.is_empty() {
+            return;
+        }
+        let written: Vec<(ExprId, Vec<ExprId>)> = self.ir.local_tables().map(|(_, t)| &t.fields)
+            .chain(self.ir.overlay_fields.values())
+            .flat_map(|fields| fields.values())
+            .filter(|fi| self.ir.is_slot_primary(fi.expr))
+            .map(|fi| (fi.expr, fi.extra_exprs.clone()))
+            .collect();
+        for (primary, extras) in written {
+            self.ensure_slot_others(primary, &extras);
+        }
     }
 
     /// A parent-class field type that must not override the child's own
@@ -4423,8 +4462,7 @@ impl<'a> Analysis<'a> {
                     // If there are reassignments and the initial value is nil,
                     // skip the nil — it's just a placeholder initializer.
                     let nil_primary = has_extras && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
-                    let slot = self.slot_writes_choice(primary, &extras);
-                    let (all_exprs, skip_primary) = super::field_union_exprs(primary, &extras, nil_primary, slot);
+                    let (all_exprs, skip_primary) = self.slot_union_exprs(primary, &extras, nil_primary);
                     let mut has_unresolvable = false;
                     for expr_id in all_exprs {
                         // The field's own in-progress write (`t.f = t.f or X()`)

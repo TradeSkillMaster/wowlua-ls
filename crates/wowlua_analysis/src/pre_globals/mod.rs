@@ -2977,7 +2977,10 @@ impl BuildContext {
         // existence, `any` until what their files write types them.
         for g in globals {
             let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
-            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path) else { continue };
+            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path).or_else(|| {
+                let root = self.slot_tables().slot_table(&g.name, &[])?;
+                shared::materialize_slot_path(&mut self.tables, &mut self.exprs, &mut self.existence_fields, &mut self.sub_tables, root, &g.name, path)
+            }) else { continue };
             if shared::add_existence_field(&mut self.tables, &mut self.exprs, leaf_idx, field_name, g, self.implicit_protected_prefix) {
                 self.existence_fields.insert((leaf_idx, field_name.clone()));
             }

@@ -82,7 +82,7 @@ hold; a later slice never starts on a tree where an earlier one's acceptance reg
    build contexts where the removed passes were their difference. The cold `build`
    remains for the stub blob, whose sources are declaration files typed by annotations.
 
-## Slice 1 status (2026-11-03, second gate)
+## Slice 1 status (2026-11-03, third round)
 
 Landed: namespace and plain-global table fields at any depth and workspace globals are
 slots harvested from every writing file (ARCHITECTURE.md, "Namespace and global table
@@ -91,31 +91,49 @@ field slots"); writes through another file's table global are discovered as exis
 component handling the budget required: a component is no longer re-harvested per file
 it reaches only through resolved types, a cycle's round analyzes each file once and only
 the files whose reads changed, and a discovery analysis stands for a harvest's that
-would cut the same reads. Every corpus workspace is within twice its file count
-(DeadlyBossMods 2480 → 268 analyses for 191 files, TradeSkillMaster 448 → 377). No hover
-typed on main is untyped; `check` adds three NPCScan `type-mismatch` true positives (the
-author's optional `classification` passed as a required `unitClassification`) and drops
-eleven false positives.
+would cut the same reads.
 
-**Not done.** `crossfile-types` still reports 133 disagreeing paths of this kind on the
-corpus (none on TradeSkillMaster):
-- 27 `<ns>.TutorialData.*` (wow-ui-source): two addons share one namespace for lack of
-  an `addonRoot`; a configuration question, not the harvest's.
-- 21 constructor entries, `DBMMod.localization` (`localization =
-  self:GetModLocalization(name)` in a `@class` constructor) among the same kind: slice 3.
-- 16 fields written through `self` on plain mixin tables and 15 declared by XML
-  templates: instance fields, with slice 2.
-- 24 global roots: saved variables written different values per file, where each
-  writing file shows its own flow-sensitive writes; locale roots, whose fields are typed
-  everywhere but whose declaring write shows the `@class` (`DBMLocale`) where readers
-  show the table; globals assigned another mixin; untyped parameters stored into a
-  global a `@meta` file declares.
-- 27 other statement-written fields: maps and lists other files fill by element writes,
-  writes the writer's own analysis doesn't type, and author `table` annotations the
-  declaring file enriches.
-- 3 fields of a table two flavor files build differently (`Auctionator.AH.Internals`):
-  optional for readers, since the other flavor's table lacks them, but not in the file
-  writing them.
+The third round makes a slot one type in every file, the files writing it included: a
+writer reads the other writers' values beside its own (`Ir::slot_others`, an entry
+version for a global it writes in a function); an untyped value written (an
+unannotated parameter, an `or` chain's untyped operand) says nothing; a table global
+some file writes another value is a slot whose writers' own tables are its table; a
+map the scan saw only the keys of, and an empty constructor entry a statement writes,
+are slots; a field fields are written through in a function is a table holding them;
+a file's table written at a path other files fill reads their fields. `crossfile-types`
+shows a global's type in the file, not one read's narrowing, and a union's members in
+one order. It closes the profile and config saved variables, the locale roots, the
+mixin globals assigned another mixin, the flavor-split `Auctionator.AH.Internals`
+fields, maps and lists filled from other files, and the namespace tables a file
+rebuilds: 87 slice-kind paths on the corpus outside wow-ui-source go to 54, none new;
+`check` and TradeSkillMaster are unchanged, no hover typed on main is untyped (201
+gain a type), and every workspace is within twice its file count (Baganator 218 for
+110 files, DeadlyBossMods 281 for 191, TradeSkillMaster 377 for 692).
+
+**Not done.** Of the 54 paths `crossfile-types` still reports of this kind (outside the
+27 `<ns>.TutorialData.*` of wow-ui-source, two addons sharing one namespace for lack
+of an `addonRoot`):
+- 25 instance fields of plain mixin tables, written through `self` or declared by XML
+  templates: with slice 2.
+- 10 constructor entries (`Auctionator.Buying.Events.*`, two flavor files' constructors
+  with different keys; `*_LOCALES.enUS`): slice 3.
+- 19 of slice 1's kind, open:
+  - fields a function writes on a global the same file builds there
+    (`DB = DB or {}`, `DB.list = DB.list or {}`: `DBM_ModsToLoadWithFullTestSupport`,
+    `SYNDICATOR_DATA.Warband`): registering their existence types the readers, but
+    the hover engine's element read through the union of the writer's lists loses a
+    field it typed (`Warband[1].money`), so they stay unregistered;
+  - author annotations the build doesn't honor or the writer enriches: a trailing
+    `---@type` on a global's write (`DBM_Test_Settings`), a `@class` on a
+    `CreateFromMixins` global (`TalentViewer_LevelingSliderMixin`), `---@type
+    table<T>` namespace fields the declaring file enriches with its constructor
+    (5, ItemUpgradeTip);
+  - fields of frames a call creates (`CreateFrame(..., "MacroToolkitFrame")`, 3) and a
+    namespace `@class` field methods are defined through (`PGVToggleEnchantButton`);
+  - writes through a local bound to a namespace field in a branch (`lib =
+    ns.LibEditMode or LibStub(...)`, 3) and `<ns>.GliderUI`, not yet diagnosed.
+- `tests/slot-fields`' `LedgerApp.Layout.wide`: a constructor key shows the entry it
+  writes, readers the records two files write merged: with slice 3.
 
 ## Acceptance for every slice
 

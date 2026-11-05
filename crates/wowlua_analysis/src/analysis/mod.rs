@@ -1024,6 +1024,10 @@ pub struct Ir {
     /// The fields (likewise) the call-field or table-field harvest typed, which
     /// the slot harvest leaves to them.
     pub harvest_refined_fields: HashSet<(TableIndex, ExprId)>,
+    /// For each slot field this file writes, by its workspace value: an expr typed
+    /// by what the other files writing it write there, the file's own writes aside
+    /// (`Ir::slot_field_other_writes`), or `None` when that is unknown.
+    pub slot_others: HashMap<ExprId, Option<ExprId>>,
     /// Defining files this file harvested a deferred cross-file type from during
     /// analysis (a body-derived return, a `@creates-global`, a `@class` or table
     /// field, or a constructor generic type-arg — recorded by the `ensure_*_overlay` /
@@ -1074,23 +1078,22 @@ pub(super) fn block_comment_inner(text: &str) -> Option<&str> {
     Some(inner)
 }
 
-/// Which writes type a slot field in a file writing it ([`Ir::slot_writes_choice`]).
+/// Which writes type a slot field in a file writing it ([`Ir::slot_writes_choice`]),
+/// each with the expr typing what the other files writing it write there, when known
+/// ([`Ir::slot_others`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotWrites {
-    /// The file's own writes.
-    Own,
-    /// The scan's value for it.
-    Scanned,
+    /// The file's own writes, and the other files'.
+    Own(Option<ExprId>),
+    /// The other files' writes, else the scan's value for it.
+    Scanned(Option<ExprId>),
 }
 
 /// The writes a field with `primary` and `extras` unions, given whether a `nil`
-/// primary initializes it (`nil_primary`) and the slot choice
-/// ([`Ir::slot_writes_choice`]).
-pub fn field_union_exprs(primary: ExprId, extras: &[ExprId], nil_primary: bool, slot: Option<SlotWrites>) -> (Vec<ExprId>, bool) {
-    if slot == Some(SlotWrites::Scanned) {
-        return (vec![primary], false);
-    }
-    let skip_primary = !extras.is_empty() && (nil_primary || slot == Some(SlotWrites::Own));
+/// primary initializes it (`nil_primary`), and whether the primary is skipped. A
+/// slot field's are [`Ir::slot_union_exprs`].
+pub fn field_union_exprs(primary: ExprId, extras: &[ExprId], nil_primary: bool) -> (Vec<ExprId>, bool) {
+    let skip_primary = !extras.is_empty() && nil_primary;
     let exprs = if skip_primary {
         extras.to_vec()
     } else {
@@ -1983,6 +1986,15 @@ impl Ir {
     /// to version. Used for plain assignments (`x = expr`) where we want to add a version
     /// to the outer-scope variable rather than creating a new shadow symbol.
     pub(super) fn insert_or_version_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: DefNode) -> SymbolIndex {
+        self.insert_or_version_global(id, scope_idx, node, false)
+    }
+
+    /// [`Self::insert_or_version_symbol`]. A global it creates in a function
+    /// (`in_function`) whose type is what every file writing it writes there
+    /// (`PreResolvedGlobals::deferred_slot_globals`) holds that where none of this
+    /// file's writes reaches — in another function, which may run after any file's
+    /// write: it gets an entry version reading the workspace's, ahead of the write.
+    pub(super) fn insert_or_version_global(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: DefNode, in_function: bool) -> SymbolIndex {
         let order = self.next_order();
         let version = SymbolVersion {
             def_node: node,
@@ -2008,14 +2020,32 @@ impl Ir {
         // In Lua, assignment without `local` always creates a global, regardless
         // of nesting depth, so register the symbol in file scope (scope 0).
         let global_scope = ScopeIndex(0);
+        let entry = self.ext.scope0_symbols.get(&id).copied()
+            .filter(|ext_sym| in_function && self.ext.deferred_slot_globals.contains_key(ext_sym))
+            .map(|ext_sym| SymbolVersion {
+                type_source: Some(self.push_expr(Expr::SymbolRef(ext_sym, 0))),
+                created_in_scope: global_scope,
+                ..version.clone()
+            });
+        let mut versions = Vec::new();
+        if let Some(entry) = entry {
+            versions.push(entry);
+            versions.push(SymbolVersion { creation_order: self.next_order(), ..version });
+        } else {
+            versions.push(version);
+        }
+        let has_entry = versions.len() > 1;
         self.symbols.push(Symbol {
             id: id.clone(),
             scope_idx: global_scope,
-            versions: vec![version],
+            versions,
             flavor_guard: 0,
             flavors: 0,
         });
         let symbol_idx = SymbolIndex(self.symbols.len() - 1);
+        if has_entry {
+            self.mark_narrowing_only_version(symbol_idx, 0);
+        }
         self.scopes.get_mut(global_scope.val()).unwrap().symbols.insert(id, symbol_idx);
         symbol_idx
     }
@@ -2356,16 +2386,76 @@ impl Ir {
         if !self.is_slot_primary(primary) {
             return None;
         }
+        let others = self.slot_others.get(&primary).copied().flatten();
         let scanned_function = resolve(primary).is_some_and(|ty| deferred::is_function_value(&ty) && !deferred::contains_untyped(&ty));
         let mut scanned = false;
         for &e in extras.iter().filter(|e| !e.is_external()) {
             match resolve(e) {
-                Some(ty) if ty.contains_any() || (scanned_function && deferred::is_function_value(&ty)) => scanned = true,
-                Some(_) => return Some(SlotWrites::Own),
+                Some(ty) if scanned_function && deferred::is_function_value(&ty) => scanned = true,
+                Some(ty) if ty.contains_any() => {
+                    if self.typed_operands(e, &mut resolve).is_empty() {
+                        scanned = true;
+                    } else {
+                        return Some(SlotWrites::Own(others));
+                    }
+                }
+                Some(_) => return Some(SlotWrites::Own(others)),
                 None => {}
             }
         }
-        scanned.then_some(SlotWrites::Scanned)
+        scanned.then_some(SlotWrites::Scanned(others))
+    }
+
+    /// [`field_union_exprs`], for a field whose primary may be the scan's value for
+    /// a slot ([`Self::slot_writes_choice`]): the other files' writes in place of
+    /// the scan's, and the file's own past those saying no more than `any`, as the
+    /// harvest takes them (`deferred::harvest_slots`).
+    pub fn slot_union_exprs(&self, primary: ExprId, extras: &[ExprId], nil_primary: bool, mut resolve: impl FnMut(ExprId) -> Option<ValueType>) -> (Vec<ExprId>, bool) {
+        match self.slot_writes_choice(primary, extras, &mut resolve) {
+            Some(SlotWrites::Scanned(others)) => (vec![others.unwrap_or(primary)], false),
+            Some(SlotWrites::Own(others)) => {
+                let own: Vec<ExprId> = extras.iter().flat_map(|&e| self.typed_operands(e, &mut resolve)).collect();
+                (others.into_iter().chain(own).collect(), true)
+            }
+            None => field_union_exprs(primary, extras, nil_primary),
+        }
+    }
+
+    /// The operands of the `or` chain `expr` is (through parentheses), nested ones
+    /// included, which [`Self::typed_operands`] may take in its place.
+    pub fn or_operands(&self, expr: ExprId, out: &mut Vec<ExprId>) {
+        match *self.expr(expr) {
+            Expr::Grouped(inner) => {
+                out.push(inner);
+                self.or_operands(inner, out);
+            }
+            Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs } => {
+                for operand in [lhs, rhs] {
+                    out.push(operand);
+                    self.or_operands(operand, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The parts of the value `expr` that say more than `any`, as the slot harvest
+    /// takes a write: the value itself, or of an `or` chain the operands that do
+    /// (`t.f = t.f or {}`, the field read in its own write untyped or unresolved),
+    /// else none.
+    pub fn typed_operands(&self, expr: ExprId, resolve: &mut impl FnMut(ExprId) -> Option<ValueType>) -> Vec<ExprId> {
+        if resolve(expr).is_some_and(|ty| !ty.contains_any()) {
+            return vec![expr];
+        }
+        match *self.expr(expr) {
+            Expr::Grouped(inner) => self.typed_operands(inner, resolve),
+            Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs } => {
+                let mut out = self.typed_operands(lhs, resolve);
+                out.extend(self.typed_operands(rhs, resolve));
+                out
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// A scan-fabricated bare `table` placeholder that is never an authoritative
@@ -2781,6 +2871,13 @@ impl Ir {
         self.get_field(table_idx, field_name).is_some()
     }
 
+    /// [`Self::has_field`], not reading a field a table this file exports lacks
+    /// off the export's copy ([`Self::exported_tables`]).
+    pub fn has_field_unexported(&self, table_idx: TableIndex, field_name: &str) -> bool {
+        self.get_field_direct(table_idx, field_name).is_some()
+            || self.get_field_via_metatable(table_idx, field_name, &mut HashSet::default()).is_some()
+    }
+
     /// Collapse a field-type union by dropping any table member whose field set
     /// is subsumed by another table member's. A field assigned `ns.Mod = Mod`
     /// gets two table values for the same logical table: the coarse cross-file
@@ -2985,6 +3082,12 @@ impl Ir {
     /// control-flow region. See `Ir::narrowing_only_versions`.
     pub(super) fn mark_narrowing_only_version(&mut self, sym_idx: SymbolIndex, ver_idx: usize) {
         self.narrowing_only_versions.insert((sym_idx, ver_idx));
+    }
+
+    /// Whether version `ver_idx` of `sym_idx` was recorded narrowing-only
+    /// ([`Self::mark_narrowing_only_version`]): a guard's, or an entry version.
+    pub fn is_marked_narrowing_only(&self, sym_idx: SymbolIndex, ver_idx: usize) -> bool {
+        self.narrowing_only_versions.contains(&(sym_idx, ver_idx))
     }
 
     /// True when version `ver_idx` of `sym_idx` is a synthetic narrowing-only
@@ -4278,6 +4381,7 @@ impl<'a> Analysis<'a> {
                 table_fields_checked: HashSet::default(),
                 slot_fields_checked: HashSet::default(),
                 harvest_refined_fields: HashSet::default(),
+                slot_others: HashMap::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),

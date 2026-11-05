@@ -125,7 +125,7 @@ impl AnalysisResult {
             // token. For redefined locals (`local x = 1; local x = ""`), each
             // redefinition creates a new version with its own def_node, so we must
             // match the token offset to the correct version rather than always using v0.
-            self.version_at_def_site(symbol, token_start)
+            self.version_at_def_site(symbol_idx, token_start)
                 .or_else(|| symbol.versions.first())
                 .and_then(|v| v.resolved_type.as_ref())
         } else {
@@ -1286,15 +1286,17 @@ impl AnalysisResult {
         owners
     }
 
-    /// Find the version whose `def_node` range contains `token_start`.
+    /// Find the version of `symbol_idx` whose `def_node` range contains `token_start`.
     /// Used for redefined locals where multiple versions share the same SymbolIndex
     /// but each has a distinct `def_node` from its own `local` statement.
     /// Returns the first matching version because narrowing/merge versions copy the
-    /// same `def_node` — we want the original declaration version, not a narrowed one.
-    pub(super) fn version_at_def_site<'a>(&self, symbol: &'a Symbol, token_start: u32) -> Option<&'a SymbolVersion> {
-        symbol.versions.iter().find(|v| {
-            v.def_node.start <= token_start && token_start < v.def_node.end
-        })
+    /// same `def_node` — we want the original declaration version, not a narrowed one
+    /// (nor a global's entry version, ahead of the write it copies its node from).
+    pub(super) fn version_at_def_site(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&SymbolVersion> {
+        self.sym(symbol_idx).versions.iter().enumerate()
+            .find(|&(i, v)| v.def_node.start <= token_start && token_start < v.def_node.end
+                && !self.ir.is_marked_narrowing_only(symbol_idx, i))
+            .map(|(_, v)| v)
     }
 
 }

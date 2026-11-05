@@ -863,7 +863,10 @@ impl<'a> BuildOnStubsContext<'a> {
         for g in ws_globals {
             let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
             if self.is_stub_global(&g.name) { continue; }
-            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path) else { continue };
+            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path).or_else(|| {
+                let root = self.slot_tables().slot_table(&g.name, &[])?;
+                super::shared::materialize_slot_path(&mut self.tables, &mut self.exprs, &mut self.existence_fields, &mut self.sub_tables, root, &g.name, path)
+            }) else { continue };
             if super::shared::add_existence_field(&mut self.tables, &mut self.exprs, leaf_idx, field_name, g, self.implicit_protected_prefix) {
                 self.existence_fields.insert((leaf_idx, field_name.clone()));
             }
