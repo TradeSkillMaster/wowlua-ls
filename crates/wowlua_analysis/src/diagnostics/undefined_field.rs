@@ -290,9 +290,11 @@ pub fn receiver_tables(ir: &Ir, t: &ValueType, receiver: ExprId, is_call: impl F
         // patterns like `(Frame & Template) | AceEvent-3.0` check all tables.
         ValueType::Union(members) => {
             // An intersection member with a member that can hold any field
-            // could carry this one.
+            // could carry this one, as could a table shape member (a record
+            // another file writes there, `Class | {field: T}`).
             if members.iter().any(|m| matches!(m, ValueType::Intersection(_))
                 && !intersection_tables(ir, m, &mut Vec::new())) { return None; }
+            if members.iter().any(|m| matches!(m, ValueType::TableShape(_))) { return None; }
             super::collect_class_indices(t, &mut tables);
             // A `string` union member indexes into the `string` library via its
             // metatable, so add that library table to the permissive multi-member

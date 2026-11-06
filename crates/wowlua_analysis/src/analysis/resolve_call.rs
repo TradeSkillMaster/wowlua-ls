@@ -4451,7 +4451,18 @@ impl<'a> Analysis<'a> {
                 let mut combined = sym_hints.baseline.clone();
                 combined.extend(sym_hints.narrowing.iter().cloned());
                 let inferred = intersect_hints(&combined, &is_subtype).unwrap_or(baseline_intersect);
-                if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
+                // Callers passing disjoint types leave the param untyped, as a type
+                // the body's uses infer would reject one of them — but where they pass
+                // tables of one type it takes (`Frame`, `table`): frames an XML
+                // template declares of several templates.
+                if !self.caller_types_mutually_compatible(&sym_hints.caller)
+                    && (inferred.contains_any()
+                        || !matches!(inferred.strip_nil(), ValueType::Table(_))
+                        || !sym_hints.caller.iter().all(|c| matches!(c.strip_nil(), ValueType::Table(Some(_)) | ValueType::Intersection(_))
+                            && self.is_table_subtype(c, &inferred)))
+                {
+                    continue;
+                }
                 let reads_beyond = self.member_reads_inferred_type_lacks(&inferred, &sym_hints.member_reads, &mut call_funcs);
                 // The argument is more than `inferred`: the type is kept only where
                 // nothing but the body's own reads of the argument sees it.

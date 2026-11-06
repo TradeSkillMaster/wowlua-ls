@@ -61,7 +61,7 @@ local cs2 = comp._SCHEMA
 -- field assignment `localHelper.flag = true`, causing undefined-field false positives.
 -- The return type of MakeInfo() is now propagated through the local variable.
 local ch = comp._helper
---              ^ hover: (field) _helper: UnrelatedInfo {
+--              ^ hover: (field) _helper: UnrelatedInfo & { flag: true } {
 
 -- Constructor call: calling class table as function returns class instance
 local MyComp2 = DefineClass("MyComp")

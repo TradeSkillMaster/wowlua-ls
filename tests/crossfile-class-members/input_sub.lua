@@ -5,16 +5,16 @@ local NumberInput = DefineClass("NumberInput", "InputBase")
 
 function NumberInput:Apply(value)
     if self._target then
-    --         ^ hover: (field) _target: table?
+    --         ^ hover: (field) _target: table
         self._target[self._key] = value
-        --    ^ hover: (field) _target: table?
-        --                 ^ hover: (field) _key: string?
+        --    ^ hover: (field) _target: table
+        --                 ^ hover: (field) _key: string
     end
 end
 
 function NumberInput:Read()
     local target = self._target
-    --    ^ hover: (local) target: table?
+    --    ^ hover: (local) target: table
     return target
 end
 

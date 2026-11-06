@@ -2277,9 +2277,11 @@ fn crossfile_self_field_deep() {
 
 #[test]
 fn crossfile_self_field_chain() {
+    // The lib's own analysis types the chained field (the class field harvest),
+    // which only the language server's build runs.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/self_field_chain_user.lua",
-        with_stubs: false,
+        with_stubs: true,
         scan_dir: Some("tests/crossfile"),
     });
 }
@@ -2395,6 +2397,43 @@ fn slot_writers_crossfile() {
             scan_dir: Some("tests/slot-writers"),
         });
     }
+}
+
+// `@class` fields and the fields of plain mixin tables an XML template names, typed
+// by the files writing them and read alike in every file (inversion slice 2): a
+// mixin's file reading its template's `parentKey` children and other files reading
+// what its methods write, two flavor files writing one mixin's fields, a class
+// several files declare reading a field one of them writes, through a receiver a
+// condition narrows too. The class field harvest only runs on the language
+// server's build.
+#[test]
+fn slot_classes_crossfile() {
+    for lua_file in [
+        "tests/slot-classes/view.lua",
+        "tests/slot-classes/derived.lua",
+        "tests/slot-classes/scan_modern.lua",
+        "tests/slot-classes/scan_legacy.lua",
+        "tests/slot-classes/core_reader.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/slot-classes"),
+        });
+    }
+}
+
+// `crossfile-types` finds no path of `tests/slot-classes` whose type differs
+// between the files reading and writing it.
+#[test]
+fn slot_classes_agree_across_files() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
+        .args(["crossfile-types", "tests/slot-classes"])
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("run crossfile-types");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains(", 0 of which disagree"), "{report}");
 }
 
 // Fields other files write on frames a call creates by name, a mixin global an
@@ -2615,15 +2654,17 @@ fn crossfile_local_table_shape() {
 
 #[test]
 fn crossfile_defclass() {
+    // `_helper` carries the field its file writes onto the value (the class field
+    // harvest), which only the language server's build runs.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/defclass_user.lua",
-        with_stubs: false,
+        with_stubs: true,
         scan_dir: Some("tests/crossfile"),
     });
     // Also test the defining file: self type and field injection
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/defclass_component.lua",
-        with_stubs: false,
+        with_stubs: true,
         scan_dir: Some("tests/crossfile"),
     });
     // Test non-local assignment with chained calls: ns.X = DefineClass("X"):AddDep("y")
@@ -2942,6 +2983,51 @@ fn crossfile_own_call_field_by_path() {
     assert!(shifted.starts_with("(field) Other: MixinA"), "{shifted}");
     let other = hover_other(&text, dir.join("other_file.lua"));
     assert!(other.starts_with("(field) Other: MixinA"), "{other}");
+}
+
+// A field of a class with one Lua file, which writes fields onto the field's value,
+// reads there as its writes type it: carrying those fields would harvest the file
+// itself, a second analysis of it on every edit.
+#[test]
+fn carried_class_field_writer_no_self_harvest() {
+    let dir = std::env::current_dir().unwrap().join("tests/carried-fields");
+    let pg = fresh_workspace_globals(&dir);
+    let path = dir.join("panel.lua");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    let config = AnalysisConfig { file_path: Some(path), ..AnalysisConfig::default() };
+    let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pg), config);
+    a.resolve_types();
+    drop(a.into_result());
+    assert_eq!(pg.deferred_harvests.analyses(), 0);
+}
+
+// A field one file writes reads there with the fields another file of its class
+// writes onto its value, so an edit to that file reaches the writing file.
+#[test]
+fn carried_class_field_writer_depends_on_class_files() {
+    let dir = std::env::current_dir().unwrap().join("tests/carried-fields");
+    let pg = fresh_workspace_globals(&dir);
+    let path = dir.join("table_a.lua");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    let offset = (text.rfind("local hdr").unwrap() + "local ".len()) as u32;
+    let hover = || {
+        let config = AnalysisConfig { file_path: Some(path.clone()), ..AnalysisConfig::default() };
+        let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pg), config);
+        a.resolve_types();
+        let result = a.into_result();
+        (result.hover_at(&tree, offset).expect("hover on hdr").type_str, result.deferred_dep_files().clone())
+    };
+    let (before, deps) = hover();
+    assert!(before.contains("extra: number"), "{before}");
+    let other = dir.join("table_b.lua");
+    assert!(deps.contains(&other), "{deps:?}");
+    let edited = std::fs::read_to_string(&other).unwrap().replace("= 5", "= \"five\"");
+    pg.document_overrides.write().unwrap().insert(other.clone(), edited);
+    pg.invalidate_deferred_for_file(&other);
+    let (after, _) = hover();
+    assert!(after.contains("extra: string"), "{after}");
 }
 
 #[test]

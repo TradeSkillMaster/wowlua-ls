@@ -1,0 +1,11 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Frame name="LedgerViewTemplate" virtual="true" mixin="LedgerViewMixin">
+        <Layers>
+            <Layer level="OVERLAY">
+                <FontString parentKey="Header" inherits="GameFontHighlight"/>
+            </Layer>
+        </Layers>
+    </Frame>
+    <Frame name="LedgerDerivedViewTemplate" virtual="true" inherits="LedgerViewTemplate" mixin="LedgerDerivedViewMixin"/>
+    <Frame name="LedgerScanTemplate" virtual="true" mixin="LedgerScanMixin"/>
+</Ui>

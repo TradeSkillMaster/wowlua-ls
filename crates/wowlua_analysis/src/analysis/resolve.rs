@@ -93,6 +93,7 @@ impl<'a> Analysis<'a> {
     }
 
     pub fn resolve_types(&mut self) {
+        self.fill_class_others();
         self.fill_slot_others();
         // Pre-size the expression cache and cycle-detection bitmap as dense Vecs.
         // Only local expressions (< EXT_BASE) are indexed; external ones resolve via fast paths.
@@ -571,6 +572,10 @@ impl<'a> Analysis<'a> {
         }
         match self.ir.exprs.get(expr.val())? {
             Expr::SymbolRef(sym, ver) => self.sym(*sym).versions[*ver].resolved_type.clone(),
+            // A receiver a condition narrowed (`mod and mod.x`).
+            &Expr::Grouped(inner) if depth < 8 => self.known_receiver_type(inner, depth + 1),
+            &Expr::StripNil(inner) if depth < 8 => apply_strip(self.known_receiver_type(inner, depth + 1), ValueType::strip_nil),
+            &Expr::StripFalsy(inner) if depth < 8 => apply_strip(self.known_receiver_type(inner, depth + 1), ValueType::strip_falsy),
             Expr::FieldAccess { table, field, .. } if depth < 8 => {
                 let (table, field) = (*table, field.clone());
                 let receiver = self.known_receiver_type(table, depth + 1)?.into_strip_opaque();
@@ -4267,14 +4272,20 @@ impl<'a> Analysis<'a> {
 
     /// `Ir::slot_union_exprs`, resolving the writes in the fixpoint.
     fn slot_union_exprs(&mut self, primary: ExprId, extras: &[ExprId], nil_primary: bool) -> (Vec<ExprId>, bool) {
-        if !self.ir.is_slot_primary(primary) && !self.ir.is_container_primary(primary) {
+        let class_slot = self.ir.class_slots.contains_key(&primary);
+        if !class_slot && !self.ir.is_slot_primary(primary) && !self.ir.is_container_primary(primary) {
             return self.ir.written_union_exprs(primary, extras, nil_primary);
         }
-        self.ensure_slot_others(primary, extras);
+        if !class_slot {
+            self.ensure_slot_others(primary, extras);
+        }
         let writes = std::iter::once(primary).chain(extras.iter().copied().filter(|e| !e.is_external()));
         let mut types: Vec<(ExprId, Option<ValueType>)> = writes.map(|e| (e, self.resolve_expr(e))).collect();
+        // The file's own writes: past the workspace's value, but a class field
+        // copy's own first write.
+        let own = if primary.is_external() { 1 } else { 0 };
         // A write reading a local the fixpoint hasn't typed yet decides once it is.
-        for &(e, ref ty) in &types[1..] {
+        for &(e, ref ty) in &types[own..] {
             if ty.is_none() {
                 self.wait_on_local_write(e);
             }
@@ -4282,7 +4293,7 @@ impl<'a> Analysis<'a> {
         // The operands of an `or` chain written there, which `Ir::typed_operands`
         // takes a write's typed parts from.
         let mut operands = Vec::new();
-        for &(e, _) in &types[1..] {
+        for &(e, _) in &types[own..] {
             self.ir.or_operands(e, &mut operands);
         }
         for e in operands {
@@ -4300,6 +4311,94 @@ impl<'a> Analysis<'a> {
         if !self.ir.slot_others.contains_key(&primary) && extras.iter().any(|e| !e.is_external()) {
             let others = self.ir.slot_field_other_writes(primary).map(|ty| self.ir.push_expr(Expr::Literal(ty)));
             self.ir.slot_others.insert(primary, others);
+        }
+    }
+
+    /// Have this file's copies of the workspace `@class` fields it writes that other
+    /// files write too read its own writes and the others' (`deferred::
+    /// resolve_deferred_class_field_others`), as readers read them all: a slot of
+    /// the file, whose primary write is the workspace's value (`Ir::is_slot_primary`)
+    /// and the others' writes in `Ir::slot_others`. Before the fixpoint, as
+    /// `fill_slot_others`.
+    fn fill_class_others(&mut self) {
+        if self.ir.ext.deferred_class_field_paths.is_empty() {
+            return;
+        }
+        let Some(path) = self.ir.file_path.clone() else { return };
+        let ext = std::sync::Arc::clone(&self.ir.ext);
+        // The file's copies of class fields, by their table: its declarations of
+        // workspace classes, the mixins it defines, its views of the workspace's.
+        let mut copies: Vec<(TableIndex, String, String)> = Vec::new();
+        for (idx, table) in self.ir.local_tables() {
+            let class = table.class_name.clone()
+                .or_else(|| self.ir.class_tables.get(&idx).and_then(|&c| ext.table(c).class_name.clone()));
+            let Some(class) = class else { continue };
+            for (name, fi) in &table.fields {
+                if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+                    copies.push((idx, class.clone(), name.clone()));
+                }
+            }
+        }
+        for (&idx, fields) in &self.ir.overlay_fields {
+            let Some(class) = ext.try_table(idx).and_then(|t| t.class_name.clone()) else { continue };
+            for (name, fi) in fields {
+                if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+                    copies.push((idx, class.clone(), name.clone()));
+                }
+            }
+        }
+        copies.sort();
+        let mut carrying = self.ir.carrying_fields();
+        // ... through a local whose fields resolve after the fixpoint (`local h =
+        // Make(); h.flag = true; Class.helper = h`).
+        for fa in &self.ir.field_assignments {
+            if let Expr::SymbolRef(sym, _) = *self.ir.expr(fa.actual_expr)
+                && let SymbolIdentifier::Name(name) = &self.ir.sym(sym).id
+                && self.deferred_field_assignments.iter().any(|d| d.root_name == *name)
+            {
+                carrying.insert(fa.field_name.clone());
+            }
+        }
+        for (idx, class, field) in copies {
+            // The addon namespace's fields are slots (`fill_slot_others`).
+            if ext.addon_ns_class_own_fields.contains_key(&class) {
+                continue;
+            }
+            let Some(&class_idx) = ext.classes.get(&class) else { continue };
+            let Some(scanned) = ext.table(class_idx).fields.get(&field) else { continue };
+            if !crate::analysis::deferred::class_field_scan_typed(scanned, &ext, &class, &field) {
+                continue;
+            }
+            let Some(others) = crate::analysis::deferred::resolve_deferred_class_field_others(&ext, &class, &field, &path) else {
+                // A field only this file writes reads with the fields the file writes
+                // onto its value carried, as other files read it.
+                if carrying.contains(&field)
+                    && let Some(ty) = crate::analysis::deferred::resolve_deferred_class_field_carried(&ext, &class, &field, &path)
+                {
+                    // Not a field the file's own declaration has only through its writes
+                    // there (no annotation): one would make it a declared, required field.
+                    let fi = if idx.is_external() { self.ir.get_overlay_field_mut(idx, &field) } else { self.ir.tables[idx.val()].fields.get_mut(&field) };
+                    if let Some(fi) = fi.filter(|fi| fi.annotation_text.is_none() && (idx.is_external() || fi.annotation.is_some())) {
+                        fi.annotation = Some(ty);
+                        // What the class's other files write onto the value is carried too.
+                        self.ir.deferred_dep_files.extend(ext.deferred_class_field_paths.get(&class).into_iter().flatten().cloned());
+                    }
+                }
+                continue;
+            };
+            self.ir.deferred_dep_files.extend(ext.deferred_class_field_paths.get(&class).into_iter().flatten().cloned());
+            let fi = if idx.is_external() {
+                self.ir.get_overlay_field_mut(idx, &field)
+            } else {
+                self.ir.tables[idx.val()].fields.get_mut(&field)
+            };
+            // An inline `---@type` on one of the file's writes types it here.
+            let Some(fi) = fi.filter(|fi| fi.annotation_text.is_none()) else { continue };
+            fi.annotation = None;
+            fi.annotation_type_raw = None;
+            let key = fi.expr;
+            let others = others.map(|ty| self.ir.push_expr(Expr::Literal(ty)));
+            self.ir.class_slots.insert(key, others);
         }
     }
 
@@ -4370,24 +4469,27 @@ impl<'a> Analysis<'a> {
     }
 
     /// The field `field` of table `idx`, fetched once with what the field-access
-    /// branches need so the borrow ends immediately. Only the (rare) cross-file
-    /// placeholder field (`any` or a bare `table`) pays for the harvest + re-fetch —
-    /// warming the per-file overlay with the definition-site type harvested from
-    /// the class's declaring file(s) — and a field written a call or `{}` in other
-    /// files, whose type there may refine it; the common precise field is used
-    /// directly, so a non-placeholder external field access repeats no `get_field`
-    /// lookups.
+    /// branches need so the borrow ends immediately. A field whose type other files
+    /// give — a workspace class field the scan typed, one written a call or `{}`, a
+    /// slot — is consulted once per analysis by its harvest (`Ir::ensure_*_overlay`),
+    /// which warms the per-file overlay, and is fetched again only when that changed
+    /// it; any other field is used as fetched.
     fn fetch_cross_file_field(&mut self, idx: TableIndex, field: &str) -> Option<FetchedField> {
-        // A field this file's exported table lacks is the export's (`Ir::get_field`).
+        // A field this file's exported table lacks is the export's (`Ir::get_field`),
+        // as is one a table standing for a workspace class lacks the class's.
         if let Some(&copy) = self.ir.exported_tables.get(&idx)
             && !self.ir.table(idx).fields.contains_key(field)
         {
             self.fetch_cross_file_field(copy, field);
         }
+        if let Some(class) = self.ir.class_table_field(idx, field) {
+            self.fetch_cross_file_field(class, field);
+        }
         let fetch = |ir: &super::Ir| ir.get_field(idx, field).map(|fi| FetchedField::of(fi, &ir.ext));
         let mut fetched = fetch(&self.ir);
-        if fetched.as_ref().is_some_and(|f| f.placeholder) {
-            self.ir.ensure_field_overlay(idx, field);
+        // A workspace class field the scan typed reads as the harvest of its writes
+        // (`Ir::ensure_field_overlay`).
+        if fetched.as_ref().is_some_and(|f| f.placeholder || f.scan_inferred) && self.ir.ensure_field_overlay(idx, field) {
             fetched = fetch(&self.ir);
         }
         if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {
@@ -5238,6 +5340,17 @@ pub(crate) fn nilable_number_arithmetic(lhs: &ValueType, rhs: &ValueType) -> boo
     (lhs.contains_nil() || rhs.contains_nil()) && number(lhs) && number(rhs)
 }
 
+/// Whether arithmetic on `lhs` and `rhs` converts a string operand to a number (a
+/// secret or opaque alias of one too): a `number` where the conversion succeeds,
+/// which `invalid-op` still reports.
+pub(crate) fn string_arithmetic(lhs: &ValueType, rhs: &ValueType) -> bool {
+    let plain = |ty: &ValueType| ty.strip_secret().into_strip_opaque().into_decay_number_literal();
+    matches!(
+        (plain(lhs), plain(rhs)),
+        (ValueType::String(_), ValueType::Number | ValueType::String(_)) | (ValueType::Number, ValueType::String(_))
+    )
+}
+
 /// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
 pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
     // Secret operands: resolve on the underlying types, then re-apply secrecy where
@@ -5384,6 +5497,9 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
             match (&lhs_type, &rhs_type) {
                 (ValueType::Number, ValueType::Number) => Some(ValueType::Number),
                 (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Number),
+                // Lua converts a string operand of arithmetic to a number, or errors
+                // (`invalid-op` flags it).
+                _ if string_arithmetic(&lhs_type, &rhs_type) => Some(ValueType::Number),
                 (ValueType::Table(_), _) | (_, ValueType::Table(_)) => None,
                 // A number that may be nil makes a number where the operation succeeds.
                 _ if nilable_number_arithmetic(&lhs_type, &rhs_type) => Some(ValueType::Number),

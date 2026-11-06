@@ -58,10 +58,12 @@ impl DiagnosticPass for InvalidOp {
             let erroring_concat = op == Operator::Concatenate
                 && lhs_type.concat_yields_string() && rhs_type.concat_yields_string()
                 && !(lhs_type.can_concat_to_string() && rhs_type.can_concat_to_string());
-            // So is arithmetic on numbers that may be nil — not a table operand's
-            // metamethod (`__add`), which takes the nil.
+            // So is arithmetic on numbers that may be nil, or on a string, which
+            // converts to a number or errors — not a table operand's metamethod
+            // (`__add`), which takes either.
             let erroring_arithmetic = op.is_arithmetic()
-                && crate::analysis::resolve::nilable_number_arithmetic(&lhs_type, &rhs_type);
+                && (crate::analysis::resolve::nilable_number_arithmetic(&lhs_type, &rhs_type)
+                    || crate::analysis::resolve::string_arithmetic(&lhs_type, &rhs_type));
             // Valid operation — no diagnostic needed
             if analysis.resolve_expr_type(site.expr_id).is_some() && !erroring_concat && !erroring_arithmetic { continue; }
             // Permissive types (Any, TypeVariable) — skip to avoid noise

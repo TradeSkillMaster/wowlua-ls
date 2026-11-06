@@ -111,6 +111,73 @@ addons sharing one namespace for lack of an `addonRoot`):
 - `tests/slot-fields`' `LedgerApp.Layout.wide`: a constructor key shows the entry it
   writes, readers the records two files write merged: slice 3.
 
+## Slice 2 status (2026-11-06, first round)
+
+Every field of a workspace `@class` the scan typed (no `@field`, `---@type` or XML
+declaration, not a function the scan typed) is harvested, not just its placeholders
+(ARCHITECTURE.md, "`@class` field slots"). A field one file writes reads everywhere as
+that file reads it; one several files write (two flavor files of one mixin) as the
+union of their writes, which each writer reads too. A mixin's own file reads the
+fields its XML template and other files give the class; a class declared in several
+files reads, in each, the fields another writes. `crossfile-types` over the corpus:
+56 of the 188 non-function disagreeing paths on main agree (16 of Baganator's 17 mixin
+paths, Auctionator's 7, 23 of DeadlyBossMods', TradeSkillMaster's `OptionalMat.Info`,
+`Thread._co`), 2 newly disagree (below). `dump-types`: no hover typed on main is
+untyped, 39462 gain a type. Analyses (main → now): TradeSkillMaster 377 → 451 (692
+files), DeadlyBossMods 280 → 270, Auctionator 209 → 255, Baganator 218 → 206, every
+workspace within twice its files; `check` times unchanged.
+
+Two changes to the harvest's component handling paid for it: a cycle's round
+re-analyzes a file only when the part of a member it read changed (`ReadPart`), not
+the member as a whole; and a class with one Lua file is harvested with that file's
+other data (`FileHarvest::classes`), the same analysis. A harvest analysis reads a
+field the scan typed by the scan's type, as on main, but for its placeholders:
+discovery can't see the classes a file reads through resolved types, and harvesting
+them along edges it misses re-harvested DeadlyBossMods' core in a second context.
+
+Open, by cause:
+- Constructor entries (slice 3): `DBMMod.{categorySort, id, localization…, revision,
+  vb…, groupOptions, addon}`, `DBMPanel.frame`, `DBTBar.{frame, enlarged}`,
+  `ScannerData.{continentID, mapID}`, the `UtilityHub` class constructor's entries.
+  `DBMMod.addon` newly disagrees: its writer's parameter is now typed (backward
+  inference accepts callers passing tables of one type the body's uses take).
+- Writers the scan doesn't attribute to the class: `DBMTest.timeWarper` (a method on
+  `local test = DBM.Test`), `MacroToolkit.usingiconlib` read from a library file.
+- Generic call results read cross-file coarse (the rule): `MacroToolkit.db.*`,
+  `UtilityHub.Database.global.*` (`AceDB:New(...)` profile fields).
+- A harvest analysis typing a write less precisely than the file's own analysis (reads
+  it cuts, or a class field it reads by the scan's type): `MacroToolkit.MTPF`,
+  `TalentViewerTWW.treeId`.
+- Displays: a write of a constructor showing the constructor (`MacroToolkit.TextureNames`,
+  newly: the other file's `nil` makes the readers' `string[]?`),
+  `(string[])[]` against `string[][]` (`MacroToolkit.scripts`), a saved variable's
+  table lifted as the global's (`MythicPlusPull.DB`, newly carrying the fields
+  written onto it).
+- Deliberate: a subclass writing an inherited field reads its own writes
+  (`BaseInput._escValue`); an XML `parentArray` stays `any` in the file appending to
+  it, whose appends would otherwise check against the template's children
+  (`TopButtons`); a declared `@field` read through a union with a local record
+  (`ScrollTable.ColInfoBase.justifyH`).
+- A class's only Lua file resolves the members it writes onto a field's value without
+  showing them on the field's type, while readers see them carried (`ListRow._frame`, `ScrollTable._header`: `FrameExtended` against
+  `FrameExtended & {…}`, as on main). Reading them carried there harvested the file
+  itself, a second analysis on every edit; the per-file engine has to carry them on the
+  value.
+- A file that only writes onto a field's value (`self.header.extra = 5`, no read) shows
+  the scan's type there: nothing in it reads the field through the harvest.
+- Not yet investigated: `DBMMod.{combatInfo.pull, lastKillTime, lastWipeTime}`,
+  `Glider.SpeedDisplay.Speed`, `TalentViewer_TalentButtonMixinTWW.LevelingOrder`.
+
+`check`: DeadlyBossMods −15 (`undefined-field` on `DBM.Revision`/`ReleaseRevision`,
+`DBMGUI.Enums`), UtilityHub −1, libresinfo-2.0 −22, Auctionator −11/+3 (`EditBox:GetNumber`
+and `ScrollToOffset` passed extra arguments), TestProject 4 messages changed (an existing
+`function & table` false positive now naming the field's `string`), wow-ui-source −23/+141:
+the mixins' own files now see their templates' frames, so existing checks reach them —
+`SetText`/`SetAtlas`/`SetShown` given numbers, `nil` or tables (the family slice 1
+counted as true positives), secret values, extra arguments, and ~20 `undefined-field` /
+handler mismatches from `GetParent()`'s bare `Frame` and `SetScript` handler typing that
+other files reading those frames already report.
+
 ## Acceptance for every slice
 
 - `crossfile-types` over TradeSkillMaster and `/home/brian/wowlua-ls/.context/addons`

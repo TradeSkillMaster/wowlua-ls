@@ -37,59 +37,33 @@
 //! makes the injected fields resolve, complete, hover, and go-to-define
 //! cross-file, so `undefined-field` doesn't fire on them downstream.
 //!
-//! The same lazy-harvest mechanism upgrades a cross-file `@class` *field* whose
-//! coarse scan type decayed to a **placeholder** — either `any` (a runtime
-//! `self.x = <expr>` the scanner couldn't type at all) or a bare `table`
-//! (`Table(None)`: a top-level `Class.field = <unresolvable call>` write the scan
-//! *heuristically assumes* is a table but whose shape it couldn't capture, or the
-//! `table` it annotates a field written `{}` with). On first read of such a field,
-//! `ensure_field_overlay` re-runs the engine on *every* file that declares **or
-//! assigns** the class's fields and installs a precise `FieldInfo` into the per-file
-//! `overlay_fields`, so `get_field` transparently returns the definition-site type.
-//! Coverage spans three file sources (unioned in the `build_on_stubs::finish` index):
-//! a class's **declaring** files; every file that assigns a **typed/bare** field
-//! (`field_paths`); and every file that writes a **funcall self-field or top-level
-//! static field** (`ws_globals` — a `self.x = SomeCall()` / `Class.x = <call>` write,
-//! which the coarse scan routes through the funcall chain as an
-//! `ExternalGlobalKind::TableField` *global* rather than a `field_paths` entry). All
-//! three matter for a method defined in a file that does *not* declare the class
-//! (`function ns.C:Build() self.x = ... end`), whose `self.x = ...` writes target the
-//! *external* class table and are matched by `accumulate_class_fields_in_file`'s
-//! external path. A **partial** class split across files is harvested as a whole:
-//! each field's RHS types are unioned across all those files (so a field assigned a
-//! class in one and cleared to nil in another lands as `T?`).
+//! The same lazy-harvest mechanism types every cross-file `@class` *field* the
+//! workspace scan typed (`class_field_scan_typed`: no `@field`, `---@type` or XML
+//! declaration, not a function the scan typed). On first read, `ensure_field_overlay`
+//! re-runs the engine on *every* file that declares **or assigns** the class's fields
+//! and installs a precise `FieldInfo` into the per-file `overlay_fields`, so `get_field`
+//! transparently returns the type every file reads (`ClassField`): a field one file
+//! writes reads as that file reads it; one several files write as the union of their
+//! writes, which each of those files reads beside its own (`resolve_deferred_class_field_others`,
+//! `Analysis::fill_class_others`). Coverage spans the class's **declaring** files,
+//! every file that assigns a field (`field_paths`), and every file that writes a
+//! **funcall self-field or top-level static field** (`ws_globals`); a method defined in
+//! a file that does *not* declare the class (`function ns.C:Build() self.x = ... end`)
+//! is matched by `accumulate_class_fields_in_file`'s external path, a mixin's own table
+//! (`Ir::class_tables`) by its name. A class with one Lua file is harvested with that
+//! file's other data (`FileHarvest::classes`).
 //!
-//! **The eligible placeholders carry no author annotation.** The `any` and the
-//! bare-`table` placeholder are scan-inferred with a `None` annotation, so a
-//! `field-type-mismatch` never fired against them (`had_annotation_at_build` is
-//! false) — sharpening them cannot regress that check even for a field later cleared
-//! to nil. The `table` the scan annotates a field written `{}` with (`from_scan`, no
-//! `annotation_text`) is checked only in a file that writes the field, which types it
-//! from its own writes rather than a harvest. An *explicit* `@field x table` and the `callable_or_unknown`
-//! forwarded-callable placeholder are deliberately excluded ([`field_is_coarse_placeholder`]):
-//! the former carries an annotation, the latter a callable guess a non-callable-class
-//! sharpen would false-positive `cannot-call`. Those are the regression-prone slice
-//! left for a later phase.
-//!
-//! The upgrade is gated on *both* ends so it only ever replaces a placeholder with a
-//! more precise type: the coarse field must be an eligible placeholder
-//! ([`field_is_coarse_placeholder`]), and the harvested type must say more than
-//! `any` — not `any`, a bare `function`, or `callable_or_unknown`
-//! ([`contains_untyped`]). A bare `table` is kept: it is what the defining file
-//! reads (a `table` parameter stored, a plain `{}`), and the lift never decays a
-//! richer table to one at the top level. Upgrading to a genuine *nameable* class is a real
-//! sharpening: like any precise type it may surface a correct new diagnostic — e.g.
-//! calling a non-callable class, or reading a field the class doesn't declare. The
-//! assigning-file index is derived from the scan's per-field `field_paths`, which
-//! records one assigning file per field, so a field written non-nil in one file and
-//! cleared to nil *only* in a separate file that assigns nothing else can still
-//! under-approximate to a non-optional type; that residual nil-coverage gap is the
-//! deliberate fidelity/precision trade of this slice.
-//! The field type is the union of its assignment RHS types read from
-//! `field_assignments` (the RHS-aware path — not the coarse class surface), across
-//! *every* site, so a field cleared to nil keeps its nilability (`T?`); a `lateinit`
-//! (`T!`) field reads non-nil. A type touching a type variable decays to `any`
-//! through the lift and is kept coarse (generics stay coarse).
+//! The harvest only replaces the scan's type where it says more: not `any` or `nil`,
+//! not a bare `table` where the scan gave a table, nor a table the scan gave typed
+//! contents or that other files fill (`keeps_scanned_table`). A constructor's entry
+//! keeps the placeholder rule (`field_is_coarse_placeholder`) until slice 3, as does the
+//! addon namespace's `@class`, whose fields are slots. Upgrading to a genuine *nameable*
+//! class is a real sharpening: like any precise type it may surface a correct new
+//! diagnostic. A union of writes keeps nilability (a field cleared to nil in another
+//! file is `T?`); a `lateinit` (`T!`) field reads non-nil; a type touching a type
+//! variable decays to `any` through the lift and is kept coarse (generics stay coarse).
+//! A harvest analysis reads a non-placeholder field by the scan's type: discovery can't
+//! see the classes a file reads through resolved types.
 //!
 //! A field the workspace scan typed as no more than the empty table written there
 //! (`ns.list = {}`, `Global.list = {}`, filled by inserts) takes, cross-file, the type
@@ -248,6 +222,37 @@ impl Unit {
     }
 }
 
+/// The part of a unit's harvest a read takes ([`read_unit`]): a cycle's round
+/// analyzes a file again only when a part it read changed (`harvest_round`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ReadPart {
+    Sig(FunctionIndex),
+    CallGlobal(SymbolIndex),
+    CallField(u32),
+    FieldArgs(DeferredFieldKey),
+    Slot(SlotKey),
+    /// A workspace class's fields its only Lua file harvests (`FileHarvest::classes`).
+    ClassOf(String),
+    /// All of it: a class unit's fields.
+    Whole,
+}
+
+impl ReadPart {
+    /// Whether this part is the same in the harvests `a` and `b` of one unit.
+    fn same(&self, a: Option<&Harvest>, b: Option<&Harvest>) -> bool {
+        let (fa, fb) = (a.and_then(Harvest::file), b.and_then(Harvest::file));
+        match self {
+            ReadPart::Sig(idx) => fa.and_then(|h| h.sigs.get(idx)) == fb.and_then(|h| h.sigs.get(idx)),
+            ReadPart::CallGlobal(sym) => fa.and_then(|h| h.call_globals.get(sym)) == fb.and_then(|h| h.call_globals.get(sym)),
+            ReadPart::CallField(offset) => fa.and_then(|h| h.call_fields.get(offset)) == fb.and_then(|h| h.call_fields.get(offset)),
+            ReadPart::FieldArgs(key) => fa.and_then(|h| h.field_args.get(key)) == fb.and_then(|h| h.field_args.get(key)),
+            ReadPart::Slot(key) => fa.and_then(|h| h.slots.get(key)) == fb.and_then(|h| h.slots.get(key)),
+            ReadPart::ClassOf(class) => fa.and_then(|h| h.classes.get(class)) == fb.and_then(|h| h.classes.get(class)),
+            ReadPart::Whole => a == b,
+        }
+    }
+}
+
 /// Everything cross-file readers take from one analysis of a defining file.
 #[derive(Debug, PartialEq)]
 struct FileHarvest {
@@ -263,11 +268,36 @@ struct FileHarvest {
     field_args: HashMap<DeferredFieldKey, Option<Vec<ValueType>>>,
     /// The values it writes every slot it writes (see [`DeferredSlot`]).
     slots: HashMap<SlotKey, SlotValues>,
+    /// The fields of each workspace class it is the only Lua file of
+    /// ([`single_lua_file`]), as a harvest of the class gives them.
+    classes: HashMap<String, ClassFields>,
 }
 
-/// A class's harvested fields: the upgraded type of every field its files assign
-/// (`None`: harvested but not upgradable; absent: assigned in none of them).
-type ClassFields = HashMap<String, Option<ValueType>>;
+/// A class's harvested fields, by name: every field its files assign (absent:
+/// assigned in none of them).
+type ClassFields = HashMap<String, ClassField>;
+
+/// A harvested `@class` field.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClassField {
+    /// What every file reads it as (`None`: no more than the workspace scan's type):
+    /// the one file writing it reads it as that file does; several files writing it,
+    /// the union of what they write there.
+    ty: Option<ValueType>,
+    /// Each of the several files writing it, sorted, with what it writes there
+    /// (`None`: nothing saying more than `any`) — what a file writing it reads the
+    /// other files' writes as. Empty for a field one file writes.
+    writers: Vec<(PathBuf, Option<ValueType>)>,
+    /// The one file writing it, for a field one file writes.
+    writer: Option<PathBuf>,
+}
+
+impl ClassField {
+    /// What every file reads the field as (`None`: no more than the scan's type).
+    pub fn ty(&self) -> Option<&ValueType> {
+        self.ty.as_ref()
+    }
+}
 
 /// What a harvest of a [`Unit`] yields.
 #[derive(Debug, Clone, PartialEq)]
@@ -367,7 +397,7 @@ pub struct DeferredHarvests {
 /// read cut — gives them.
 struct FirstAnalysis {
     harvest: Arc<FileHarvest>,
-    acc: Arc<HashMap<(String, String), AccField>>,
+    acc: Arc<FileClassFields>,
 }
 
 impl std::fmt::Debug for FirstAnalysis {
@@ -536,8 +566,8 @@ struct AnalysisFrame {
     /// The component the unit is harvested with, for a harvest (not a table-field
     /// analysis).
     component: Option<Arc<ComponentFrame>>,
-    /// The cycle members it read (see `harvest_round`).
-    member_reads: Vec<Unit>,
+    /// The cycle members it read, and what of them (see `harvest_round`).
+    member_reads: Vec<(Unit, ReadPart)>,
 }
 
 /// A component being harvested (see [`harvest_component`]): its files, and the units
@@ -685,8 +715,8 @@ impl AnalysisScope {
         Self
     }
 
-    /// The cycle members the analysis read so far.
-    fn member_reads(&self) -> Vec<Unit> {
+    /// The cycle members the analysis read so far, and what of them.
+    fn member_reads(&self) -> Vec<(Unit, ReadPart)> {
         ANALYSES.with(|frames| frames.borrow().last().map(|f| f.member_reads.clone()).unwrap_or_default())
     }
 }
@@ -780,77 +810,86 @@ impl Ir {
     }
 
     /// Ensure the per-file `overlay_fields` holds a precise `FieldInfo` for a
-    /// cross-file `@class` field whose coarse scan type decayed to a *placeholder*
-    /// (`any`, or a bare `table`). The overlay is keyed by the table that declares the
-    /// field — the receiver's own class or, for an inherited field, the ancestor that
-    /// owns it (which may be external even when the receiver is the file's own class
-    /// table). Idempotent: an overlay hit, a non-external owner, a field no class in
-    /// the chain declares, a non-placeholder coarse type, or a non-workspace class is
-    /// a no-op.
-    ///
-    /// **Placeholder-only by design, gated on both ends.** Only a field whose coarse
-    /// type is an eligible placeholder ([`field_is_coarse_placeholder`] — a
-    /// scan-inferred `any` or bare `Table(None)`, both carrying no author annotation)
-    /// is a candidate, and the harvest only replaces it when the definition-site type
-    /// says more than `any` (see [`contains_untyped`]). The harvested type carries the
-    /// field's real nilability (a field cleared to nil stays `T?`) and keeps generics coarse (a
-    /// type-variable-touching type decays back to `any` through the lift and is
-    /// skipped).
+    /// cross-file `@class` field the workspace scan typed ([`class_field_scan_typed`]):
+    /// the type every file reads it as ([`resolve_deferred_class_field_type`]). The
+    /// overlay is keyed by the table that declares the field — the receiver's own class
+    /// or, for an inherited field, the ancestor that owns it (which may be external even
+    /// when the receiver is the file's own class table), or the class a table of this
+    /// file stands for (`Ir::class_tables`). Idempotent: an overlay hit, a non-external
+    /// owner, a field no class in the chain declares, an author-typed field, or a
+    /// non-workspace class is a no-op; each field is harvested once per analysis.
+    /// Returns whether the field changed.
     ///
     /// The overlay value is the coarse external `FieldInfo` with its `annotation`
-    /// replaced by the harvested precise type. After this call, `get_field()`
-    /// transparently returns the precise field, so cross-file hover, completion,
-    /// go-to-definition, and post-fixpoint diagnostic passes see the definition-site
-    /// type.
-    pub fn ensure_field_overlay(&mut self, table_idx: TableIndex, field_name: &str) {
+    /// replaced by the harvested type. After this call, `get_field()` transparently
+    /// returns the precise field, so cross-file hover, completion, go-to-definition,
+    /// and post-fixpoint diagnostic passes see the type its writes give it.
+    pub fn ensure_field_overlay(&mut self, table_idx: TableIndex, field_name: &str) -> bool {
         // Empty for stub-only / non-workspace analyses — they pay nothing.
         if self.ext.deferred_class_field_paths.is_empty() {
-            return;
+            return false;
         }
-        let Some(owner_idx) = self.field_owner_table(table_idx, field_name) else { return };
+        let Some(owner_idx) = self.field_owner_table(table_idx, field_name) else { return false };
         if !owner_idx.is_external() {
-            return;
+            return false;
         }
+        let mut changed = false;
         if !self.overlay_fields.get(&owner_idx).is_some_and(|m| m.contains_key(field_name)) {
-            self.harvest_field_overlay(owner_idx, field_name);
+            // A stub's or other non-workspace class's field is never harvested.
+            let owner = self.ext.table(owner_idx);
+            if !owner.class_name.as_ref().is_some_and(|c| self.ext.deferred_class_field_paths.contains_key(c)) {
+                return false;
+            }
+            let Some(expr) = owner.fields.get(field_name).map(|fi| fi.expr) else { return false };
+            if self.class_fields_checked.insert((owner_idx, expr)) {
+                changed = self.harvest_field_overlay(owner_idx, field_name);
+            }
         }
         // A local class table reads its own copy of an inherited field before the
         // ancestor's overlay (see `field_owner_table`): refresh the copy too.
         if table_idx != owner_idx
             && !table_idx.is_external()
-            && let Some(ty) = self
-                .overlay_fields
-                .get(&owner_idx)
-                .and_then(|m| m.get(field_name))
-                .and_then(|fi| fi.annotation.clone())
-            && let Some(fi) = self.tables[table_idx.val()].fields.get_mut(field_name)
+            && let Some(ty) = self.overlay_fields.get(&owner_idx).and_then(|m| m.get(field_name)).and_then(|fi| fi.annotation.clone())
         {
-            fi.annotation = Some(ty);
+            // A table standing for the class that lacks the field reads the class's
+            // overlay itself (`Ir::class_tables`).
+            let Some(fi) = self.tables[table_idx.val()].fields.get_mut(field_name) else { return changed };
+            if fi.annotation.as_ref() != Some(&ty) {
+                fi.annotation = Some(ty);
+                changed = true;
+            }
             let expr = fi.expr;
             self.harvest_refined_fields.insert((table_idx, expr));
         }
+        changed
     }
 
-    /// Harvest the definition-site type of the coarse placeholder field
-    /// `field_name` declared on the external class table `owner_idx` into the
-    /// overlay. See `ensure_field_overlay`.
-    fn harvest_field_overlay(&mut self, owner_idx: TableIndex, field_name: &str) {
+    /// Harvest the type of the scan-typed field `field_name` declared on the external
+    /// class table `owner_idx` into the overlay; returns whether it did. See
+    /// `ensure_field_overlay`.
+    fn harvest_field_overlay(&mut self, owner_idx: TableIndex, field_name: &str) -> bool {
         // Extract the coarse field + class name from ext, dropping the borrow before
         // mutating `self.overlay_fields`.
         let (coarse, class_name) = {
-            let Some(t) = self.ext.try_table(owner_idx) else { return };
-            let Some(fi) = t.fields.get(field_name) else { return };
-            if !field_is_coarse_placeholder(fi, &self.ext) {
-                return;
+            let Some(t) = self.ext.try_table(owner_idx) else { return false };
+            let Some(fi) = t.fields.get(field_name) else { return false };
+            let Some(name) = t.class_name.clone() else { return false };
+            // A harvest reads a field the scan typed by the scan's type, but for its
+            // placeholders: discovery, which cuts every read, can't see which classes
+            // a file reads through resolved types, and a read along an edge it misses
+            // harvests the class again in the harvest's context.
+            if !class_field_scan_typed(fi, &self.ext, &name, field_name)
+                || (harvesting() && !field_is_coarse_placeholder(fi, &self.ext))
+            {
+                return false;
             }
-            let Some(name) = t.class_name.clone() else { return };
             (fi.clone(), name)
         };
         let Some(def_paths) = self.ext.deferred_class_field_paths.get(&class_name).cloned() else {
-            return;
+            return false;
         };
         let Some(ty) = resolve_deferred_class_field_type(&self.ext, &class_name, field_name) else {
-            return;
+            return false;
         };
         // The harvest reads *every* declaring or assigning file, so a change to any of
         // them can alter this field's type — record all as dependencies for
@@ -860,6 +899,38 @@ impl Ir {
         self.harvest_refined_fields.insert((owner_idx, precise.expr));
         precise.annotation = Some(ty);
         self.overlay_fields.entry(owner_idx).or_default().insert(field_name.to_string(), precise);
+        true
+    }
+
+    /// The fields whose value this file writes fields onto (`self.header.cells =
+    /// {}`, or through a local holding it: `header.cells = {}; self.header =
+    /// header`), which other files read carried on the field's type
+    /// ([`CarriedFields`], as `accumulate_class_fields_in_file` gathers them).
+    pub fn carrying_fields(&self) -> HashSet<String> {
+        let mut out: HashSet<String> = self.sub_field_writes.iter()
+            .filter(|w| !w.bracket_key)
+            .map(|w| w.owner_field.clone())
+            .collect();
+        let roots: Vec<Option<SymbolIndex>> = self.field_assignments.iter()
+            .map(|fa| fa.root_symbol.map(|s| resolve_alias_root(self, s)))
+            .collect();
+        for (fa, own_root) in self.field_assignments.iter().zip(&roots) {
+            if !matches!(self.expr(fa.actual_expr), Expr::SymbolRef(..)) {
+                continue;
+            }
+            let Some(alias) = self.find_root_symbol(fa.actual_expr).map(|s| resolve_alias_root(self, s)) else { continue };
+            if *own_root != Some(alias) && roots.contains(&Some(alias)) {
+                out.insert(fa.field_name.clone());
+            }
+        }
+        out
+    }
+
+    /// The workspace class's own table a table of this file standing for the class
+    /// is (`Ir::class_tables`), when it holds `field_name`, which the table lacks.
+    pub fn class_table_field(&self, table_idx: TableIndex, field_name: &str) -> Option<TableIndex> {
+        let class = *self.class_tables.get(&table_idx)?;
+        (!self.table(table_idx).fields.contains_key(field_name) && self.ext.table(class).fields.contains_key(field_name)).then_some(class)
     }
 
     /// The table whose own `fields` declare `field_name`: `table_idx` itself, else
@@ -871,12 +942,21 @@ impl Ir {
         // declaring it — unless this file writes the field itself (a local
         // `extra_exprs` entry): the per-file resolver then types it from those
         // writes, which are more precise than the ancestor's harvest.
-        if let Some(fi) = t.fields.get(field_name)
+        let own = t.fields.get(field_name);
+        if let Some(fi) = own
             && (table_idx.is_external()
                 || !fi.expr.is_external()
                 || fi.extra_exprs.iter().any(|e| !e.is_external()))
         {
             return Some(table_idx);
+        }
+        // A table standing for a workspace class (`Ir::class_tables`: its declaration
+        // in one of the class's files, or a mixin the file defines) reads the class's
+        // own table for a field it lacks or holds only the imported copy of.
+        if let Some(&class) = self.class_tables.get(&table_idx)
+            && self.ext.table(class).fields.get(field_name).is_some_and(|fi| own.is_none_or(|own| own.expr == fi.expr))
+        {
+            return Some(class);
         }
         t.parent_classes
             .iter()
@@ -1106,7 +1186,7 @@ pub fn resolve_deferred_sig(
         return None;
     }
     let path = ext.function_locations.get(&func_idx)?.path.clone();
-    read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.sigs.get(&func_idx).cloned())).flatten()
+    read_unit(ext, Unit::File(path), ReadPart::Sig(func_idx), |h| h.file().and_then(|f| f.sigs.get(&func_idx).cloned())).flatten()
 }
 
 /// Resolve the type of a global harvested from a call — a `@creates-global`
@@ -1122,7 +1202,7 @@ pub fn resolve_deferred_call_global_type(
     sym_idx: SymbolIndex,
 ) -> Option<ValueType> {
     let path = ext.deferred_call_globals.get(&sym_idx)?.path.clone();
-    read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.call_globals.get(&sym_idx).cloned()))
+    read_unit(ext, Unit::File(path), ReadPart::CallGlobal(sym_idx), |h| h.file().and_then(|f| f.call_globals.get(&sym_idx).cloned()))
         .flatten()
         .flatten()
 }
@@ -1142,7 +1222,7 @@ pub fn resolve_deferred_calls_type<'c>(
 ) -> Option<ValueType> {
     let mut agreed: Option<ValueType> = None;
     for call in calls {
-        let ty = read_unit(ext, Unit::File(call.path.clone()), |h| {
+        let ty = read_unit(ext, Unit::File(call.path.clone()), ReadPart::CallField(call.call_offset), |h| {
             h.file().and_then(|f| f.call_fields.get(&call.call_offset).cloned())
         })
         .flatten()
@@ -1200,23 +1280,20 @@ fn deferred_slot_type(
 /// another is a list or map whose elements are typed (`string[]`): a list one
 /// writer's analysis couldn't type the elements of says nothing of the others'.
 fn without_bare_tables(tys: Vec<ValueType>, ext: &PreResolvedGlobals) -> Vec<ValueType> {
+    if !has_typed_elements(&tys, ext) {
+        return tys;
+    }
+    drop_bare_tables(tys)
+}
+
+/// `tys` without its bare `table` members and lists of `any` (see
+/// [`without_bare_tables`]).
+fn drop_bare_tables(tys: Vec<ValueType>) -> Vec<ValueType> {
     let bare = |ty: &ValueType| match ty {
         ValueType::Table(None) => true,
         ValueType::TableShape(shape) => shape.fields.is_empty() && shape.value_type.as_ref().is_some_and(|v| v.contains_any()),
         _ => false,
     };
-    let typed_elements = |ty: &ValueType| match ty {
-        ValueType::TableShape(shape) => shape.value_type.as_ref().is_some_and(|v| !v.contains_any()),
-        ValueType::Table(Some(idx)) => ext.try_table(*idx).is_some_and(|t| t.value_type.as_ref().is_some_and(|v| !v.contains_any())),
-        _ => false,
-    };
-    let members = || tys.iter().flat_map(|ty| match ty {
-        ValueType::Union(members) => members.as_slice(),
-        other => std::slice::from_ref(other),
-    });
-    if !members().any(typed_elements) {
-        return tys;
-    }
     tys.into_iter()
         .filter(|ty| !bare(ty))
         .map(|ty| match ty {
@@ -1224,6 +1301,21 @@ fn without_bare_tables(tys: Vec<ValueType>, ext: &PreResolvedGlobals) -> Vec<Val
             other => other,
         })
         .collect()
+}
+
+/// Whether one of `tys` is, or has as a union member, a list or map whose elements
+/// are typed (`string[]`), beside which a bare `table` says nothing
+/// ([`without_bare_tables`]).
+fn has_typed_elements(tys: &[ValueType], ext: &PreResolvedGlobals) -> bool {
+    let typed_elements = |ty: &ValueType| match ty {
+        ValueType::TableShape(shape) => shape.value_type.as_ref().is_some_and(|v| !v.contains_any()),
+        ValueType::Table(Some(idx)) => ext.try_table(*idx).is_some_and(|t| t.value_type.as_ref().is_some_and(|v| !v.contains_any())),
+        _ => false,
+    };
+    tys.iter().flat_map(|ty| match ty {
+        ValueType::Union(members) => members.as_slice(),
+        other => std::slice::from_ref(other),
+    }).any(typed_elements)
 }
 
 /// The values the files writing a slot write there, one list per file, but
@@ -1248,13 +1340,13 @@ fn slot_values_by_file(
     // A discovery analysis records every writer, past the first read it cuts.
     if discovering() {
         for writer in writers {
-            read_unit(ext, Unit::File(writer.clone()), |_| ());
+            read_unit(ext, Unit::File(writer.clone()), ReadPart::Slot(key), |_| ());
         }
         return None;
     }
     let mut per_file: Vec<Vec<ValueType>> = Vec::new();
     for writer in writers {
-        let (written, opaque) = read_unit(ext, Unit::File(writer.clone()), |h| {
+        let (written, opaque) = read_unit(ext, Unit::File(writer.clone()), ReadPart::Slot(key), |h| {
             h.file().and_then(|f| f.slots.get(&key)).map(|values| (values.tys.clone(), values.opaque()))
         })??;
         deps.insert(writer.clone());
@@ -1582,36 +1674,79 @@ pub fn resolve_deferred_field_type_args(
 ) -> Option<Vec<ValueType>> {
     let key = (class_name.to_string(), field_name.to_string());
     let path = ext.deferred_field_type_args.get(&key)?.path.clone();
-    read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.field_args.get(&key).cloned()))
+    read_unit(ext, Unit::File(path), ReadPart::FieldArgs(key.clone()), |h| h.file().and_then(|f| f.field_args.get(&key).cloned()))
         .flatten()
         .flatten()
 }
 
-/// Resolve the precise type of a cross-file `@class` field whose coarse scan type
-/// decayed to a placeholder (`any` or a bare `table`), by re-running the real engine
-/// on *every* file that declares or
-/// assigns the class's fields (memoized). A class whose fields are split across files —
-/// a `@class (partial)` or a method that assigns `self.x` from a file that does not
-/// declare the class — is harvested as a whole: each field's RHS types are accumulated
-/// across all those files and unioned once, so a field assigned a class in one file and
+/// The type every file reads the workspace `@class` field `class.field` as, when the
+/// workspace scan typed it ([`class_field_scan_typed`]), by re-running the real engine
+/// on *every* file that declares or assigns the class's fields (memoized). A class
+/// whose fields are split across files — a `@class (partial)` or a method that assigns
+/// `self.x` from a file that does not declare the class — is harvested as a whole: a
+/// field one file writes reads as that file reads it, and one several files write as
+/// the union of what each writes there, so a field assigned a class in one file and
 /// cleared to nil in another keeps its nilability. The same pass also caches any
 /// *co-located* workspace class whose entire path set (declaring + assigning files) is
 /// among these files, so one analysis of a file warms every such class (not one
 /// analysis per class). Returns `None` when the class isn't a workspace class, the
-/// field is not assigned in any of those files, or the harvested type is no more precise
-/// than the coarse placeholder (touches a type variable / is purely nil / is itself a
-/// bare `table`); callers then keep the coarse placeholder.
+/// field is not assigned in any of those files, or the harvested type says no more
+/// than `any`; callers then keep the scan's type.
 pub fn resolve_deferred_class_field_type(
     ext: &Arc<PreResolvedGlobals>,
     class_name: &str,
     field_name: &str,
 ) -> Option<ValueType> {
-    // `Some(None)`: harvested but not upgradable; a field absent from the harvest is
-    // assigned in none of the class's files.
-    read_unit(ext, Unit::Class(class_name.to_string()), |h| {
-        h.class().and_then(|fields| fields.get(field_name).cloned().flatten())
+    read_class(ext, class_name, |fields| fields.get(field_name)?.ty.clone())
+}
+
+/// What the files other than `writer` write the workspace `@class` field
+/// `class.field`, which several of the class's files write, `writer` among them —
+/// what `writer` reads the field as besides its own writes (`None` inside: nothing
+/// saying more than `any`). `None` when the field isn't harvested or one file
+/// writes it, and in a harvest, which takes the file's own writes only.
+pub fn resolve_deferred_class_field_others(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+    writer: &Path,
+) -> Option<Option<ValueType>> {
+    // No other file writes a class whose only Lua file this is.
+    if harvesting() || single_lua_file(ext, class_name) == Some(writer) {
+        return None;
+    }
+    read_class(ext, class_name, |fields| {
+        let field = fields.get(field_name)?;
+        if !field.writers.iter().any(|(path, _)| path == writer) {
+            return None;
+        }
+        let others: Vec<ValueType> = field.writers.iter()
+            .filter(|(path, _)| path != writer)
+            .filter_map(|(_, ty)| ty.clone())
+            .collect();
+        Some((!others.is_empty()).then(|| ValueType::make_union(others)))
     })
-    .flatten()
+}
+
+/// The type of the workspace `@class` field `class.field` that only `writer` writes,
+/// when it carries fields written onto its value (`Class & { cells: table }`, see
+/// [`CarriedFields`]): what `writer` reads it as too, as other files do. `None`
+/// otherwise, in a harvest, and when `writer` is the class's only Lua file, which
+/// would harvest itself to read what it writes there.
+pub fn resolve_deferred_class_field_carried(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+    writer: &Path,
+) -> Option<ValueType> {
+    if harvesting() || single_lua_file(ext, class_name) == Some(writer) {
+        return None;
+    }
+    read_class(ext, class_name, |fields| {
+        let field = fields.get(field_name)?;
+        let carries = matches!(&field.ty, Some(ValueType::Intersection(members)) if members.iter().any(|m| matches!(m, ValueType::TableShape(_))));
+        (carries && field.writer.as_deref() == Some(writer)).then(|| field.ty.clone()).flatten()
+    })
 }
 
 /// How the innermost harvest analysis on this thread sees a read (see [`read_unit`]).
@@ -1642,7 +1777,7 @@ fn reach(unit: &Unit, files: &[PathBuf]) -> Reach {
 /// Read `read` off `unit`'s harvest for this thread's current context, harvesting it
 /// first if needed. `None` on a cycle back-edge or if a file can't be read — the caller
 /// keeps its coarse fallback.
-fn read_unit<R>(ext: &Arc<PreResolvedGlobals>, unit: Unit, read: impl Fn(&Harvest) -> R) -> Option<R> {
+fn read_unit<R>(ext: &Arc<PreResolvedGlobals>, unit: Unit, part: ReadPart, read: impl Fn(&Harvest) -> R) -> Option<R> {
     let files = unit.files(ext);
     if files.is_empty() {
         return None;
@@ -1662,8 +1797,10 @@ fn read_unit<R>(ext: &Arc<PreResolvedGlobals>, unit: Unit, read: impl Fn(&Harves
         Reach::Own => return None,
         Reach::Member(round) => {
             ANALYSES.with(|frames| {
-                if let Some(frame) = frames.borrow_mut().last_mut() && !frame.member_reads.contains(&unit) {
-                    frame.member_reads.push(unit.clone());
+                if let Some(frame) = frames.borrow_mut().last_mut()
+                    && !frame.member_reads.iter().any(|(u, p)| *u == unit && *p == part)
+                {
+                    frame.member_reads.push((unit.clone(), part));
                 }
             });
             return round.previous.as_ref()?.get(&unit).map(read);
@@ -1901,14 +2038,15 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
     let mut previous: Option<Arc<HashMap<Unit, Harvest>>> = None;
     let mut siblings = Vec::new();
     let mut round_files: Vec<(PathBuf, Option<RoundFile>)> = files.iter().map(|f| (f.clone(), None)).collect();
-    let mut changed: Option<HashSet<Unit>> = None;
-    for _ in 0..if cycle { COMPONENT_ROUNDS } else { 1 } {
+    // The members as the round before `previous` gave them (none before the first).
+    let mut older: Option<Arc<HashMap<Unit, Harvest>>> = None;
+    for i in 0..if cycle { COMPONENT_ROUNDS } else { 1 } {
         let round = cycle.then(|| Arc::new(Round { members: component.to_vec(), previous: previous.clone() }));
         let scope = DepsScope::open();
         let mut values: HashMap<Unit, Harvest> = HashMap::default();
         if let Some(round) = round {
+            let changed = (i > 0).then(|| Changed { before: older.clone(), after: previous.clone() });
             harvest_round(ext, component, &round, &frame, changed.as_ref(), &mut round_files, &mut values);
-            changed = Some(component.iter().filter(|u| previous.as_ref().and_then(|p| p.get(*u)) != values.get(*u)).cloned().collect());
         } else {
             let unit = &component[0];
             let own = unit.files(ext).to_vec();
@@ -1930,13 +2068,13 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
         }
         deps.extend(scope.close());
         let stable = previous.as_deref() == Some(&values);
+        older = previous.take();
         previous = Some(Arc::new(values));
         if stable {
             break;
         }
     }
     drop(guard);
-
     let group: Arc<[PathBuf]> = files.into();
     let mut entries: Vec<Harvested> = previous
         .map(|values| {
@@ -1952,8 +2090,23 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
 /// file unit), the fields it writes on the cycle's classes, and the members it read.
 struct RoundFile {
     harvest: Option<Arc<FileHarvest>>,
-    acc: Arc<HashMap<(String, String), AccField>>,
-    reads: Vec<Unit>,
+    acc: Arc<FileClassFields>,
+    reads: Vec<(Unit, ReadPart)>,
+}
+
+/// The members of a cycle as the last two rounds gave them (`before` is `None` after
+/// the first): a file of the next round reads `after` where its last analysis read
+/// `before`, or something equal to it.
+struct Changed {
+    before: Option<Arc<HashMap<Unit, Harvest>>>,
+    after: Option<Arc<HashMap<Unit, Harvest>>>,
+}
+
+impl Changed {
+    /// Whether the part `part` of the member `unit` changed between the two rounds.
+    fn part(&self, unit: &Unit, part: &ReadPart) -> bool {
+        !part.same(self.before.as_ref().and_then(|v| v.get(unit)), self.after.as_ref().and_then(|v| v.get(unit)))
+    }
 }
 
 /// One round of a cycle's harvest: each of its files analyzed once, which every member
@@ -1967,7 +2120,7 @@ fn harvest_round(
     component: &[Unit],
     round: &Arc<Round>,
     frame: &Arc<ComponentFrame>,
-    changed: Option<&HashSet<Unit>>,
+    changed: Option<&Changed>,
     files: &mut [(PathBuf, Option<RoundFile>)],
     values: &mut HashMap<Unit, Harvest>,
 ) {
@@ -1980,7 +2133,7 @@ fn harvest_round(
         .collect();
     for (path, last) in files.iter_mut() {
         if let (Some(changed), Some(last)) = (changed, &*last)
-            && !last.reads.iter().any(|unit| changed.contains(unit))
+            && !last.reads.iter().any(|(unit, part)| changed.part(unit, part))
         {
             continue;
         }
@@ -1990,7 +2143,7 @@ fn harvest_round(
         if changed.is_none()
             && let Some(first) = first_analysis(ext, path, component)
         {
-            let reads = discovery_reads(ext, path).iter().filter(|u| component.contains(u)).cloned().collect();
+            let reads = discovery_reads(ext, path).iter().filter(|u| component.contains(u)).map(|u| (u.clone(), ReadPart::Whole)).collect();
             let harvest = of_file.then(|| Arc::clone(&first.harvest));
             let acc = if of_class { Arc::clone(&first.acc) } else { Arc::default() };
             *last = Some(RoundFile { harvest, acc, reads });
@@ -2012,36 +2165,153 @@ fn harvest_round(
         *last = Some(file);
     }
     // In file order, as one accumulation over the files would add their writes.
-    let mut acc: HashMap<(String, String), AccField> = HashMap::default();
+    let mut per_file: Vec<(PathBuf, Arc<FileClassFields>)> = Vec::new();
     for (path, file) in files.iter() {
         let Some(file) = file else { continue };
         if let Some(harvest) = &file.harvest {
             values.insert(Unit::File(path.clone()), Harvest::File(Arc::clone(harvest)));
         }
-        for (key, field) in file.acc.iter() {
-            acc.entry(key.clone()).or_default().absorb(field);
+        if !file.acc.is_empty() {
+            per_file.push((path.clone(), Arc::clone(&file.acc)));
         }
     }
-    let mut by_class = gate_class_fields(ext, acc);
+    let mut by_class = gate_class_fields(ext, &per_file);
     for class in classes {
         let fields = by_class.remove(class).unwrap_or_default();
         values.insert(Unit::Class(class.to_string()), Harvest::Class(Arc::new(fields)));
     }
 }
 
-/// The fields `acc` accumulated, gated per class.
-fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, acc: HashMap<(String, String), AccField>) -> HashMap<String, ClassFields> {
-    // Consuming `acc`: the owned RHS vec goes straight into the union — no clones.
+/// The class fields `per_file` accumulated (each file's in file order), gated per
+/// class: a field one file writes takes what that file reads it as, one several
+/// files write the union of what each writes there (see [`ClassField`]).
+fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<FileClassFields>)]) -> HashMap<String, ClassFields> {
+    let mut by_key: HashMap<(String, String), Vec<(&PathBuf, &AccField)>> = HashMap::default();
+    for (path, acc) in per_file {
+        for (key, field) in acc.iter() {
+            by_key.entry(key.clone()).or_default().push((path, field));
+        }
+    }
     let mut by_class: HashMap<String, ClassFields> = HashMap::default();
-    for ((cls, fname), f) in acc {
-        // A write this harvest can't type makes the field `any` in its own file, so
-        // the others' bare `table` isn't what that file reads.
-        let ty = gate_harvested_field(f.tys, f.lateinit)
-            .filter(|ty| !(f.unresolved && contains_bare_table(ty)))
-            .map(|ty| f.sub_fields.onto(ty, ext));
-        by_class.entry(cls).or_default().insert(fname, ty);
+    for ((cls, fname), files) in by_key {
+        let writing: Vec<&(&PathBuf, &AccField)> = files.iter().filter(|(_, f)| f.written).collect();
+        let writers: Vec<&Path> = writing.iter().map(|(path, _)| path.as_path()).collect();
+        if keeps_scanned_table(ext, &cls, &fname, &writers) {
+            by_class.entry(cls).or_default().insert(fname, ClassField::default());
+            continue;
+        }
+        // A constructor's entry is typed by its constructor (inversion slice 3), but
+        // for the scan's placeholders, typed by the union of the writes.
+        if files.iter().any(|(_, f)| f.ctor) {
+            let mut all = AccField::default();
+            for (_, f) in &files {
+                all.absorb(f);
+            }
+            let placeholder = ext.classes.get(&cls)
+                .and_then(|&idx| ext.try_table(idx)?.fields.get(&fname))
+                .is_some_and(|fi| field_is_coarse_placeholder(fi, ext));
+            let ty = if placeholder { gate_writes(ext, &all, true) } else { None };
+            by_class.entry(cls).or_default().insert(fname, ClassField { ty, ..ClassField::default() });
+            continue;
+        }
+        let field = match writing.as_slice() {
+            [(only_path, only)] => {
+                // With what any of the files writes onto its value.
+                let mut all = AccField::default();
+                for (_, f) in &files {
+                    all.absorb(f);
+                }
+                // A reading saying no more than `any` or `nil` is the field's own read
+                // in the harvest, cut (`self` the workspace's class): its writes type it.
+                let untyped = match &only.reading {
+                    Some(ValueType::Any | ValueType::Nil) | None => true,
+                    Some(ValueType::Union(members)) => members.is_empty(),
+                    Some(_) => false,
+                };
+                let ty = match &only.reading {
+                    Some(reading) if !untyped => Some(all.sub_fields.onto(reading.clone(), ext)),
+                    _ => {
+                        all.tys = only.tys.clone();
+                        gate_writes(ext, &all, true)
+                    }
+                };
+                ClassField { ty, writers: Vec::new(), writer: Some((*only_path).clone()) }
+            }
+            _ => {
+                // In file order, as one accumulation over the files adds their writes;
+                // a write that doesn't resolve says nothing, as to a file writing the
+                // field (`Analysis::fill_class_others`).
+                let mut all = AccField::default();
+                for (_, f) in &files {
+                    all.absorb(f);
+                }
+                let lists = has_typed_elements(&all.tys, ext);
+                let contribution = |f: &AccField| {
+                    let mut f = f.clone();
+                    if lists {
+                        f.tys = drop_bare_tables(f.tys);
+                    }
+                    gate_writes(ext, &f, false)
+                };
+                let mut writers: Vec<(PathBuf, Option<ValueType>)> = writing.iter()
+                    .map(|(path, f)| ((*path).clone(), contribution(f)))
+                    .collect();
+                writers.sort_by(|a, b| a.0.cmp(&b.0));
+                ClassField { ty: contribution(&all), writers, ..ClassField::default() }
+            }
+        };
+        // A bare `table` says no more than a table the scan gave the field, and would
+        // drop what files add to it (`ensure_slot_overlay`).
+        let field = match field {
+            ClassField { ty: Some(ty), .. } if contains_bare_table(&ty) && scanned_table(ext, &cls, &fname).is_some() => ClassField::default(),
+            field => field,
+        };
+        by_class.entry(cls).or_default().insert(fname, field);
     }
     by_class
+}
+
+/// The table the workspace scan gives the field `class.field`, if it gives it one.
+fn scanned_table(ext: &PreResolvedGlobals, class: &str, field: &str) -> Option<TableIndex> {
+    let fi = ext.classes.get(class).and_then(|&idx| ext.try_table(idx)?.fields.get(field))?;
+    let scanned = fi.annotation.clone().or_else(|| match ext.expr(fi.expr) {
+        Expr::Literal(ty) => Some(ty.clone()),
+        _ => None,
+    });
+    match scanned {
+        Some(ValueType::Table(Some(idx))) => Some(idx),
+        _ => None,
+    }
+}
+
+/// Whether the field `class.field` keeps the table the workspace scan gives it, as a
+/// slot does (`SlotTables::slot_holds_value`): one with something in it the scan
+/// typed — a record of typed fields, a list or map of typed elements — or that files
+/// other than `writers` fill (`App.Plugins = {}` in one file, a module another adds as
+/// `App.Plugins.X = ...`), which what the writers build there lacks. A map whose
+/// elements the scan couldn't type takes what its writers build.
+fn keeps_scanned_table(ext: &PreResolvedGlobals, class: &str, field: &str, writers: &[&Path]) -> bool {
+    let Some(idx) = scanned_table(ext, class, field) else { return false };
+    let table = ext.table(idx);
+    if table.class_name.is_some() || table.placeholder || table.is_shapeless() {
+        return false;
+    }
+    if table.value_type.as_ref().is_none_or(|v| !v.contains_any()) {
+        return true;
+    }
+    // A constructor's entries have no location of their own: the writer's.
+    let Some(locations) = ext.field_locations.get(&idx) else { return false };
+    table.fields.keys().any(|name| locations.get(name).is_some_and(|loc| !writers.contains(&loc.path.as_path())))
+}
+
+/// What the writes `f` accumulated type a field as (see [`gate_harvested_field`]),
+/// with the sub-fields written onto its value carried. With `unresolved_any`, a write
+/// this harvest can't type makes the field `any` in its own file, so the others' bare
+/// `table` isn't what that file reads.
+fn gate_writes(ext: &PreResolvedGlobals, f: &AccField, unresolved_any: bool) -> Option<ValueType> {
+    gate_harvested_field(f.tys.clone(), f.lateinit)
+        .filter(|ty| !(unresolved_any && f.unresolved && contains_bare_table(ty)))
+        .map(|ty| f.sub_fields.clone().onto(ty, ext))
 }
 
 /// Accumulate `class`'s fields over its files, analyzed with them all in progress —
@@ -2053,8 +2323,8 @@ fn harvest_class(
     paths: &[PathBuf],
 ) -> (ClassFields, Vec<Harvested>) {
     // Accumulate the RHS types of every field of every workspace class found in the
-    // target's declaring files, keyed by `(class, field)` with nils included. Two
-    // reasons to accumulate across the whole file set at once rather than per file:
+    // target's declaring files, keyed by `(class, field)` with nils included, per file.
+    // Two reasons to gate over the whole file set at once rather than per file:
     //   - **partial classes**: the union+gate must run once over all a class's files so
     //     a field assigned a class in one file and cleared to nil in another lands `T?`
     //     (per-file gating would drop the nil-only file → a non-optional false positive);
@@ -2066,13 +2336,15 @@ fn harvest_class(
     // `harvest_component`), so a re-entrant read of this class through any of them is
     // a back-edge. Each file's dependencies are collected separately, for the
     // co-located classes below.
-    let mut acc: HashMap<(String, String), AccField> = HashMap::default();
+    let mut per_file: Vec<(PathBuf, Arc<FileClassFields>)> = Vec::new();
     let file_deps: Vec<HashSet<PathBuf>> = paths
         .iter()
         .map(|path| {
             let scope = DepsScope::open();
             if let Some((tree, result)) = analyze_file(ext, path) {
+                let mut acc = HashMap::default();
                 accumulate_class_fields_in_file(ext, path, &tree, &result, &mut acc);
+                per_file.push((path.clone(), Arc::new(acc)));
             }
             let deps = scope.close();
             note_deps(deps.iter().map(PathBuf::as_path));
@@ -2080,7 +2352,7 @@ fn harvest_class(
         })
         .collect();
 
-    let mut by_class = gate_class_fields(ext, acc);
+    let mut by_class = gate_class_fields(ext, &per_file);
     let fields = by_class.remove(class).unwrap_or_default();
     // Only cache a co-located class whose *entire* path set (declaring + assigning
     // files) is among the files we just analyzed — which means we accumulated its
@@ -2173,12 +2445,38 @@ fn file_harvest(
     result: &crate::analysis::AnalysisResult,
 ) -> FileHarvest {
     let globals = global_tables(result, tree, ext);
+    let mut acc = HashMap::default();
+    accumulate_class_fields_in_file(ext, path, tree, result, &mut acc);
+    let mut classes = gate_class_fields(ext, &[(path.to_path_buf(), Arc::new(acc))]);
+    classes.retain(|class, _| single_lua_file(ext, class) == Some(path));
     FileHarvest {
         sigs: harvest_sigs(ext, path, result, &globals),
         call_globals: harvest_call_globals(ext, path, tree, result, &globals),
         call_fields: harvest_call_fields(ext, path, tree, result, &globals),
         field_args: harvest_field_args(ext, path, result, &globals),
         slots: harvest_slots(ext, path, tree, result, &globals),
+        classes,
+    }
+}
+
+/// The one Lua file among the files of the workspace class `class`
+/// (`PreResolvedGlobals::deferred_class_field_paths`), when it has one — an XML
+/// template naming it a mixin aside, which declares fields but writes none. Such a
+/// class is harvested with that file's other data (`FileHarvest::classes`): the same
+/// analysis, in the same context.
+fn single_lua_file<'a>(ext: &'a PreResolvedGlobals, class: &str) -> Option<&'a Path> {
+    let mut lua = ext.deferred_class_field_paths.get(class)?.iter()
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lua")));
+    let only = lua.next()?;
+    lua.next().is_none().then_some(only.as_path())
+}
+
+/// Read `read` off the harvested fields of the workspace class `class` (see
+/// [`read_unit`]): its only Lua file's harvest, or the class's own.
+fn read_class<R>(ext: &Arc<PreResolvedGlobals>, class: &str, read: impl Fn(&ClassFields) -> Option<R>) -> Option<R> {
+    match single_lua_file(ext, class) {
+        Some(path) => read_unit(ext, Unit::File(path.to_path_buf()), ReadPart::ClassOf(class.to_string()), |h| h.file()?.classes.get(class).and_then(&read)).flatten(),
+        None => read_unit(ext, Unit::Class(class.to_string()), ReadPart::Whole, |h| h.class().and_then(&read)).flatten(),
     }
 }
 
@@ -2558,6 +2856,16 @@ fn accumulate_class_fields_in_file(
             class_name_of.insert(idx, name.clone());
         }
     }
+    // A plain global table the file defines that is a workspace class by its name — a
+    // mixin — is that class where it is defined: `self` in its methods is the local
+    // table (`Ir::class_tables`).
+    for (&idx, &class) in &ir.class_tables {
+        if let Some(name) = ext.table(class).class_name.as_ref()
+            && ext.deferred_class_field_paths.get(name).is_some_and(|ps| ps.iter().any(|p| p == path))
+        {
+            class_name_of.entry(idx).or_insert_with(|| name.clone());
+        }
+    }
     // No early return on an empty `class_name_of`: a file that only *assigns* a class's
     // fields (a method in a non-declaring file, `function ns.C:m() self.x = ... end`)
     // has no local `@class` table, yet its `self.x = ...` writes still target the
@@ -2587,8 +2895,19 @@ fn accumulate_class_fields_in_file(
     for fa in &ir.field_assignments {
         let Some(name) = class_name_for(fa.table_idx) else { continue };
         let entry = acc.entry((name, fa.field_name.clone())).or_default();
+        entry.written = true;
         entry.lateinit |= fa.lateinit;
-        if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
+        // A `[k] = v` map whose entries differ types the field in other files no
+        // more than a table (`Ir::writes_mixed_map`).
+        if ir.writes_mixed_map(fa.actual_expr) {
+            entry.mixed_map = true;
+            if !entry.tys.contains(&ValueType::Table(None)) {
+                entry.tys.push(ValueType::Table(None));
+            }
+            continue;
+        }
+        // A literal written is the field's base type in other files.
+        if let Some(ty) = result.resolve_expr_type(fa.actual_expr).map(|ty| ty.widen_literals()) {
             let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
             if !entry.tys.contains(&lifted) {
                 entry.tys.push(lifted);
@@ -2614,7 +2933,9 @@ fn accumulate_class_fields_in_file(
                 continue;
             }
             let entry = acc.entry((name.clone(), field.clone())).or_default();
-            if let Some(ty) = result.resolve_expr_type(expr) {
+            entry.written = true;
+            entry.ctor = true;
+            if let Some(ty) = result.resolve_expr_type(expr).map(|ty| ty.widen_literals()) {
                 let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
                 if !entry.tys.contains(&lifted) {
                     entry.tys.push(lifted);
@@ -2672,18 +2993,49 @@ fn accumulate_class_fields_in_file(
             }
         }
     }
+
+    // What the file reads each field it writes as: its own table of the class (a
+    // declaration, a mixin it defines), else its view of the workspace's.
+    let own_tables: HashMap<&str, TableIndex> = class_name_of.iter().map(|(&idx, name)| (name.as_str(), idx)).collect();
+    for ((class, field), entry) in acc.iter_mut() {
+        if !entry.written {
+            continue;
+        }
+        if entry.mixed_map {
+            entry.reading = Some(ValueType::Table(None));
+            continue;
+        }
+        let fi = own_tables.get(class.as_str())
+            .and_then(|&idx| ir.table(idx).fields.get(field))
+            .or_else(|| ir.get_field(*ext.classes.get(class)?, field));
+        let Some(ty) = fi.and_then(|fi| result.resolve_field_type(fi)).map(|ty| ty.widen_literals()) else { continue };
+        let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
+        entry.reading = Some(if entry.lateinit { lifted.strip_nil() } else { lifted });
+    }
 }
+
+/// The `@class` fields one file writes, by `(class, field)`.
+type FileClassFields = HashMap<(String, String), AccField>;
 
 /// One `@class` field accumulated across a class's files: the per-site RHS types
 /// (nils included), whether any site was `lateinit`, and the sub-fields written
 /// onto the field's value (`self.field.sub = ...`).
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct AccField {
     tys: Vec<ValueType>,
     lateinit: bool,
     /// A write whose type didn't resolve.
     unresolved: bool,
     sub_fields: CarriedFields,
+    /// The field is written (not only fields of its value).
+    written: bool,
+    /// An entry of the class's constructor writes it.
+    ctor: bool,
+    /// A write is a map whose entries' types differ (`Ir::writes_mixed_map`).
+    mixed_map: bool,
+    /// What the file reads the field as, lifted — what other files read a field one
+    /// file writes as, with the sub-fields written onto its value carried.
+    reading: Option<ValueType>,
 }
 
 impl AccField {
@@ -2696,6 +3048,9 @@ impl AccField {
         }
         self.lateinit |= other.lateinit;
         self.unresolved |= other.unresolved;
+        self.written |= other.written;
+        self.ctor |= other.ctor;
+        self.mixed_map |= other.mixed_map;
         for (name, (tys, loc)) in &other.sub_fields.0 {
             for ty in tys {
                 self.sub_fields.add(name, ty.clone(), || loc.clone());
@@ -2710,7 +3065,7 @@ impl AccField {
 /// site's type and the first site's location. Applied as `Class & { field: T }`
 /// ([`Self::onto`]), so cross-file reads resolve, complete, and go-to-define
 /// instead of tripping `undefined-field`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct CarriedFields(std::collections::BTreeMap<String, (Vec<ValueType>, crate::types::ExternalLocation)>);
 
 impl CarriedFields {
@@ -2905,8 +3260,9 @@ fn contains_bare_table(ty: &ValueType) -> bool {
 /// sharpening to a non-callable class would false-positive `cannot-call`. Those are
 /// the regression-prone slice left for a later phase.
 ///
-/// Shared by `ensure_field_overlay` (eligibility) and the resolve hot path (so the
-/// warm+re-fetch runs only for these rare placeholders, not every field access).
+/// What a harvest analysis, a constructor's entry and the addon namespace's `@class`
+/// harvest of a class field (see [`class_field_scan_typed`]); also what a constructor
+/// twin may replace (`resolve_field_access`).
 pub(crate) fn field_is_coarse_placeholder(fi: &crate::types::FieldInfo, ext: &PreResolvedGlobals) -> bool {
     matches!(fi.annotation, Some(ValueType::Any))
         || (fi.annotation.is_none()
@@ -2922,6 +3278,25 @@ pub(crate) fn field_is_coarse_placeholder(fi: &crate::types::FieldInfo, ext: &Pr
                 Some(ValueType::Table(Some(idx))) => ext.try_table(*idx).is_some_and(|t| t.placeholder),
                 _ => false,
             })
+}
+
+/// Whether the field `fi` of the workspace `@class` `class` is typed by the workspace
+/// scan's inference from its writes — no author annotation (`@field`, `---@type`, an
+/// XML declaration) types it, nor is it a function the scan typed, whose signature
+/// crosses files on its own — so every file reads it as the harvest of its writes
+/// ([`resolve_deferred_class_field_type`]).
+pub(crate) fn class_field_scan_typed(fi: &crate::types::FieldInfo, ext: &PreResolvedGlobals, class: &str, field: &str) -> bool {
+    // The addon namespace's `@class` holds the namespace's fields, which are slots
+    // (`Ir::ensure_slot_overlay`) but for the scan's placeholders.
+    if ext.addon_ns_class_own_fields.contains_key(class) {
+        return field_is_coarse_placeholder(fi, ext);
+    }
+    let scanned_function = |ty: &ValueType| is_function_value(ty) && !contains_untyped(ty);
+    fi.annotation_text.is_none()
+        && (fi.from_scan || field_is_coarse_placeholder(fi, ext))
+        && !ext.declared_class_fields.get(class).is_some_and(|d| d.contains(field))
+        && !fi.annotation.as_ref().is_some_and(scanned_function)
+        && !(fi.expr.is_external() && matches!(ext.expr(fi.expr), Expr::Literal(ty) if scanned_function(ty)))
 }
 
 /// Follow a simple `local b = a` alias chain to the ultimate bound variable, so a

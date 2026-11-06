@@ -19,11 +19,10 @@ r.plain:Ping()
 local n = r.num
 --    ^ hover: (local) n: number
 
--- A field assigned a class in one method and `nil` in another: the harvested type
--- carries the field's nilability (`CFT_Bar?`), never sharpening to a non-optional
--- `CFT_Bar` that would false-positive when a caller clears it.
+-- A field assigned a class in one method and `nil` in another, both in one file,
+-- reads as that file reads it.
 local o = r.opt
---    ^ hover: (local) o: CFT_Bar?
+--    ^ hover: (local) o: CFT_Bar
 
 -- A field written only a value declared `table` reads `table`, as in its file:
 -- calling it is the error it is there.

@@ -854,6 +854,13 @@ pub struct Ir {
     /// (`ns.M = M`, see `ctor_overlays`): a field the file's table lacks, written
     /// by another file through the export, is read off the copy.
     pub exported_tables: HashMap<TableIndex, TableIndex>,
+    /// The workspace class's own table each table of this file standing for the
+    /// class is, by the file's table: a declaration of it (`---@class C` on a local),
+    /// or a plain global table it defines that is the class by its name (a mixin,
+    /// `FooMixin = {}`, an XML `mixin=` or `CreateFromMixins` makes one). A field the
+    /// file's table lacks that the class's own table holds (an XML template's
+    /// `parentKey` child, another file's write) is read off it.
+    pub class_tables: HashMap<TableIndex, TableIndex>,
     /// The assignment targets whose value an author annotation types (`---@type`,
     /// `---@class`), by the same offset: the slot harvest leaves their slot the
     /// annotation's.
@@ -1015,6 +1022,9 @@ pub struct Ir {
     /// The deferred call fields (by the table read and the field's coarse expr)
     /// `ensure_call_field_overlay` has consulted, so each is harvested once.
     pub call_fields_checked: HashSet<(TableIndex, ExprId)>,
+    /// The workspace `@class` fields (by the table declaring them and the field's
+    /// coarse expr) `ensure_field_overlay` has consulted, so each is harvested once.
+    pub class_fields_checked: HashSet<(TableIndex, ExprId)>,
     /// The fields of this file's tables typed by its own writes over the type the
     /// workspace scan gave them (`type_scanned_fields_by_own_writes`), by the scanned
     /// field's coarse expr, for the table-field harvest (`harvest_table_fields`).
@@ -1032,6 +1042,11 @@ pub struct Ir {
     /// by what the other files writing it write there, the file's own writes aside
     /// (`Ir::slot_field_other_writes`), or `None` when that is unknown.
     pub slot_others: HashMap<ExprId, Option<ExprId>>,
+    /// The `@class` fields this file writes that other files write too, by the
+    /// primary write of the file's copy: an expr typed by what the other files write
+    /// there, or `None` when that says nothing — the field reads the file's own
+    /// writes and those (`Analysis::fill_class_others`, `Ir::slot_union_exprs`).
+    pub class_slots: HashMap<ExprId, Option<ExprId>>,
     /// Defining files this file harvested a deferred cross-file type from during
     /// analysis (a body-derived return, a `@creates-global`, a `@class` or table
     /// field, or a constructor generic type-arg — recorded by the `ensure_*_overlay` /
@@ -2455,6 +2470,19 @@ impl Ir {
     /// the scan's, and the file's own past those saying no more than `any`, as the
     /// harvest takes them (`deferred::harvest_slots`).
     pub fn slot_union_exprs(&self, primary: ExprId, extras: &[ExprId], nil_primary: bool, mut resolve: impl FnMut(ExprId) -> Option<ValueType>) -> (Vec<ExprId>, bool) {
+        // A `@class` field other files write too: the file's own writes saying more
+        // than `any`, and the others' — unless all they say is `nil`, which the
+        // harvest takes for nothing either (`deferred::gate_harvested_field`).
+        if let Some(&others) = self.class_slots.get(&primary) {
+            let own: Vec<ExprId> = std::iter::once(primary).chain(extras.iter().copied())
+                .filter(|e| !e.is_external())
+                .flat_map(|e| self.typed_operands(e, &mut resolve))
+                .collect();
+            let all = own.into_iter().chain(others).collect::<Vec<_>>();
+            if !all.iter().all(|&e| matches!(resolve(e), Some(ValueType::Nil))) {
+                return (all, true);
+            }
+        }
         if self.is_container_primary(primary) {
             // The workspace's table, unless this file's writes say more of the field.
             let own: Vec<ExprId> = extras.iter().copied().filter(|e| !e.is_external()).collect();
@@ -2477,7 +2505,12 @@ impl Ir {
     /// ([`Self::written_values`]): the writes of a field neither a slot nor a
     /// container.
     pub fn written_union_exprs(&self, primary: ExprId, extras: &[ExprId], nil_primary: bool) -> (Vec<ExprId>, bool) {
-        let (exprs, skip_primary) = field_union_exprs(primary, extras, nil_primary);
+        // The workspace scan's `any` for a field this file writes says nothing
+        // beside the file's writes.
+        let scan_any = primary.is_external()
+            && extras.iter().any(|e| !e.is_external())
+            && matches!(self.ext.expr(primary), Expr::Literal(ValueType::Any));
+        let (exprs, skip_primary) = field_union_exprs(primary, extras, nil_primary || scan_any);
         if self.self_reads.is_empty() {
             return (exprs, skip_primary);
         }
@@ -2689,7 +2722,7 @@ impl Ir {
     /// Whether `expr` is a `[k] = v` map whose entries' types differ
     /// (`map_entries_differ`), which types a field in other files no more than the
     /// scan's `table` (see `scanned_field_maps`).
-    pub(super) fn writes_mixed_map(&self, expr: ExprId) -> bool {
+    pub(crate) fn writes_mixed_map(&self, expr: ExprId) -> bool {
         self.find_table_index(expr).is_some_and(|idx| {
             let t = self.table(idx);
             t.constructor_bracket_count > 0
@@ -2937,6 +2970,35 @@ impl Ir {
         let mut visited = HashSet::default();
         self.get_field_via_metatable(table_idx, field_name, &mut visited)
             .or_else(|| self.get_field(*self.exported_tables.get(&table_idx)?, field_name))
+            .or_else(|| {
+                // The class's own fields only: its frame parents' members aren't a
+                // mixin's (see `mark_external_mixins_open`). Nor is an XML template's
+                // `parentArray`, typed by the frames the template creates it with,
+                // which the file building it appends others to.
+                let class = *self.class_tables.get(&table_idx)?;
+                self.overlay_fields.get(&class).and_then(|fields| fields.get(field_name))
+                    .or_else(|| self.table(class).fields.get(field_name)
+                        .filter(|fi| !self.is_xml_array(class, field_name, fi) && !self.is_table_placeholder(fi)))
+            })
+    }
+
+    /// Whether the external field `fi` is the workspace scan's unannotated table for a
+    /// write it couldn't type, which a declaration of its class doesn't take
+    /// (`prescan`'s import, Filter 1) until a harvest types it.
+    fn is_table_placeholder(&self, fi: &FieldInfo) -> bool {
+        fi.annotation.is_none()
+            && fi.annotation_type_raw.is_none()
+            && fi.expr.is_external()
+            && matches!(self.ext.expr(fi.expr), Expr::Literal(ValueType::Table(..)))
+    }
+
+    /// Whether the field `field_name` of the external class `class` (`fi`) is an XML
+    /// template's `parentArray`: declared in an XML file, holding a list.
+    fn is_xml_array(&self, class: TableIndex, field_name: &str, fi: &FieldInfo) -> bool {
+        !fi.from_scan
+            && matches!(fi.annotation, Some(ValueType::Table(Some(t))) if self.table(t).value_type.is_some() && self.table(t).fields.is_empty())
+            && self.ext.field_locations.get(&class).and_then(|m| m.get(field_name))
+                .is_some_and(|loc| loc.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")))
     }
 
     /// The start of the call whose object `expr` is: the call itself, or the one
@@ -4459,6 +4521,7 @@ impl<'a> Analysis<'a> {
                 self_reads: HashSet::default(),
                 write_root_versions: HashMap::default(),
                 exported_tables: HashMap::default(),
+                class_tables: HashMap::default(),
                 annotated_targets: HashSet::default(),
                 field_write_targets: Vec::new(),
                 call_objects: HashMap::default(),
@@ -4499,11 +4562,13 @@ impl<'a> Analysis<'a> {
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),
                 call_fields_checked: HashSet::default(),
+                class_fields_checked: HashSet::default(),
                 scan_field_takeovers: HashMap::default(),
                 table_fields_checked: HashSet::default(),
                 slot_fields_checked: HashSet::default(),
                 harvest_refined_fields: HashSet::default(),
                 slot_others: HashMap::default(),
+                class_slots: HashMap::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),

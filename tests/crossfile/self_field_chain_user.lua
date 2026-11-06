@@ -6,16 +6,16 @@
 -- bare unannotated table placeholders, but not annotation-carrying fields).
 --
 -- The coarse scan can't resolve the chain's return type, so the field is
--- registered existence-only as `any` (the honest "unknown"), NOT a guessed
--- `table` — a concrete `table` would false-positive when the chain actually
--- returns a non-table (e.g. `f():GetHeight()` -> number passed to a number
--- parameter reads as `type-mismatch`).
+-- registered existence-only as `any`, NOT a guessed `table` — a concrete
+-- `table` would false-positive when the chain actually returns a non-table
+-- (e.g. `f():GetHeight()` -> number passed to a number parameter reads as
+-- `type-mismatch`). The lib's own analysis types it, so it reads that here.
 
 ---@class ChainHost
 local H = {}
 
 function H:Use()
     local h = self.handle
-    --              ^ hover: (field) handle: any
+    --              ^ hover: (field) handle: ChainLib
     return h
 end

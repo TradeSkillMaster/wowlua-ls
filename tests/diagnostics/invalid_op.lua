@@ -215,6 +215,28 @@ local _opNeg = -_opId
 --    ^ hover: (local) _opNeg: number
 _use(_opNeg)
 
+-- A string behind an opaque alias or secrecy still errors under arithmetic.
+---@alias (opaque) InvalidOpLink string
+---@type InvalidOpLink
+local _opLink
+_use(_opLink + 1)
+--   ^ diag: invalid-op
+---@type secret<string>
+local _opSecretText
+_use(_opSecretText + 1)
+--   ^ diag: invalid-op
+
+-- A table operand's `__add` takes a string operand.
+---@class InvalidOpVec
+---@field __add fun(a: any, b: any): InvalidOpVec
+---@type InvalidOpVec
+local _opVec
+local _vecPlusText = _opVec + "x"
+--    ^ hover: (local) _vecPlusText: InvalidOpVec
+local _textPlusVec = "x" + _opVec
+--    ^ hover: (local) _textPlusVec: InvalidOpVec
+_use(_vecPlusText, _textPlusVec)
+
 -- `(field or 0) > 0` narrows a nilable field to non-nil — concat is then valid
 ---@class ConcatNarrow
 ---@field count number?

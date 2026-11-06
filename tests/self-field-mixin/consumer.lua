@@ -2,11 +2,11 @@
 -- Another method on the same mixin, in a different file. `self` is the
 -- XML-promoted DataProviderMixin class, so these reads are checked. The
 -- self-fields written in provider.lua must all resolve here:
---   - `provider` / `handle`: existence-only `any` (the honest "unknown"), no
---     undefined-field. NOT a bare `table`: that concrete type leaks into reads
---     and false-positives when the value is passed to a typed parameter
---     (`type-mismatch`) or invoked (`cannot-call`); `any` suppresses the
---     existence check without asserting a shape.
+--   - `provider` / `handle` / `viaNestedFn`: typed by their writes there (the
+--     harvest of provider.lua), else existence-only `any` (`provider`, a bare
+--     parameter, says nothing), no undefined-field. NOT a bare `table`: that
+--     concrete type leaks into reads and false-positives when the value is
+--     passed to a typed parameter (`type-mismatch`) or invoked (`cannot-call`).
 --   - `onUpdate`: registered callable (a function literal), so calling it is
 --     not a `cannot-call` error
 -- Note `provider` is forwarded from a *parameter* (`self.provider = provider`)
@@ -21,8 +21,8 @@ function DataProviderMixin:Render()
     --              ^ hover: (field) provider: any
     self.onUpdate()
     local h = self.handle
-    --              ^ hover: (field) handle: any
+    --              ^ hover: (field) handle: DataProviderMixin
     local n = self.viaNestedFn
-    --              ^ hover: (field) viaNestedFn: any
+    --              ^ hover: (field) viaNestedFn: boolean
     return p, h, n
 end

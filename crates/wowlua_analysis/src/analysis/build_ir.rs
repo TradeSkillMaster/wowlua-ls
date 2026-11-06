@@ -4665,6 +4665,21 @@ impl<'a> Analysis<'a> {
     /// method-only globals (whose auto-created class has no parent) are untouched.
     pub(super) fn mark_external_mixins_open(&mut self) {
         let ext = std::sync::Arc::clone(&self.ir.ext);
+        // This file's declarations of workspace classes read the fields the class's
+        // own table holds that they lack (`Ir::class_tables`).
+        if !ext.deferred_class_field_paths.is_empty() {
+            for idx in 0..self.ir.tables.len() {
+                let local = TableIndex(idx);
+                let Some(name) = self.ir.tables[idx].class_name.as_ref() else { continue };
+                if let Some(&ext_idx) = ext.classes.get(name)
+                    && ext.table(ext_idx).class_name.as_ref() == Some(name)
+                    && ext.deferred_class_field_paths.contains_key(name)
+                    && !ext.addon_ns_class_own_fields.contains_key(name)
+                {
+                    self.ir.class_tables.insert(local, ext_idx);
+                }
+            }
+        }
         // Scope-0 (file-global) bindings only — mixins are declared as globals.
         let names: Vec<String> = self.ir.scopes.first()
             .map(|s| s.symbols.keys().filter_map(|id| match id {
@@ -4680,6 +4695,9 @@ impl<'a> Analysis<'a> {
                 continue;
             }
             let Some(&ext_idx) = ext.classes.get(&name) else { continue };
+            if ext.table(ext_idx).class_name.as_ref() == Some(&name) {
+                self.ir.class_tables.insert(local_idx, ext_idx);
+            }
             if ext.table(ext_idx).parent_classes.is_empty() {
                 continue;
             }
