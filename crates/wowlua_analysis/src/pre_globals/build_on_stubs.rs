@@ -95,6 +95,9 @@ struct BuildOnStubsContext<'a> {
     /// `(table, field)` call-assigned fields methods were defined or fields written
     /// through; see `call_field_writes`.
     call_field_methods: HashSet<(TableIndex, String)>,
+    /// The tables of the fields written on globals a call creates, by name
+    /// (`PreResolvedGlobals::call_global_instances`).
+    call_instances: HashMap<String, TableIndex>,
     /// The `---@type` of each table global that has one (`---@type Foo` on
     /// `Bar = {}`); see `annotated_table_global_type`.
     table_global_types: HashMap<String, ValueType>,
@@ -169,6 +172,7 @@ impl<'a> BuildOnStubsContext<'a> {
             ctor_entries: HashSet::default(),
             nested_ctor_calls: Vec::new(),
             call_field_methods: HashSet::default(),
+            call_instances: HashMap::default(),
             table_global_types: HashMap::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
@@ -281,6 +285,7 @@ impl<'a> BuildOnStubsContext<'a> {
             scope0_symbols: &self.scope0_symbols,
             stub_symbols_end: self.stubs_base.stub_symbols_end,
             deferred_call_globals: &self.deferred_call_globals,
+            call_instances: &self.call_instances,
         }
     }
 
@@ -518,6 +523,15 @@ impl<'a> BuildOnStubsContext<'a> {
     fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl], class_field_paths: &mut ClassFieldPaths) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
 
+        // A `---@type` on any write of a global types the table its other writes
+        // build (`X = nil ---@type T`, `X = X or {}` in a handler).
+        for (name, at) in super::shared::variable_type_annotations(ws_globals) {
+            if !self.table_global_types.contains_key(name)
+                && let Some(vt) = self.resolve_write_annotation(at)
+            {
+                self.table_global_types.insert(name.to_string(), vt);
+            }
+        }
         for g in ws_globals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !g.declares_class && let Some(at) = g.returns.first()
@@ -556,7 +570,8 @@ impl<'a> BuildOnStubsContext<'a> {
             // (e.g. `BaseFrame = DefineClass("BaseFrame", "Container")`) — treat as a
             // class global so the class registration path sets the correct Table type.
             if let ExternalGlobalKind::Variable(FieldValueKind::FunctionCall { .. }) = &g.kind
-                && self.classes.contains_key(&g.name) {
+                && self.classes.contains_key(&g.name)
+                && !super::shared::declares_other_class(g) {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
                     self.table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -613,6 +628,7 @@ impl<'a> BuildOnStubsContext<'a> {
             if let ExternalGlobalKind::Variable(_) = &g.kind
                 && self.classes.contains_key(&g.name)
                 && !self.class_globals.contains(&g.name)
+                && !super::shared::declares_other_class(g)
             {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
@@ -860,9 +876,14 @@ impl<'a> BuildOnStubsContext<'a> {
         }
         // Fields written through another file's table global (`ForeignField`): their
         // existence, `any` until what their files write types them.
+        let call_globals = super::shared::call_global_names(ws_globals);
         for g in ws_globals {
             let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
             if self.is_stub_global(&g.name) { continue; }
+            // A global a call creates holds what files write on it on a table of its own.
+            if call_globals.contains(g.name.as_str()) && self.slot_tables().slot_table(&g.name, &[]).is_none() {
+                super::shared::call_instance_table(&mut self.call_instances, &mut self.tables, &g.name);
+            }
             let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path).or_else(|| {
                 let root = self.slot_tables().slot_table(&g.name, &[])?;
                 super::shared::materialize_slot_path(&mut self.tables, &mut self.exprs, &mut self.existence_fields, &mut self.sub_tables, root, &g.name, path)
@@ -1544,10 +1565,11 @@ impl<'a> BuildOnStubsContext<'a> {
                 // Not onto a member the instance's classes type.
                 if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
-                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS),
+                // but not an author's `---@type table`.
                 // Even when skipping, record the source location for go-to-definition.
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
+                    .is_some_and(|fi| fi.annotation_text.is_some() || !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
                 }
@@ -1580,8 +1602,9 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
-                    self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
+                    let mut field = super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility);
+                    field.annotation_text = super::shared::declared_type_text(g);
+                    self.tables[local_idx].fields.insert(field_name.clone(), field);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 } else if !self.tables[local_idx].fields.contains_key(field_name) {
                     // Existence-only fallback. The field's value couldn't be typed
@@ -1771,6 +1794,7 @@ impl<'a> BuildOnStubsContext<'a> {
             })
             .collect();
         let (deferred_slot_fields, deferred_slot_globals) = self.slot_tables().deferred_slots(ws_globals);
+        let call_global_instances = super::shared::call_global_instances(&self.call_instances, &self.scope0_symbols);
         let mut deferred_field_calls_by_path: HashMap<PathBuf, Vec<(u32, crate::analysis::deferred::CallTarget)>> = HashMap::default();
         for call in self.deferred_call_fields.values().flatten() {
             let calls = deferred_field_calls_by_path.entry(call.path.clone()).or_default();
@@ -1914,6 +1938,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_table_fields,
             deferred_slot_fields,
             deferred_slot_globals,
+            call_global_instances,
             slot_table_paths: Default::default(),
             document_overrides: Default::default(),
             project_configs: None,

@@ -842,6 +842,10 @@ pub struct Ir {
     /// last name (`f` in `t.f = v`, `X` in `X = v`): what the cross-file slot
     /// harvest types a namespace or global field, or a global, by (`deferred.rs`).
     pub target_values: HashMap<u32, ExprId>,
+    /// The operands of a write's `or` chain reading the target itself (`t.f` in
+    /// `t.f = t.f or {}`, `DB` in `DB = DB or {}`): the value already there, no
+    /// value the write gives it ([`Self::typed_operands`]).
+    pub self_reads: HashSet<ExprId>,
     /// The version of a field write's root the write goes through, by the root's
     /// start: hover at a reassigned root keeps the declaration's version, while
     /// cross-file readers adopt this one (`AnalysisResult::adopt_write_root_versions`).
@@ -2367,6 +2371,43 @@ impl Ir {
         fi.annotation.is_none() && fi.annotation_text.is_none() && self.is_slot_primary(fi.expr)
     }
 
+    /// Whether `primary` is the table the workspace build holds at a field others
+    /// fill (`App.Settings` written `CopyTable(...)` here, its entries elsewhere),
+    /// carried in this file beside the file's own writes there (see
+    /// [`Self::container_overlay`]).
+    pub fn is_container_primary(&self, primary: ExprId) -> bool {
+        primary.is_external()
+            && !self.is_slot_primary(primary)
+            && matches!(self.ext.expr(primary), Expr::Literal(ValueType::Table(Some(t)))
+                if t.is_external() && self.ext.table(*t).class_name.is_none() && !self.ext.table(*t).is_shapeless())
+    }
+
+    /// The field `fi` of an external table, as this file's write `rhs` there
+    /// carries it: when the workspace build holds a table others fill there
+    /// ([`Self::is_container_primary`]) and `rhs` isn't a table this file builds, the
+    /// field with `rhs` among its writes, so that the table stands where `rhs`
+    /// says no more than a table.
+    pub(super) fn container_overlay(&self, fi: &FieldInfo, rhs: ExprId) -> Option<FieldInfo> {
+        if fi.annotation.is_some() || fi.annotation_text.is_some() || !self.is_container_primary(fi.expr) || self.find_table_index(rhs).is_some() {
+            return None;
+        }
+        let mut fi = fi.clone();
+        fi.extra_exprs.push(rhs);
+        Some(fi)
+    }
+
+    /// Whether `ty` says nothing of a field a table stands at beyond being a table:
+    /// a bare `table`, an untyped value, a table with nothing in it, or `nil`
+    /// (a reset of the field).
+    pub fn says_no_more_than_a_table(&self, ty: &ValueType) -> bool {
+        match ty {
+            ValueType::Table(None) | ValueType::Nil => true,
+            ValueType::Table(Some(t)) => self.table(*t).is_shapeless(),
+            ValueType::Union(members) => members.iter().all(|m| self.says_no_more_than_a_table(m)),
+            other => other.contains_any(),
+        }
+    }
+
     /// Whether a field's primary write `primary` is the workspace scan's value for
     /// a slot other files read the written values of
     /// (`PreResolvedGlobals::deferred_slot_fields`), which a namespace field's copy
@@ -2400,6 +2441,9 @@ impl Ir {
                     }
                 }
                 Some(_) => return Some(SlotWrites::Own(others)),
+                // A write read while it resolves (`t.f = t.f or {}`): its other
+                // operands, not the scan's placeholder.
+                None if !self.typed_operands(e, &mut resolve).is_empty() => return Some(SlotWrites::Own(others)),
                 None => {}
             }
         }
@@ -2411,13 +2455,82 @@ impl Ir {
     /// the scan's, and the file's own past those saying no more than `any`, as the
     /// harvest takes them (`deferred::harvest_slots`).
     pub fn slot_union_exprs(&self, primary: ExprId, extras: &[ExprId], nil_primary: bool, mut resolve: impl FnMut(ExprId) -> Option<ValueType>) -> (Vec<ExprId>, bool) {
+        if self.is_container_primary(primary) {
+            // The workspace's table, unless this file's writes say more of the field.
+            let own: Vec<ExprId> = extras.iter().copied().filter(|e| !e.is_external()).collect();
+            return match own.iter().all(|&e| resolve(e).is_none_or(|ty| self.says_no_more_than_a_table(&ty))) {
+                true => (vec![primary], false),
+                false => (own, true),
+            };
+        }
         match self.slot_writes_choice(primary, extras, &mut resolve) {
             Some(SlotWrites::Scanned(others)) => (vec![others.unwrap_or(primary)], false),
             Some(SlotWrites::Own(others)) => {
                 let own: Vec<ExprId> = extras.iter().flat_map(|&e| self.typed_operands(e, &mut resolve)).collect();
                 (others.into_iter().chain(own).collect(), true)
             }
-            None => field_union_exprs(primary, extras, nil_primary),
+            None => self.written_union_exprs(primary, extras, nil_primary),
+        }
+    }
+
+    /// [`field_union_exprs`], each write by the values it gives the field
+    /// ([`Self::written_values`]): the writes of a field neither a slot nor a
+    /// container.
+    pub fn written_union_exprs(&self, primary: ExprId, extras: &[ExprId], nil_primary: bool) -> (Vec<ExprId>, bool) {
+        let (exprs, skip_primary) = field_union_exprs(primary, extras, nil_primary);
+        if self.self_reads.is_empty() {
+            return (exprs, skip_primary);
+        }
+        let mut written = Vec::with_capacity(exprs.len());
+        for e in exprs {
+            self.written_values(e, &mut written);
+        }
+        (written, skip_primary)
+    }
+
+    /// The values the write `e` gives its target: `e`, or of an `or` chain reading
+    /// the target itself (`t.f = t.f or {}`, [`Self::self_reads`]) its other
+    /// operands, the value already there being what the target's other writes hold.
+    pub fn written_values(&self, e: ExprId, out: &mut Vec<ExprId>) {
+        let mut operands = Vec::new();
+        self.or_operands(e, &mut operands);
+        if !operands.iter().any(|o| self.self_reads.contains(o)) {
+            out.push(e);
+            return;
+        }
+        for o in operands {
+            let chain = matches!(self.expr(o), Expr::Grouped(_) | Expr::BinaryOp { op: crate::ast::Operator::Or, .. });
+            if !chain && !self.self_reads.contains(&o) {
+                out.push(o);
+            }
+        }
+    }
+
+    /// Record the operands of the `or` chain `value` that read the target `names`
+    /// (root first) it is written to ([`Self::self_reads`]), a global or a field
+    /// of one, whose value there other writes hold — not a field of a local or
+    /// parameter, whose value there its class may declare.
+    pub(super) fn mark_self_reads(&mut self, names: &[String], value: ExprId) {
+        let mut operands = Vec::new();
+        self.or_operands(value, &mut operands);
+        for operand in operands {
+            if self.reads_path(operand, names) {
+                self.self_reads.insert(operand);
+            }
+        }
+    }
+
+    /// Whether `expr` reads the name chain `names` (root first): `a.b.c` for
+    /// `["a", "b", "c"]`.
+    fn reads_path(&self, expr: ExprId, names: &[String]) -> bool {
+        let Some((last, receiver)) = names.split_last() else { return false };
+        match self.expr(expr) {
+            Expr::FieldAccess { table, field, .. } => field == last && self.reads_path(*table, receiver),
+            Expr::SymbolRef(sym, _) if receiver.is_empty() => {
+                matches!(&self.sym(*sym).id, SymbolIdentifier::Name(name) if name == last)
+                    && (sym.is_external() || (self.sym(*sym).scope_idx == ScopeIndex(0) && !self.local_decl_symbols.contains(sym)))
+            }
+            _ => false,
         }
     }
 
@@ -2444,7 +2557,15 @@ impl Ir {
     /// (`t.f = t.f or {}`, the field read in its own write untyped or unresolved),
     /// else none.
     pub fn typed_operands(&self, expr: ExprId, resolve: &mut impl FnMut(ExprId) -> Option<ValueType>) -> Vec<ExprId> {
-        if resolve(expr).is_some_and(|ty| !ty.contains_any()) {
+        if self.self_reads.contains(&expr) {
+            return Vec::new();
+        }
+        let reads_itself = || {
+            let mut operands = Vec::new();
+            self.or_operands(expr, &mut operands);
+            operands.iter().any(|e| self.self_reads.contains(e))
+        };
+        if resolve(expr).is_some_and(|ty| !ty.contains_any()) && !reads_itself() {
             return vec![expr];
         }
         match *self.expr(expr) {
@@ -4335,6 +4456,7 @@ impl<'a> Analysis<'a> {
                 field_assignments: Vec::new(),
                 sub_field_writes: Vec::new(),
                 target_values: HashMap::default(),
+                self_reads: HashSet::default(),
                 write_root_versions: HashMap::default(),
                 exported_tables: HashMap::default(),
                 annotated_targets: HashSet::default(),

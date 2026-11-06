@@ -1531,6 +1531,15 @@ impl AnalysisResult {
                 let table = self.table(*table_idx);
                 let overlay = self.ir.overlay_fields.get(table_idx);
                 let has_fields = !table.fields.is_empty() || overlay.is_some_and(|o| !o.is_empty());
+                // A table this file builds at a cross-file path, empty here, is the
+                // workspace's there, which other files fill (`Ir::exported_tables`).
+                if !has_fields
+                    && table.class_name.is_none()
+                    && table.value_type.is_none()
+                    && let Some(&copy) = self.ir.exported_tables.get(table_idx)
+                {
+                    return self.format_value_type_depth(&ValueType::Table(Some(copy)), depth);
+                }
                 // Array/map types: table has value_type and no class_name
                 if table.class_name.is_none()
                     && let Some(ref val_vt) = table.value_type {

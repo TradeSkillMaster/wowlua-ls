@@ -219,6 +219,10 @@ pub fn ext_table_paths(pg: &PreResolvedGlobals) -> TablePaths {
         if let Some(t) = ext_global_table(pg, idx) && pg.table(t).class_name.is_none() {
             seeds.push((t, FieldPath::root(PathRoot::Global(name.clone()))));
         }
+        // What files write on a global a call creates is its table's.
+        if let Some(&t) = pg.call_global_instances.get(&idx) {
+            seeds.push((t, FieldPath::root(PathRoot::Global(name.clone()))));
+        }
     }
     let mut paths = TablePaths::default();
     name_reachable(
@@ -425,7 +429,7 @@ impl AnalysisResult {
         let (sym_idx, name, token_start) = self.find_symbol_at(tree, offset)?;
         // `_` is the conventional discard (`_, x = f()`), no value any file reads.
         if !self.is_global_symbol(sym_idx) || name == "_" { return None; }
-        let display = self.global_display(sym_idx, token_start);
+        let display = self.global_display(tree, sym_idx, token_start);
         let path = self.unless_builtin(FieldPath::root(PathRoot::Global(name)));
         Some(PathAccess { offset, path, display, write })
     }
@@ -436,8 +440,9 @@ impl AnalysisResult {
     /// file writes there — as a field's write shows the field — and what the other
     /// files writing it write (`Ir::slot_global_other_writes`), an untyped one
     /// saying nothing; in one reading it, the workspace's, past the narrowing of
-    /// one read.
-    fn global_display(&self, sym_idx: SymbolIndex, offset: u32) -> String {
+    /// one read; and an author's `---@type` on one of the file's writes, its
+    /// type in every file.
+    fn global_display(&self, tree: &SyntaxTree, sym_idx: SymbolIndex, offset: u32) -> String {
         let _secrecy = self.secrecy_display_at(offset);
         let (ext_sym, name) = match &self.sym(sym_idx).id {
             id @ SymbolIdentifier::Name(name) => (self.ir.ext.scope0_symbols.get(id).copied(), name.as_str()),
@@ -450,7 +455,11 @@ impl AnalysisResult {
         // A table the file builds there is the global's to other files.
         let table = ext_sym.and_then(|s| crate::analysis::deferred::global_table(&self.ir.ext, s))
             .filter(|_| ext_sym.is_some_and(|s| self.ir.ext.deferred_slot_globals.contains_key(&s)));
-        let vt = if !writes.is_empty() {
+        let annotated = !writes.is_empty() && self.ir.annotated_targets.iter()
+            .any(|&write| !Self::is_field_position(tree, write) && self.find_symbol_at(tree, write).is_some_and(|(s, ..)| s == sym_idx));
+        let vt = if let Some(ext_sym) = ext_sym.filter(|_| annotated) {
+            self.sym(ext_sym).versions.last().and_then(|v| v.resolved_type.clone())
+        } else if !writes.is_empty() {
             let mut written: Vec<ValueType> = writes.iter()
                 .filter_map(|&ver| self.sym(sym_idx).versions[ver].resolved_type.as_ref())
                 .map(|ty| table.map_or_else(|| ty.clone(), |table| crate::analysis::deferred::as_global_table(ty, table, &self.ir, name)))
@@ -478,7 +487,7 @@ impl AnalysisResult {
         match path {
             Ok(FieldPath { root: PathRoot::Global(name), fields }) if fields.is_empty() => {
                 match self.ir.scope0_global_symbol(&SymbolIdentifier::Name(name.clone())) {
-                    Some(sym_idx) => self.global_display(sym_idx, offset),
+                    Some(sym_idx) => self.global_display(tree, sym_idx, offset),
                     None => "?".to_string(),
                 }
             }
@@ -516,6 +525,7 @@ impl AnalysisResult {
             Some(fi) => self.format_field_type(fi, 0),
             None => match chain.and_then(|(.., expr_id, _, _)| self.resolve_expr_type(expr_id))
                 .or_else(|| self.field_access_type_at(offset))
+                .or_else(|| SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased().and_then(|t| self.shape_field_type_at(t)))
             {
                 Some(vt) => self.format_type_depth(&vt, 1),
                 None => "?".to_string(),
@@ -690,7 +700,7 @@ impl AnalysisResult {
         let root_table = match &path.root {
             PathRoot::AddonNs => self.ir.addon_table_idx(),
             PathRoot::Global(name) => pg.scope0_symbols.get(&SymbolIdentifier::Name(name.clone()))
-                .and_then(|&idx| ext_global_table(pg, idx)),
+                .and_then(|&idx| ext_global_table(pg, idx).or_else(|| pg.call_global_instances.get(&idx).copied())),
             PathRoot::Class(name) => pg.classes.get(name).copied().filter(|t| t.is_external()),
         };
         let Some(mut table) = root_table else { return (path, None) };

@@ -473,7 +473,11 @@ type FieldAliases = HashMap<String, (Vec<String>, u32)>;
 /// Locals bound to a field path under the addon namespace or a `@class` table
 /// (`local Foo = ns.Foo`, `local Sub = Foo.Sub`), once in the whole file and
 /// never reassigned, so a method defined or a field written through one belongs
-/// to that path (see [`expand_field_alias`]).
+/// to that path (see [`expand_field_alias`]). So is a local declared without a
+/// value and assigned the path in one branch, whatever else it is assigned in
+/// the others but nowhere outside that `if` (`local lib; if ns.Lib then lib =
+/// ns.Lib else lib = LibStub(...) end`): what is written through it after that
+/// may be the path's.
 fn collect_field_aliases(
     stmts: &[Statement<'_>],
     root: &SyntaxNode<'_>,
@@ -481,39 +485,76 @@ fn collect_field_aliases(
     class_vars: &HashMap<String, String>,
     local_type_vars: &HashMap<String, String>,
 ) -> FieldAliases {
-    let candidates: Vec<(String, Vec<String>, u32)> = stmts.iter().filter_map(|stmt| {
-        let Statement::LocalAssign(assign) = stmt else { return None };
-        let names = assign.name_list()?.names();
-        let exprs = assign.expression_list()?.expressions();
-        let ([name], [Expression::Identifier(ident)]) = (names.as_slice(), exprs.as_slice()) else { return None };
+    let path_of = |name: &String, ident: &crate::ast::Identifier<'_>| {
         if class_vars.contains_key(name) || local_type_vars.contains_key(name)
             || ident.has_non_string_bracket_in_chain() || ident.has_prefix_expr_base()
         {
             return None;
         }
-        let path = ident.names();
-        (path.len() >= 2).then(|| (name.clone(), path, u32::from(assign.syntax().text_range().start())))
+        Some(ident.names()).filter(|path| path.len() >= 2)
+    };
+    let declared_empty: HashSet<String> = stmts.iter().filter_map(|stmt| {
+        let Statement::LocalAssign(assign) = stmt else { return None };
+        let [name]: [String; 1] = assign.name_list()?.names().try_into().ok()?;
+        assign.expression_list().is_none_or(|exprs| exprs.expressions().is_empty()).then_some(name)
+    }).collect();
+    // (name, path, offset, for one bound in a branch the `if` holding it)
+    let candidates: Vec<(String, Vec<String>, u32, Option<SyntaxNode<'_>>)> = stmts.iter().filter_map(|stmt| {
+        let (names, exprs, branch) = match stmt {
+            Statement::LocalAssign(assign) => (assign.name_list()?.names(), assign.expression_list()?.expressions(), None),
+            Statement::Assign(assign) => {
+                let idents = assign.variable_list()?.identifiers();
+                let [ident] = idents.as_slice() else { return None };
+                if ident.has_non_string_bracket_tail() || ident.has_prefix_expr_base() {
+                    return None;
+                }
+                let branch = assign.syntax().ancestors().find(|a| a.kind() == SyntaxKind::IfChain).unwrap_or(assign.syntax());
+                (ident.names(), assign.expression_list()?.expressions(), Some(branch))
+            }
+            _ => return None,
+        };
+        let ([name], [Expression::Identifier(ident)]) = (names.as_slice(), exprs.as_slice()) else { return None };
+        if branch.is_some() && !declared_empty.contains(name) {
+            return None;
+        }
+        let path = path_of(name, ident)?;
+        Some((name.clone(), path, u32::from(stmt.syntax().text_range().start()), branch))
     }).collect();
     let mut aliases = FieldAliases::default();
     if candidates.is_empty() {
         return aliases;
     }
-    let mut bindings: HashMap<String, usize> = HashMap::default();
-    for node in root.descendants() {
-        // `names()` drops a non-string bracket key and a prefix-expression base, so
-        // `Foo[1] = v` and `(e).Foo = v` read as `Foo` without rebinding it.
-        let reassigned: Vec<String> = Assign::cast(node).and_then(|assign| assign.variable_list())
+    // `names()` drops a non-string bracket key and a prefix-expression base, so
+    // `Foo[1] = v` and `(e).Foo = v` read as `Foo` without rebinding it.
+    let reassigned = |node: SyntaxNode<'_>| -> Vec<String> {
+        Assign::cast(node).and_then(|assign| assign.variable_list())
             .map(|vl| vl.identifiers().iter()
                 .filter(|ident| !ident.has_non_string_bracket_tail() && !ident.has_prefix_expr_base())
                 .map(|ident| ident.names())
                 .filter(|names| names.len() == 1).flatten().collect())
-            .unwrap_or_default();
-        for name in local_bindings(node).into_iter().chain(reassigned) {
+            .unwrap_or_default()
+    };
+    let mut bindings: HashMap<String, usize> = HashMap::default();
+    let mut declarations: HashMap<String, usize> = HashMap::default();
+    for node in root.descendants() {
+        for name in local_bindings(node) {
+            *declarations.entry(name.clone()).or_default() += 1;
+            *bindings.entry(name).or_default() += 1;
+        }
+        for name in reassigned(node) {
             *bindings.entry(name).or_default() += 1;
         }
     }
-    for (name, mut path, offset) in candidates {
-        if bindings.get(&name) != Some(&1) {
+    let branch_bound = |name: &String| candidates.iter().filter(|(n, .., branch)| branch.is_some() && n == name).count();
+    for (name, mut path, offset, branch) in candidates.iter().cloned() {
+        // A local bound in a branch is assigned nowhere outside the `if` holding it.
+        let bound = match branch {
+            Some(branch) => declarations.get(&name) == Some(&1)
+                && branch_bound(&name) == 1
+                && bindings.get(&name).copied() == Some(1 + branch.descendants().map(|n| reassigned(n).iter().filter(|r| **r == name).count()).sum::<usize>()),
+            None => bindings.get(&name) == Some(&1),
+        };
+        if !bound {
             continue;
         }
         if let Some((root_path, _)) = aliases.get(&path[0]) {
@@ -2385,13 +2426,18 @@ pub fn scan_file_globals_with_synth(
                                 }
                                 _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new()),
                             }};
-                            // Extract @type or @class annotation for the variable
+                            // Extract @type or @class annotation for the variable: one on
+                            // the statement, or after a `nil` it declares the global with
+                            // (`X = nil ---@type T`), the only type that write gives it.
                             let annotations = extract_annotations(assign.syntax());
                             let declares_class = class_vars.contains_key(&names[0]);
+                            let declared_nil = matches!(&effective, Expression::Literal(lit) if lit.is_nil());
                             let returns: Vec<AnnotationType> = if let Some(class_name) = class_vars.get(&names[0]) {
                                 vec![AnnotationType::Simple(class_name.clone())]
                             } else {
-                                annotations.var_type.into_iter().collect()
+                                annotations.var_type
+                                    .or_else(|| declared_nil.then(|| super::annotation_scanning::AssignTargetTypes::new(assign.syntax()).get(0, exprs.first())).flatten())
+                                    .into_iter().collect()
                             };
                             // An unannotated call's resolved return type is harvested
                             // as the global's type; a constructor's named entries
@@ -3153,10 +3199,9 @@ pub fn scan_file_globals_with_synth(
                 (1, [value]) => written_value(&assign, unwrap_logical_chain(*value)),
                 _ => None,
             };
-            if global_root && written.is_none() {
-                continue;
-            }
-            if foreign_root {
+            // A field of a table global the file builds, written a value the scan
+            // doesn't type, exists as one through another file's global would.
+            if foreign_root || (global_root && written.is_none()) {
                 // An element's field (`G.list[i].f = v`) is no field of the list.
                 if ident.has_non_string_bracket_in_chain() {
                     continue;

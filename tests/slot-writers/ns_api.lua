@@ -1,0 +1,3 @@
+---@class (partial) LedgerApi
+local _, ns = ...
+ns.Api = {}

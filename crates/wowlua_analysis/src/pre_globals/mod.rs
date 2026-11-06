@@ -529,6 +529,12 @@ pub struct PreResolvedGlobals {
     /// (`Ir::ensure_symbol_overlay`). Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_slot_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredSlot>,
+    /// The table holding the fields files write on a global a call creates
+    /// (`CreateFrame("Frame", "MyFrame")`, then `MyFrame.x = v` in other files),
+    /// slots the call's type is read with (`Ir::ensure_symbol_overlay`), by the
+    /// global's scope-0 symbol. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub call_global_instances: HashMap<SymbolIndex, TableIndex>,
     /// The paths of the workspace's cross-file tables (`ext_table_paths`), computed
     /// on the first slot harvest. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
@@ -745,6 +751,9 @@ fn keep_call_field_methods(
             }
         });
         fi.annotation_type_raw = None;
+        // The build's type for it, no author's: the field's writes type it in their
+        // files, as other files read the calls' (`Ir::ensure_call_field_overlay`).
+        fi.from_scan = instance;
     }
 }
 
@@ -2217,6 +2226,9 @@ struct BuildContext {
     // `(table, field)` call-assigned fields methods were defined or fields written
     // through; see `call_field_writes`.
     call_field_methods: HashSet<(TableIndex, String)>,
+    /// The tables of the fields written on globals a call creates, by name
+    /// (`PreResolvedGlobals::call_global_instances`).
+    call_instances: HashMap<String, TableIndex>,
     // Methods defined by a `stubs/overrides/` file (see `propagate_override_overloads`).
     override_methods: HashSet<FunctionIndex>,
 
@@ -2280,6 +2292,7 @@ impl BuildContext {
             existence_fields: HashSet::default(),
             nested_ctor_calls: Vec::new(),
             call_field_methods: HashSet::default(),
+            call_instances: HashMap::default(),
             override_methods: HashSet::default(),
             addon_table_idx: None,
             setmetatable_func_idx: None,
@@ -2492,6 +2505,15 @@ impl BuildContext {
     fn build_methods_and_table_fields(&mut self, globals: &[crate::annotations::ExternalGlobal], external_classes: &[ClassDecl], class_field_paths: &mut ClassFieldPaths) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
 
+        // A `---@type` on any write of a global types the table its other writes
+        // build (`X = nil ---@type T`, `X = X or {}` in a handler).
+        for (name, at) in shared::variable_type_annotations(globals) {
+            if !self.table_global_types.contains_key(name)
+                && let Some(vt) = self.resolve_write_annotation(at)
+            {
+                self.table_global_types.insert(name.to_string(), vt);
+            }
+        }
         // Create non-class tables in shared data (e.g. math, string, table)
         // Track class names that have a global `= {}` assignment (e.g. UIParent)
         for g in globals {
@@ -2520,6 +2542,7 @@ impl BuildContext {
                     self.tables.push(TableInfo::default());
                     self.non_class_tables.insert(g.name.clone(), table_idx);
                     if !g.declares_class && let Some(at) = g.returns.first()
+                        && !self.table_global_types.contains_key(&g.name)
                         && let Some(vt) = self.resolve_write_annotation(at)
                     {
                         self.table_global_types.insert(g.name.clone(), vt);
@@ -2536,7 +2559,8 @@ impl BuildContext {
             // class global so the class registration path sets the correct Table type
             // instead of Variable with resolved_type None.
             if let ExternalGlobalKind::Variable(FieldValueKind::FunctionCall { .. }) = &g.kind
-                && self.classes.contains_key(&g.name) {
+                && self.classes.contains_key(&g.name)
+                && !shared::declares_other_class(g) {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
                     self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
@@ -2590,6 +2614,7 @@ impl BuildContext {
             if let ExternalGlobalKind::Variable(_) = &g.kind
                 && self.classes.contains_key(&g.name)
                 && !self.class_globals.contains(&g.name)
+                && !shared::declares_other_class(g)
             {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
@@ -2975,8 +3000,13 @@ impl BuildContext {
         }
         // Fields written through another file's table global (`ForeignField`): their
         // existence, `any` until what their files write types them.
+        let call_globals = shared::call_global_names(globals);
         for g in globals {
             let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
+            // A global a call creates holds what files write on it on a table of its own.
+            if call_globals.contains(g.name.as_str()) && self.slot_tables().slot_table(&g.name, &[]).is_none() {
+                shared::call_instance_table(&mut self.call_instances, &mut self.tables, &g.name);
+            }
             let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path).or_else(|| {
                 let root = self.slot_tables().slot_table(&g.name, &[])?;
                 shared::materialize_slot_path(&mut self.tables, &mut self.exprs, &mut self.existence_fields, &mut self.sub_tables, root, &g.name, path)
@@ -3003,6 +3033,7 @@ impl BuildContext {
             scope0_symbols: &self.scope0_symbols,
             stub_symbols_end: 0,
             deferred_call_globals: &self.deferred_call_globals,
+            call_instances: &self.call_instances,
         }
     }
 
@@ -3468,9 +3499,10 @@ impl BuildContext {
                 // Not onto a member the instance's classes type.
                 if self.shadows_instance_member(table_idx, field_name) { continue; }
                 let local_idx = table_idx.ext_offset();
-                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS),
+                // but not an author's `---@type table`.
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
+                    .is_some_and(|fi| fi.annotation_text.is_some() || !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_write_annotation(&g.returns[0])
                 } else {
@@ -3498,8 +3530,9 @@ impl BuildContext {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
-                    self.tables[local_idx].fields.insert(field_name.clone(),
-                        shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
+                    let mut field = shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility);
+                    field.annotation_text = shared::declared_type_text(g);
+                    self.tables[local_idx].fields.insert(field_name.clone(), field);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
@@ -3595,6 +3628,7 @@ impl BuildContext {
             deferred_table_fields: HashMap::default(),
             deferred_slot_fields: HashMap::default(),
             deferred_slot_globals: HashMap::default(),
+            call_global_instances: HashMap::default(),
             slot_table_paths: Default::default(),
             document_overrides: Default::default(),
             project_configs: None,
@@ -4014,6 +4048,7 @@ impl PreResolvedGlobals {
             deferred_table_fields: HashMap::default(),
             deferred_slot_fields: HashMap::default(),
             deferred_slot_globals: HashMap::default(),
+            call_global_instances: HashMap::default(),
             slot_table_paths: Default::default(),
             document_overrides: Default::default(),
             project_configs: None,
@@ -4093,9 +4128,11 @@ impl PreResolvedGlobals {
         // aren't harvested.
         let (deferred_slot_fields, deferred_slot_globals) =
             if stub_blob { Default::default() } else { ctx.slot_tables().deferred_slots(globals) };
+        let call_global_instances = shared::call_global_instances(&ctx.call_instances, &ctx.scope0_symbols);
         let mut pg = ctx.finish();
         pg.deferred_slot_fields = deferred_slot_fields;
         pg.deferred_slot_globals = deferred_slot_globals;
+        pg.call_global_instances = call_global_instances;
         pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
         pg.returns_enum_paths = returns_enum_paths;
         // Two merge passes: (1) copy methods from addon ns sub-tables (ns.Foo fields)
@@ -4230,17 +4267,15 @@ impl PreResolvedGlobals {
                             // File has no @class on its ns variable — route to the
                             // closest class by longest common path prefix, so fields
                             // from unannotated files within the same addon tree still
-                            // appear on that addon's class.
-                            let closest = addon_ns_class_files.iter()
-                                .max_by_key(|(p, _)| {
-                                    let shared = field_loc.path.components()
-                                        .zip(p.components())
-                                        .take_while(|(a, b)| a == b)
-                                        .count();
-                                    (shared, std::cmp::Reverse((*p).clone()))
-                                })
-                                .map(|(_, cn)| cn.as_str());
-                            if closest != Some(*class_name) { continue; }
+                            // appear on that addon's class; to each of the closest,
+                            // when several classes are declared on one addon's
+                            // namespace in files as close as each other.
+                            let shared = |p: &Path| field_loc.path.components()
+                                .zip(p.components())
+                                .take_while(|(a, b)| a == b)
+                                .count();
+                            let closest = addon_ns_class_files.keys().map(|p| shared(p)).max();
+                            if !addon_ns_class_files.iter().any(|(p, cn)| cn.as_str() == *class_name && Some(shared(p)) == closest) { continue; }
                         }
                     } else {
                         // No field location — field came from a reverse merge (@field

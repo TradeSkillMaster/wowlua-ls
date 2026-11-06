@@ -745,7 +745,11 @@ impl Ir {
             let path = dcg.path.clone();
             let Some(ty) = resolve_deferred_call_global_type(&self.ext, sym_idx) else { return };
             self.deferred_dep_files.insert(path);
-            ty
+            // The fields files write on it (`MyFrame.x = v`) are slots of their own.
+            match self.ext.call_global_instances.get(&sym_idx) {
+                Some(&instance) => with_instance_table(ty, instance),
+                None => ty,
+            }
         } else if let Some(spec) = self.ext.deferred_slot_globals.get(&sym_idx) {
             // A harvest reads a global the workspace build gives a table as that
             // table: what other values files write it matter where it is read,
@@ -1512,6 +1516,21 @@ fn held_by_other_global(ir: &Ir, idx: TableIndex, global: &str) -> bool {
             && !ir.local_decl_symbols.contains(&sym)
             && ir.sym(sym).versions.iter().any(|v| v.resolved_type == Some(ValueType::Table(Some(idx))))
     })
+}
+
+/// `ty`, a call's value, with the table of the fields files write on it
+/// (`PreResolvedGlobals::call_global_instances`) first, where a read of one finds
+/// what every file writes there; this file's writes stay on its view of the
+/// call's class, as through its other frames.
+pub(crate) fn with_instance_table(ty: ValueType, instance: TableIndex) -> ValueType {
+    let nil = ty.contains_nil();
+    let mut members = vec![ValueType::Table(Some(instance))];
+    match ty.strip_nil() {
+        ValueType::Intersection(rest) => members.extend(rest),
+        other => members.push(other),
+    }
+    let ty = ValueType::Intersection(members);
+    if nil { ValueType::make_union(vec![ty, ValueType::Nil]) } else { ty }
 }
 
 /// Whether `ty` is a function, whose signature crosses files on its own.

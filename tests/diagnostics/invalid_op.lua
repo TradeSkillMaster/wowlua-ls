@@ -452,3 +452,20 @@ local function _assertImplicationAntecedentReassigned()
     end
 end
 _use(_assertImplicationAntecedentReassigned)
+
+-- Arithmetic on a number that may be nil is a `number` where it succeeds, and
+-- still reported.
+---@type number?
+local maybeCount
+local _w = maybeCount + 1
+--         ^ diag: invalid-op
+--    ^ hover: (local) _w: number
+_use(_w)
+
+-- A table operand's metamethod takes the nil.
+---@class NilableVec
+---@field x number
+---@field __add fun(a: NilableVec, b: number?): NilableVec
+---@type NilableVec
+local nv
+_use(nv + maybeCount, maybeCount + nv)

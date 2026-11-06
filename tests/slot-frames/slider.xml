@@ -1,0 +1,7 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Frame name="LedgerSliderHost">
+        <Frames>
+            <Slider parentKey="LevelSlider" inherits="MinimalSliderWithSteppersTemplate" mixin="LedgerLevelingSliderMixin"/>
+        </Frames>
+    </Frame>
+</Ui>

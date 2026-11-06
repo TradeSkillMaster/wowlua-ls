@@ -2367,6 +2367,78 @@ fn slot_globals_crossfile() {
     }
 }
 
+// Slots written in the corpus's harder shapes, read alike in every file, the
+// writers' own included: fields defaulted in place (`t.f = t.f or {}`) and
+// rewritten on a global an initializer builds, a global declared by a `---@type`
+// after its `nil` initializer, namespace fields an author types `table`, an addon
+// namespace two files declare a class each, a library field written through a
+// local bound to it in one branch, empty or a call's bare `table` there while
+// other files fill it (no alias once rebound after the `if`), and such a table
+// reset to `nil`.
+#[test]
+fn slot_writers_crossfile() {
+    for lua_file in [
+        "tests/slot-writers/saved_init.lua",
+        "tests/slot-writers/saved_reader.lua",
+        "tests/slot-writers/test_ui.lua",
+        "tests/slot-writers/tables.lua",
+        "tests/slot-writers/tables_reader.lua",
+        "tests/slot-writers/ns_settings.lua",
+        "tests/slot-writers/lib.lua",
+        "tests/slot-writers/lib_pools.lua",
+        "tests/slot-writers/relib_reader.lua",
+        "tests/slot-writers/panel.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: false,
+            scan_dir: Some("tests/slot-writers"),
+        });
+    }
+}
+
+// Fields other files write on frames a call creates by name, a mixin global an
+// author declares a class of another name that an XML template names as its
+// mixin, and a namespace class's field holding a frame with methods defined
+// through it, read alike in every file. They need the stubs' `CreateFrame` and
+// `CreateFromMixins`.
+#[test]
+fn slot_frames_crossfile() {
+    for lua_file in [
+        "tests/slot-frames/main_frame.lua",
+        "tests/slot-frames/copy_frame.lua",
+        "tests/slot-frames/slider_user.lua",
+        "tests/slot-frames/button.lua",
+        "tests/slot-frames/gear.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/slot-frames"),
+        });
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
+        .args(["crossfile-types", "tests/slot-frames"])
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("run crossfile-types");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains(", 0 of which disagree"), "{report}");
+}
+
+// `crossfile-types` finds no path of `tests/slot-writers` whose type differs
+// between the files reading and writing it.
+#[test]
+fn slot_writers_agree_across_files() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
+        .args(["crossfile-types", "tests/slot-writers"])
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("run crossfile-types");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains(", 0 of which disagree"), "{report}");
+}
+
 // `crossfile-types` finds no path of `tests/slot-globals` whose type differs
 // between the files reading and writing it.
 #[test]

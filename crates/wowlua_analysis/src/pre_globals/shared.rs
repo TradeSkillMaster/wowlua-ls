@@ -267,6 +267,22 @@ pub fn table_global_class_alias(
     classes.get(cn.as_str()).copied()
 }
 
+/// Whether the write `g` declares the global a class of another name (`---@class
+/// Slider` on `SliderMixin = CreateFromMixins(...)`), which the global then is,
+/// rather than the class named after it (an XML `mixin=` reference's).
+pub fn declares_other_class(g: &crate::annotations::ExternalGlobal) -> bool {
+    g.declares_class && matches!(g.returns.first(), Some(AnnotationType::Simple(class)) if *class != g.name)
+}
+
+/// The `---@type` each unannotated-class `X = value` write of a global declares
+/// (`X = nil ---@type T`), which types the table the global's other writes build.
+pub fn variable_type_annotations(globals: &[crate::annotations::ExternalGlobal]) -> impl Iterator<Item = (&str, &AnnotationType)> {
+    globals.iter().filter_map(|g| match (&g.kind, g.returns.first()) {
+        (crate::annotations::ExternalGlobalKind::Variable(_), Some(at)) if !g.declares_class => Some((g.name.as_str(), at)),
+        _ => None,
+    })
+}
+
 /// The type of a `---@type` table global whose own table is `own`, given the
 /// annotation's resolved type: `Foo`, or `Foo & own` when it has members the
 /// class `Foo` lacks (its defining file sees them) — without adding them to
@@ -933,6 +949,9 @@ pub struct SlotTables<'x> {
     pub scope0_symbols: &'x HashMap<SymbolIdentifier, SymbolIndex>,
     pub stub_symbols_end: usize,
     pub deferred_call_globals: &'x HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
+    /// The tables of the fields files write on globals a call creates, by name
+    /// (`PreResolvedGlobals::call_global_instances`).
+    pub call_instances: &'x HashMap<String, TableIndex>,
 }
 
 impl SlotTables<'_> {
@@ -945,7 +964,7 @@ impl SlotTables<'_> {
         } else if self.stub_globals.is_some_and(|stubs| stubs.contains_key(&SymbolIdentifier::Name(name.to_string()))) {
             return None;
         } else {
-            *self.non_class_tables.get(name)?
+            *self.non_class_tables.get(name).or_else(|| self.call_instances.get(name))?
         };
         let mut current_name = name.to_string();
         for seg in path {
@@ -1136,6 +1155,40 @@ pub fn materialize_slot_path(
         current_name = format!("{current_name}.{seg}");
     }
     Some(current)
+}
+
+/// The workspace globals a call creates or is assigned (`CreateFrame("Frame",
+/// "MyFrame")`, `MyFrame = CreateFrame(...)`) that no write makes a table: the
+/// fields other files write on them live on a table of their own
+/// (`PreResolvedGlobals::call_global_instances`).
+pub fn call_global_names(globals: &[crate::annotations::ExternalGlobal]) -> HashSet<&str> {
+    use crate::annotations::{ExternalGlobalKind, FieldValueKind};
+    let tables: HashSet<&str> = globals.iter()
+        .filter(|g| matches!(g.kind, ExternalGlobalKind::Table))
+        .map(|g| g.name.as_str())
+        .collect();
+    globals.iter()
+        .filter(|g| matches!(g.kind, ExternalGlobalKind::Variable(FieldValueKind::FunctionCall { .. })) && g.returns.is_empty())
+        .map(|g| g.name.as_str())
+        .filter(|name| !tables.contains(name))
+        .collect()
+}
+
+/// The table holding the fields written on the call global `name` (see
+/// [`call_global_names`]), made the first time one is.
+pub fn call_instance_table(call_instances: &mut HashMap<String, TableIndex>, tables: &mut LayeredVec<TableInfo>, name: &str) -> TableIndex {
+    *call_instances.entry(name.to_string()).or_insert_with(|| {
+        let idx = TableIndex(EXT_BASE + tables.len());
+        tables.push(TableInfo::default());
+        idx
+    })
+}
+
+/// [`call_instance_table`]s by their globals' scope-0 symbols.
+pub fn call_global_instances(call_instances: &HashMap<String, TableIndex>, scope0_symbols: &HashMap<SymbolIdentifier, SymbolIndex>) -> HashMap<SymbolIndex, TableIndex> {
+    call_instances.iter()
+        .filter_map(|(name, &table)| Some((*scope0_symbols.get(&SymbolIdentifier::Name(name.clone()))?, table)))
+        .collect()
 }
 
 /// Register the field `field_name` of `table` that `g` only says exists (`any`),

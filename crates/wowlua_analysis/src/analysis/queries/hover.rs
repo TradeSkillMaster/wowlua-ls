@@ -632,7 +632,9 @@ impl AnalysisResult {
         let name = token.text();
         let colon = Self::detect_access_before_token(&token.parent()?, &token) == FieldAccessKind::Colon;
         let kind = if colon { "method" } else { "field" };
-        let (type_str, doc) = match self.field_access_type_at(u32::from(token.text_range().start())) {
+        let (type_str, doc) = match self.field_access_type_at(u32::from(token.text_range().start()))
+            .or_else(|| self.shape_field_type_at(token))
+        {
             Some(ValueType::Function(Some(func_idx))) => {
                 let _call_secrecy = self.secrecy_display_for_function(func_idx, self.call_expr_for_callee_at(tree, offset));
                 (format!("({kind}) {}", self.format_function_decl(func_idx, name, colon, None)), self.format_function_doc(func_idx))

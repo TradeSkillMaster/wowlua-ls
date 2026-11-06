@@ -1874,6 +1874,9 @@ impl<'a> Analysis<'a> {
                 self.ir.annotated_targets.insert(start);
             } else {
                 self.ir.target_values.insert(start, value);
+                if !ident.is_indexed_expression() {
+                    self.ir.mark_self_reads(&ident.names(), value);
+                }
             }
         }
     }
@@ -2459,6 +2462,13 @@ impl<'a> Analysis<'a> {
                     // (`Ir::slot_union_exprs`), as through a deep path.
                     let mut fi = slot_fi.clone();
                     fi.extra_exprs.push(expr_id);
+                    self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
+                } else if inline_annotation.is_none()
+                    && let Some(fi) = self.ir.ext.table(table_idx).fields.get(field_name)
+                        .and_then(|f| self.ir.container_overlay(f, expr_id))
+                {
+                    // A table other files fill, written here a value saying no more
+                    // of it (`App.Settings = CopyTable(...)`): the table stands.
                     self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                 } else {
                     let assign_range = ident.syntax().text_range();

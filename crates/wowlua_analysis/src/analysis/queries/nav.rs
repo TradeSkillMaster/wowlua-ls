@@ -406,6 +406,27 @@ impl AnalysisResult {
         self.ir.field_access_exprs_at(start).find_map(|(eid, _)| self.resolve_expr_type(eid))
     }
 
+    /// The type of the field `token` names on a receiver typed by inline shapes
+    /// carried across files (`TableShape`), which no table holds: a record's
+    /// field, or one of a list's elements (`t.list[i].f`, a write included).
+    pub(super) fn shape_field_type_at(&self, token: SyntaxToken<'_>) -> Option<ValueType> {
+        let parent = token.parent().filter(|p| p.kind() == SyntaxKind::DotAccess)?;
+        let receiver = parent.children().find(|c| c.kind().is_identifier())?;
+        let offset = token.text_range().start();
+        let receiver_ty = if receiver.kind() == SyntaxKind::BracketAccess {
+            let base = receiver.children().find(|c| c.kind().is_identifier())?;
+            let ty = self.resolve_identifier_to_type(&base, offset)?;
+            let mut shapes = Vec::new();
+            ty.collect_shape_containers(&mut shapes);
+            ValueType::make_union(shapes.iter().filter_map(|s| s.value_type.as_deref().cloned()).collect())
+        } else {
+            self.resolve_identifier_to_type(&receiver, offset)?
+        };
+        let mut field_types = Vec::new();
+        receiver_ty.collect_shape_field_types(token.text(), &mut field_types);
+        (!field_types.is_empty()).then(|| ValueType::make_union(field_types))
+    }
+
     /// Resolve a field access chain for a pre-found Name token.
     /// Same as `resolve_field_chain_at` but avoids redundant O(log n) tree traversal
     /// when the caller already has the token (e.g. from a `descendants_with_tokens` walk).

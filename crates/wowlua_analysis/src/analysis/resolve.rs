@@ -541,7 +541,12 @@ impl<'a> Analysis<'a> {
             let ver = self.ir.version_for_scope(sym, *scope);
             let Some(mut receiver) = self.sym(sym).versions.get(ver).and_then(|v| v.resolved_type.clone()) else { continue };
             for name in intermediates {
-                let types: Vec<ValueType> = self.field_receiver_tables(&receiver.into_strip_opaque()).into_iter()
+                // The fields the write reads its receiver through are read there too.
+                let tables = self.field_receiver_tables(&receiver.into_strip_opaque());
+                for &idx in &tables {
+                    self.ir.ensure_slot_overlay(idx, name);
+                }
+                let types: Vec<ValueType> = tables.into_iter()
                     .filter_map(|idx| self.ir.get_field(idx, name)?.annotation.clone())
                     .collect();
                 if types.is_empty() {
@@ -3195,6 +3200,20 @@ impl<'a> Analysis<'a> {
                     }
                 }
                 if assign.inline_is_lateinit { overlay_fi.lateinit = true; }
+            } else if assign.inline_annotation.is_none()
+                && let Some(fi) = self.ir.table(table_idx).fields.get(&assign.field_name)
+                    .and_then(|f| self.ir.container_overlay(f, assign.expr_id).or_else(|| {
+                        // A slot: this file's writes type it here past the scan's
+                        // value, with the other files' (`Ir::slot_union_exprs`).
+                        self.ir.writes_type_field(f).then(|| {
+                            let mut fi = f.clone();
+                            fi.extra_exprs.push(assign.expr_id);
+                            fi
+                        })
+                    }))
+            {
+                self.ensure_slot_others(fi.expr, &fi.extra_exprs);
+                self.ir.insert_overlay_field(table_idx, assign.field_name.clone(), fi);
             } else {
                 // Inherit annotations: inline `---@type` > external `@field` > none
                 let source_fi = if assign.inline_annotation.is_some() {
@@ -3226,6 +3245,20 @@ impl<'a> Analysis<'a> {
                     description: None,
                     from_scan,
                 });
+                // A table this file builds there is the workspace's at that path, as
+                // for a write the build places (`build_ir`, `overlay_ctor_functions`).
+                if !assign.in_function
+                    && assign.inline_annotation.is_none()
+                    && let Some(scan_table) = self.ir.ext.table(table_idx).fields.get(&assign.field_name)
+                        .and_then(|f| match (&f.annotation, self.ir.ext.expr(f.expr)) {
+                            (Some(ValueType::Table(Some(t))), _) | (None, Expr::Literal(ValueType::Table(Some(t)))) => Some(*t),
+                            _ => None,
+                        })
+                        .filter(|t| t.is_external() && self.ir.table(*t).class_name.is_none())
+                    && let Some(local) = self.ir.find_table_index(assign.expr_id).filter(|t| !t.is_external())
+                {
+                    self.ir.exported_tables.entry(local).or_insert(scan_table);
+                }
             }
 
             // Mirror the method onto the receiver's own instance table so a direct
@@ -4234,8 +4267,8 @@ impl<'a> Analysis<'a> {
 
     /// `Ir::slot_union_exprs`, resolving the writes in the fixpoint.
     fn slot_union_exprs(&mut self, primary: ExprId, extras: &[ExprId], nil_primary: bool) -> (Vec<ExprId>, bool) {
-        if !self.ir.is_slot_primary(primary) {
-            return super::field_union_exprs(primary, extras, nil_primary);
+        if !self.ir.is_slot_primary(primary) && !self.ir.is_container_primary(primary) {
+            return self.ir.written_union_exprs(primary, extras, nil_primary);
         }
         self.ensure_slot_others(primary, extras);
         let writes = std::iter::once(primary).chain(extras.iter().copied().filter(|e| !e.is_external()));
@@ -5198,6 +5231,13 @@ pub(super) fn apply_unary_secrecy(op: Operator, operand: &ValueType, plain: Opti
 }
 
 /// Pure function for binary op type resolution (no `self` needed).
+/// Whether arithmetic on `lhs` and `rhs` is on numbers either of which may be
+/// `nil`: a `number` where it doesn't fail, which `invalid-op` still reports.
+pub(crate) fn nilable_number_arithmetic(lhs: &ValueType, rhs: &ValueType) -> bool {
+    let number = |ty: &ValueType| matches!(ty.strip_nil().into_decay_number_literal(), ValueType::Number);
+    (lhs.contains_nil() || rhs.contains_nil()) && number(lhs) && number(rhs)
+}
+
 /// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
 pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
     // Secret operands: resolve on the underlying types, then re-apply secrecy where
@@ -5345,6 +5385,8 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                 (ValueType::Number, ValueType::Number) => Some(ValueType::Number),
                 (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Number),
                 (ValueType::Table(_), _) | (_, ValueType::Table(_)) => None,
+                // A number that may be nil makes a number where the operation succeeds.
+                _ if nilable_number_arithmetic(&lhs_type, &rhs_type) => Some(ValueType::Number),
                 _ => None,
             }
         },
