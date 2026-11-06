@@ -118,7 +118,8 @@ impl<'a> Parser<'a> {
     /// `self.peek` holds the current token, `self.lexer` is positioned just past
     /// it — so a throwaway clone of the lexer yields the following token. Used to
     /// disambiguate `function (` (an anonymous-function field value) from
-    /// `function name(` (a statement) in `at_field_continuation`.
+    /// `function name(` (a statement) in `at_field_continuation`, and a
+    /// `name = value` table field from a positional value starting with a name.
     fn peek_after_current(&self) -> Option<SK> {
         let mut probe = self.lexer.clone();
         loop {
@@ -925,35 +926,14 @@ impl<'a> Parser<'a> {
                 if !self.bump_if(SK::Assign) { self.error_here("expected `=`".to_string()); }
                 self.skip_trivia();
                 self.parse_expression();
-            } else if tok.kind == SK::Name {
-                // Could be `name = expr` or a positional value expression.
-                // Peek ahead: consume name, check for `=`.
-                // We need to handle this carefully since the expression parser
-                // will consume the name as a NameRef.
-                let name_tok = self.advance().unwrap();
-                let mut trivia_after = Vec::new();
-                while let Some(t) = self.peek() {
-                    if t.kind.is_trivia() { trivia_after.push(self.advance().unwrap()); } else { break; }
-                }
-                if self.peek().is_some_and(|t| t.kind == SK::Assign) {
-                    // name = expr
-                    self.builder.token(SK::Name, name_tok.start, name_tok.end);
-                    self.emit_trivia(&trivia_after);
-                    self.bump(); // `=`
-                    self.skip_trivia();
-                    self.parse_expression();
-                } else {
-                    // Positional expression starting with a name.
-                    // Re-inject the name and trivia and parse as expression.
-                    self.builder.start_node(SK::NameRef);
-                    self.builder.token(SK::Name, name_tok.start, name_tok.end);
-                    self.builder.finish_node();
-                    self.emit_trivia(&trivia_after);
-                    // Parse any suffixes (e.g. `foo.bar` or `foo()` as positional)
-                    self.parse_suffixes();
-                    // Continue with any binary operators
-                    self.parse_expr_bp_continue(0);
-                }
+            } else if tok.kind == SK::Name && self.peek_after_current() == Some(SK::Assign) {
+                // name = expr. A name not followed by `=` starts a positional
+                // value, which the expression parser below takes whole.
+                self.bump(); // Name
+                self.skip_trivia();
+                self.bump(); // `=`
+                self.skip_trivia();
+                self.parse_expression();
             } else if !self.parse_expression() {
                 self.builder.finish_node();
                 break;
@@ -1013,25 +993,6 @@ impl<'a> Parser<'a> {
             | SK::ElseIfKeyword
             | SK::UntilKeyword => false,
             _ => true,
-        }
-    }
-
-    /// Continue Pratt parsing from an already-parsed left operand.
-    /// Used when we've already emitted the base expression and need to check for operators.
-    fn parse_expr_bp_continue(&mut self, min_bp: u8) {
-        let cp = self.checkpoint_before_last();
-        loop {
-            self.skip_trivia();
-            let Some(tok) = self.peek() else { break };
-            let Some((left_bp, right_bp)) = infix_binding_power(tok.kind) else { break };
-            if left_bp < min_bp { break; }
-            self.builder.start_node_at(cp, SK::BinaryExpression);
-            self.bump();
-            self.skip_trivia();
-            if !self.parse_expr_bp(right_bp) {
-                self.error_here("expected expression after operator".to_string());
-            }
-            self.builder.finish_node();
         }
     }
 
@@ -1296,6 +1257,27 @@ mod tests {
             indent == 2 && l.trim_start().starts_with("FunctionDefinition")
         });
         assert!(fn_is_top_level, "function statement was swallowed into the table:\n{}", dump);
+    }
+
+    #[test]
+    fn test_table_positional_value_starting_with_name() {
+        // A positional value starting with a name is one node spanning the
+        // whole expression, an operator or call past a space included — not
+        // the name with the rest of the expression beside it.
+        let src = "local t = { a == b, a.b .. c, f (1), x = y }";
+        let tree = parse(src);
+        assert!(tree.errors.is_empty(), "errors: {:?}", tree.errors);
+        let dump = dump_tree(&tree);
+        let values: Vec<&str> = tree.descendants(tree.root())
+            .filter(|&id| tree.node(id).kind == SK::Field)
+            .map(|id| {
+                let nodes: Vec<NodeId> = tree.child_nodes(id).collect();
+                assert_eq!(nodes.len(), 1, "a field holds one value node:\n{}", dump);
+                let value = tree.node(nodes[0]);
+                &src[value.start as usize..value.end as usize]
+            })
+            .collect();
+        assert_eq!(values, ["a == b", "a.b .. c", "f (1)", "y"], "tree:\n{}", dump);
     }
 
     #[test]

@@ -555,6 +555,15 @@ local _arrVal1 = "foo"
 local _arrVal2 = "bar"
 local positionalVarArr = { _arrVal1, _arrVal2 }
 --    ^ hover: (local) positionalVarArr: string[]  def: local
+-- A positional element starting with a name is the whole expression, not the name
+local positionalCmpArr = { bracketStrMap.foo == "bar", _arrVal1 ~= "x" }
+--    ^ hover: (local) positionalCmpArr: boolean[]  def: local
+local positionalCallArr = { AddTwo (1) }
+--    ^ hover: (local) positionalCallArr: number[]  def: local
+---@param n number
+local function positionalNum(n) return n end
+local positionalConcatArr = { _arrVal1 .. positionalNum("x") }
+--                                                      ^ diag: type-mismatch
 -- Dynamic bracket assignment infers table value_type
 local dynBracketTbl = {}
 dynBracketTbl[1] = "hello"
