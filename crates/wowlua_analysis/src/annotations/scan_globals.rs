@@ -3139,7 +3139,24 @@ pub fn scan_file_globals_with_synth(
                     // so skip it rather than misattribute. A function-scoped local
                     // can't be a cross-file mixin table either.
                     let locals = all_local_names.get_or_insert_with(|| collect_all_local_names(&root));
-                    if locals.contains(&receiver) { continue; }
+                    if locals.contains(&receiver) {
+                        // A local table the file exports (`ns.Viewer = Viewer`): its
+                        // methods are the export's (`push_exported_methods`), and so are
+                        // the fields they write through `self` — their existence, which
+                        // the files writing them type (the slot harvest).
+                        if func_names.len() == 2
+                            && !ident.has_non_string_bracket_in_chain()
+                            && let Some(exports) = ctor_entries.exports.get(&receiver)
+                        {
+                            for export in exports {
+                                let mut export_names = vec![export.owner.clone()];
+                                export_names.extend(export.path.iter().cloned());
+                                export_names.extend(names[1..].iter().cloned());
+                                globals.push(foreign_field_global(&export_names, &assign, ident, in_function, owned_path.clone()));
+                            }
+                        }
+                        continue;
+                    }
                     if func_names.len() == 2 {
                         receiver
                     } else if let Some(class_name) = self_field_var_to_class

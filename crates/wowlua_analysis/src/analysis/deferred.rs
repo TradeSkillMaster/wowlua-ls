@@ -290,6 +290,8 @@ pub struct ClassField {
     writers: Vec<(PathBuf, Option<ValueType>)>,
     /// The one file writing it, for a field one file writes.
     writer: Option<PathBuf>,
+    /// `ty` carries members files write onto the field's value (`CarriedFields`).
+    carried: bool,
 }
 
 impl ClassField {
@@ -577,6 +579,16 @@ struct ComponentFrame {
     known: HashSet<Unit>,
 }
 
+impl ComponentFrame {
+    /// Whether the component's analyses read `unit` as harvested before it with its
+    /// own files not in progress: any unit the discovery graph reaches from them,
+    /// and so a file of its own another of its files reads (`successors`), whose
+    /// harvest doesn't depend on the component's.
+    fn reads_before(&self, unit: &Unit, file: &Path) -> bool {
+        self.files.contains(file) && matches!(unit, Unit::File(_)) && self.known.contains(unit)
+    }
+}
+
 /// One round of a cycle's harvest (see [`harvest_component`]): its members, and their
 /// results from the previous round (`None` in the first).
 struct Round {
@@ -591,7 +603,7 @@ fn discovering() -> bool {
 
 /// Whether this thread is running a harvest or discovery analysis rather than a
 /// top-level one.
-fn harvesting() -> bool {
+pub(crate) fn harvesting() -> bool {
     discovering() || ANALYSES.with(|frames| !frames.borrow().is_empty())
 }
 
@@ -902,30 +914,6 @@ impl Ir {
         true
     }
 
-    /// The fields whose value this file writes fields onto (`self.header.cells =
-    /// {}`, or through a local holding it: `header.cells = {}; self.header =
-    /// header`), which other files read carried on the field's type
-    /// ([`CarriedFields`], as `accumulate_class_fields_in_file` gathers them).
-    pub fn carrying_fields(&self) -> HashSet<String> {
-        let mut out: HashSet<String> = self.sub_field_writes.iter()
-            .filter(|w| !w.bracket_key)
-            .map(|w| w.owner_field.clone())
-            .collect();
-        let roots: Vec<Option<SymbolIndex>> = self.field_assignments.iter()
-            .map(|fa| fa.root_symbol.map(|s| resolve_alias_root(self, s)))
-            .collect();
-        for (fa, own_root) in self.field_assignments.iter().zip(&roots) {
-            if !matches!(self.expr(fa.actual_expr), Expr::SymbolRef(..)) {
-                continue;
-            }
-            let Some(alias) = self.find_root_symbol(fa.actual_expr).map(|s| resolve_alias_root(self, s)) else { continue };
-            if *own_root != Some(alias) && roots.contains(&Some(alias)) {
-                out.insert(fa.field_name.clone());
-            }
-        }
-        out
-    }
-
     /// The workspace class's own table a table of this file standing for the class
     /// is (`Ir::class_tables`), when it holds `field_name`, which the table lacks.
     pub fn class_table_field(&self, table_idx: TableIndex, field_name: &str) -> Option<TableIndex> {
@@ -944,9 +932,7 @@ impl Ir {
         // writes, which are more precise than the ancestor's harvest.
         let own = t.fields.get(field_name);
         if let Some(fi) = own
-            && (table_idx.is_external()
-                || !fi.expr.is_external()
-                || fi.extra_exprs.iter().any(|e| !e.is_external()))
+            && (table_idx.is_external() || fi.written_in_file())
         {
             return Some(table_idx);
         }
@@ -978,7 +964,7 @@ impl Ir {
             return false;
         }
         let Some((slot, fi)) = self.unrefined_field(table_idx, field_name) else { return false };
-        if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+        if fi.written_in_file() {
             return false;
         }
         let expr = fi.expr;
@@ -1055,7 +1041,7 @@ impl Ir {
         }
         let Some((slot, fi)) = self.unrefined_field(table_idx, field_name) else { return false };
         let expr = fi.expr;
-        if !expr.is_external() || fi.annotation_text.is_some() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+        if fi.written_in_file() || fi.annotation_text.is_some() {
             return false;
         }
         let ext = Arc::clone(&self.ext);
@@ -1744,8 +1730,7 @@ pub fn resolve_deferred_class_field_carried(
     }
     read_class(ext, class_name, |fields| {
         let field = fields.get(field_name)?;
-        let carries = matches!(&field.ty, Some(ValueType::Intersection(members)) if members.iter().any(|m| matches!(m, ValueType::TableShape(_))));
-        (carries && field.writer.as_deref() == Some(writer)).then(|| field.ty.clone()).flatten()
+        (field.carried && field.writer.as_deref() == Some(writer)).then(|| field.ty.clone()).flatten()
     })
 }
 
@@ -1807,17 +1792,17 @@ fn read_unit<R>(ext: &Arc<PreResolvedGlobals>, unit: Unit, part: ReadPart, read:
         }
         Reach::Outside => {}
     }
-    if files.iter().any(|p| in_progress(p)) {
-        return None;
-    }
-
-    let harvests = &ext.deferred_harvests;
     // A unit the discovery graph reaches from the harvested component was harvested
     // before it, in the context it started in: its files read that harvest, made
     // with them not in progress, whichever unit a reader reached first. So a
     // component costs one harvest per context it is read in, not one per file
     // reaching it only through resolved types.
     let component = ANALYSES.with(|frames| frames.borrow().last().and_then(|f| f.component.clone()));
+    if files.iter().any(|p| in_progress(p) && !component.as_ref().is_some_and(|c| c.reads_before(&unit, p))) {
+        return None;
+    }
+
+    let harvests = &ext.deferred_harvests;
     let before = component.as_ref().filter(|c| c.known.contains(&unit)).map(|c| &c.files);
     if let Some(hit) = harvests.lookup(&unit, before, &read) {
         return Some(hit);
@@ -1908,8 +1893,11 @@ fn successors(ext: &Arc<PreResolvedGlobals>, unit: &Unit) -> Vec<Unit> {
     for path in own {
         for read in discovery_reads(ext, path).iter() {
             let files = read.files(ext);
+            // But for another of a class's files, whose functions its analyses read
+            // as any file's (`ComponentFrame::reads_before`).
+            let other_file = matches!((unit, read), (Unit::Class(_), Unit::File(f)) if f != path);
             if files.is_empty()
-                || files.iter().any(|f| own.contains(f) || in_progress(f))
+                || files.iter().any(|f| (own.contains(f) && !other_file) || in_progress(f))
                 || next.contains(read)
                 || ext.deferred_harvests.harvested(read)
             {
@@ -1977,11 +1965,11 @@ fn discovery_reads(ext: &Arc<PreResolvedGlobals>, path: &Path) -> Arc<[Unit]> {
 /// `path`'s discovery analysis, standing for its first analysis in a harvest of
 /// `members` that would cut every read it made: one of a member, of its own file, or
 /// into a file in progress. The same analysis, so it isn't run again.
-fn first_analysis(ext: &Arc<PreResolvedGlobals>, path: &Path, members: &[Unit]) -> Option<Arc<FirstAnalysis>> {
+fn first_analysis(ext: &Arc<PreResolvedGlobals>, path: &Path, members: &[Unit], frame: &ComponentFrame) -> Option<Arc<FirstAnalysis>> {
     let harvests = &ext.deferred_harvests;
     let reads = harvests.reads.read().ok()?.get(path).cloned()?;
     let cut = |unit: &Unit| {
-        members.contains(unit) || unit.files(ext).iter().any(|f| f == path || in_progress(f))
+        members.contains(unit) || unit.files(ext).iter().any(|f| f == path || (in_progress(f) && !frame.reads_before(unit, f)))
     };
     if !reads.iter().all(cut) {
         return None;
@@ -2050,17 +2038,17 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
         } else {
             let unit = &component[0];
             let own = unit.files(ext).to_vec();
-            let _analysis = AnalysisScope::enter(own.clone(), None, Some(Arc::clone(&frame)));
             match unit {
                 Unit::File(path) => {
-                    if let Some(first) = first_analysis(ext, path, component) {
+                    let _analysis = AnalysisScope::enter(own.clone(), None, Some(Arc::clone(&frame)));
+                    if let Some(first) = first_analysis(ext, path, component, &frame) {
                         values.insert(unit.clone(), Harvest::File(Arc::clone(&first.harvest)));
                     } else if let Some((tree, result)) = analyze_file(ext, path) {
                         values.insert(unit.clone(), Harvest::File(Arc::new(file_harvest(ext, path, &tree, &result))));
                     }
                 }
                 Unit::Class(name) => {
-                    let (fields, warmed) = harvest_class(ext, name, &own);
+                    let (fields, warmed) = harvest_class(ext, name, &own, &frame);
                     values.insert(unit.clone(), Harvest::Class(Arc::new(fields)));
                     siblings = warmed;
                 }
@@ -2141,7 +2129,7 @@ fn harvest_round(
         let of_file = component.contains(&unit);
         let of_class = classes.iter().any(|c| ext.deferred_class_field_paths.get(*c).is_some_and(|ps| ps.contains(path)));
         if changed.is_none()
-            && let Some(first) = first_analysis(ext, path, component)
+            && let Some(first) = first_analysis(ext, path, component, frame)
         {
             let reads = discovery_reads(ext, path).iter().filter(|u| component.contains(u)).map(|u| (u.clone(), ReadPart::Whole)).collect();
             let harvest = of_file.then(|| Arc::clone(&first.harvest));
@@ -2223,31 +2211,46 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                 }
                 // A reading saying no more than `any` or `nil` is the field's own read
                 // in the harvest, cut (`self` the workspace's class): its writes type it.
-                let untyped = match &only.reading {
-                    Some(ValueType::Any | ValueType::Nil) | None => true,
-                    Some(ValueType::Union(members)) => members.is_empty(),
-                    Some(_) => false,
-                };
-                let ty = match &only.reading {
-                    Some(reading) if !untyped => Some(all.sub_fields.onto(reading.clone(), ext)),
+                let untyped = only.reading.as_ref().is_none_or(says_nothing);
+                let (ty, carried) = match &only.reading {
+                    Some(reading) if !untyped => {
+                        let ty = all.sub_fields.clone().onto(reading.clone(), ext, None);
+                        let carried = ty != *reading;
+                        (Some(ty), carried)
+                    }
                     _ => {
                         all.tys = only.tys.clone();
-                        gate_writes(ext, &all, true)
+                        let bare = gate_harvested_field(all.tys.clone(), all.lateinit);
+                        let ty = gate_writes(ext, &all, true);
+                        let carried = ty.is_some() && ty != bare;
+                        (ty, carried)
                     }
                 };
-                ClassField { ty, writers: Vec::new(), writer: Some((*only_path).clone()) }
+                ClassField { ty, writers: Vec::new(), writer: Some((*only_path).clone()), carried }
             }
             _ => {
                 // In file order, as one accumulation over the files adds their writes;
                 // a write that doesn't resolve says nothing, as to a file writing the
-                // field (`Analysis::fill_class_others`).
+                // field (`Analysis::fill_class_others`). Past one, a file gives what it
+                // reads the field as, else its writes but the bare tables, which say no
+                // more than `any` there (`AnyFieldWrites`, `Ir::slot_union_exprs`).
+                let effective = |f: &AccField| {
+                    let mut f = f.clone();
+                    if f.unresolved {
+                        match f.reading.clone() {
+                            Some(reading) if !says_nothing(&reading) => f.tys = vec![reading],
+                            _ => f.tys.retain(|ty| !matches!(ty, ValueType::Table(None))),
+                        }
+                    }
+                    f
+                };
                 let mut all = AccField::default();
                 for (_, f) in &files {
-                    all.absorb(f);
+                    all.absorb(&effective(f));
                 }
                 let lists = has_typed_elements(&all.tys, ext);
                 let contribution = |f: &AccField| {
-                    let mut f = f.clone();
+                    let mut f = effective(f);
                     if lists {
                         f.tys = drop_bare_tables(f.tys);
                     }
@@ -2269,6 +2272,16 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
         by_class.entry(cls).or_default().insert(fname, field);
     }
     by_class
+}
+
+/// Whether what a file reads a class field as says no more than `any` or `nil` (see
+/// [`gate_class_fields`]).
+fn says_nothing(reading: &ValueType) -> bool {
+    match reading {
+        ValueType::Any | ValueType::Nil => true,
+        ValueType::Union(members) => members.is_empty(),
+        _ => false,
+    }
 }
 
 /// The table the workspace scan gives the field `class.field`, if it gives it one.
@@ -2311,7 +2324,7 @@ fn keeps_scanned_table(ext: &PreResolvedGlobals, class: &str, field: &str, write
 fn gate_writes(ext: &PreResolvedGlobals, f: &AccField, unresolved_any: bool) -> Option<ValueType> {
     gate_harvested_field(f.tys.clone(), f.lateinit)
         .filter(|ty| !(unresolved_any && f.unresolved && contains_bare_table(ty)))
-        .map(|ty| f.sub_fields.clone().onto(ty, ext))
+        .map(|ty| f.sub_fields.clone().onto(ty, ext, None))
 }
 
 /// Accumulate `class`'s fields over its files, analyzed with them all in progress —
@@ -2321,6 +2334,7 @@ fn harvest_class(
     ext: &Arc<PreResolvedGlobals>,
     class: &str,
     paths: &[PathBuf],
+    frame: &Arc<ComponentFrame>,
 ) -> (ClassFields, Vec<Harvested>) {
     // Accumulate the RHS types of every field of every workspace class found in the
     // target's declaring files, keyed by `(class, field)` with nils included, per file.
@@ -2341,6 +2355,9 @@ fn harvest_class(
         .iter()
         .map(|path| {
             let scope = DepsScope::open();
+            // Each file reads the class and its own file as back-edges, and the
+            // class's other files as harvested before (`ComponentFrame::reads_before`).
+            let _analysis = AnalysisScope::enter(vec![path.clone()], None, Some(Arc::clone(frame)));
             if let Some((tree, result)) = analyze_file(ext, path) {
                 let mut acc = HashMap::default();
                 accumulate_class_fields_in_file(ext, path, &tree, &result, &mut acc);
@@ -2464,7 +2481,7 @@ fn file_harvest(
 /// template naming it a mixin aside, which declares fields but writes none. Such a
 /// class is harvested with that file's other data (`FileHarvest::classes`): the same
 /// analysis, in the same context.
-fn single_lua_file<'a>(ext: &'a PreResolvedGlobals, class: &str) -> Option<&'a Path> {
+pub(crate) fn single_lua_file<'a>(ext: &'a PreResolvedGlobals, class: &str) -> Option<&'a Path> {
     let mut lua = ext.deferred_class_field_paths.get(class)?.iter()
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lua")));
     let only = lua.next()?;
@@ -2845,52 +2862,10 @@ fn accumulate_class_fields_in_file(
     let ir = &result.ir;
     let globals = global_tables(result, tree, ext);
 
-    // Map each local class table that is a workspace `@class` (a registry key) to its
-    // class name. All of them — not just the read's target — so this single analysis
-    // warms every co-located class.
-    let mut class_name_of: HashMap<TableIndex, String> = HashMap::default();
-    for (idx, info) in ir.local_tables() {
-        if let Some(name) = &info.class_name
-            && ext.deferred_class_field_paths.contains_key(name)
-        {
-            class_name_of.insert(idx, name.clone());
-        }
-    }
-    // A plain global table the file defines that is a workspace class by its name — a
-    // mixin — is that class where it is defined: `self` in its methods is the local
-    // table (`Ir::class_tables`).
-    for (&idx, &class) in &ir.class_tables {
-        if let Some(name) = ext.table(class).class_name.as_ref()
-            && ext.deferred_class_field_paths.get(name).is_some_and(|ps| ps.iter().any(|p| p == path))
-        {
-            class_name_of.entry(idx).or_insert_with(|| name.clone());
-        }
-    }
-    // No early return on an empty `class_name_of`: a file that only *assigns* a class's
-    // fields (a method in a non-declaring file, `function ns.C:m() self.x = ... end`)
-    // has no local `@class` table, yet its `self.x = ...` writes still target the
-    // external class table and must be harvested — matched below.
-
-    // Resolve a write's receiver table to a workspace class name, from either:
-    //   - a local `@class` table declared in this (declaring) file; or
-    //   - the *external* class table `self` resolves to inside a method defined in
-    //     a file that does not declare the class. Guarded on the file being one of
-    //     the class's indexed paths, so whole-file warming of a co-located class
-    //     stays deterministic and matches that class's own harvest (a file only
-    //     contributes to classes it is officially indexed for).
-    let class_name_for = |table_idx: TableIndex| -> Option<String> {
-        if let Some(n) = class_name_of.get(&table_idx) {
-            return Some(n.clone());
-        }
-        if !table_idx.is_external() {
-            return None;
-        }
-        let n = ext.try_table(table_idx).and_then(|t| t.class_name.as_deref())?;
-        ext.deferred_class_field_paths
-            .get(n)
-            .is_some_and(|ps| ps.iter().any(|p| p == path))
-            .then(|| n.to_string())
-    };
+    // Every workspace class in the file (not just the read's target), so this single
+    // analysis warms every co-located class.
+    let classes = FileClasses::of(ir, ext, path);
+    let class_name_for = |table_idx: TableIndex| classes.class_of(ext, table_idx);
 
     for fa in &ir.field_assignments {
         let Some(name) = class_name_for(fa.table_idx) else { continue };
@@ -2922,7 +2897,7 @@ fn accumulate_class_fields_in_file(
     // that isn't a constructor (another declaration's) holds no entries.
     let mut ctors: Vec<(TableIndex, &String)> = ir.ctor_merged_class.iter()
         .filter(|(ctor, _)| ir.table(**ctor).class_name.is_none())
-        .filter_map(|(&ctor, class)| Some((ctor, class_name_of.get(class)?)))
+        .filter_map(|(&ctor, class)| Some((ctor, classes.local.get(class)?)))
         .collect();
     ctors.sort_unstable();
     for (ctor, name) in ctors {
@@ -2950,29 +2925,141 @@ fn accumulate_class_fields_in_file(
     // the harvested field as the shape injected onto its value (see
     // `CarriedFields`), so a reader in another file resolves them the way the
     // declaring file does. Typed per site.
-    let mut carry = |class: String, owner_field: &str, field: &str, expr: ExprId, (start, end): (u32, u32)| {
-        let Some(ty) = result.resolve_expr_type(expr) else { return };
+    for (_, site) in carried_sites(ir, &classes, ext) {
+        let Some(ty) = result.resolve_expr_type(site.expr) else { continue };
+        let ty = ty.widen_literals();
         let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
-        let Some(site_ty) = CarriedFields::site_type(&ty, lifted) else { return };
-        let entry = acc.entry((class, owner_field.to_string())).or_default();
-        entry.sub_fields.add(field, site_ty, || crate::types::ExternalLocation {
+        let Some(site_ty) = CarriedFields::site_type(&ty, lifted) else { continue };
+        let (start, end) = site.range;
+        let entry = acc.entry((site.class, site.owner_field)).or_default();
+        entry.sub_fields.add(&site.member, site_ty, || crate::types::ExternalLocation {
             path: path.to_path_buf(),
             start,
             end,
             name_start: start,
             name_end: end,
         });
-    };
+    }
+
+    // What the file reads each field it writes as: its own table of the class (a
+    // declaration, a mixin it defines) writing it — the first, of several — else its
+    // view of the workspace's.
+    let mut own_tables: HashMap<&str, Vec<TableIndex>> = HashMap::default();
+    for (&idx, name) in &classes.local {
+        own_tables.entry(name.as_str()).or_default().push(idx);
+    }
+    for tables in own_tables.values_mut() {
+        tables.sort_unstable();
+    }
+    for ((class, field), entry) in acc.iter_mut() {
+        if !entry.written {
+            continue;
+        }
+        if entry.mixed_map {
+            entry.reading = Some(ValueType::Table(None));
+            continue;
+        }
+        let own = own_tables.get(class.as_str()).map(Vec::as_slice).unwrap_or_default();
+        let writes_it = |idx: &TableIndex| ir.table(*idx).fields.get(field).is_some_and(crate::types::FieldInfo::written_in_file);
+        // Of several of its tables writing it (a class declared more than once), what
+        // they read it as together.
+        let writing: Vec<&crate::types::FieldInfo> = own.iter().filter(|idx| writes_it(idx))
+            .filter_map(|&idx| ir.table(idx).fields.get(field))
+            .collect();
+        let read: Option<ValueType> = if writing.len() > 1 {
+            let tys: Vec<ValueType> = writing.iter().filter_map(|fi| result.resolve_field_type(fi)).collect();
+            (!tys.is_empty()).then(|| ValueType::make_union(tys))
+        } else {
+            let fi = writing.first().copied()
+                .or_else(|| own.iter().find(|&&idx| ir.table(idx).fields.contains_key(field)).and_then(|&idx| ir.table(idx).fields.get(field)))
+                .or_else(|| ir.get_field(*ext.classes.get(class)?, field));
+            fi.and_then(|fi| result.resolve_field_type(fi))
+        };
+        let Some(ty) = read.map(|ty| ty.widen_literals()) else { continue };
+        let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
+        entry.reading = Some(if entry.lateinit { lifted.strip_nil() } else { lifted });
+    }
+}
+
+/// The workspace classes the tables of a file stand for: its declarations of them
+/// and the mixins it defines, and the external class tables of the classes it is
+/// one of the files of (`PreResolvedGlobals::deferred_class_field_paths`) — a file
+/// only gives fields to a class it is indexed for, so warming a co-located class
+/// matches that class's own harvest.
+pub(crate) struct FileClasses<'a> {
+    local: HashMap<TableIndex, String>,
+    path: &'a Path,
+}
+
+impl<'a> FileClasses<'a> {
+    pub(crate) fn of(ir: &Ir, ext: &PreResolvedGlobals, path: &'a Path) -> Self {
+        let mut local: HashMap<TableIndex, String> = HashMap::default();
+        for (idx, info) in ir.local_tables() {
+            if let Some(name) = &info.class_name
+                && ext.deferred_class_field_paths.contains_key(name)
+            {
+                local.insert(idx, name.clone());
+            }
+        }
+        // A plain global table the file defines that is a workspace class by its name
+        // — a mixin — is that class where it is defined: `self` in its methods is the
+        // local table (`Ir::class_tables`).
+        for (&idx, &class) in &ir.class_tables {
+            if let Some(name) = ext.table(class).class_name.as_ref()
+                && ext.deferred_class_field_paths.get(name).is_some_and(|ps| ps.iter().any(|p| p == path))
+            {
+                local.entry(idx).or_insert_with(|| name.clone());
+            }
+        }
+        Self { local, path }
+    }
+
+    /// The workspace class a write through the receiver `table_idx` gives a field to.
+    pub(crate) fn class_of(&self, ext: &PreResolvedGlobals, table_idx: TableIndex) -> Option<String> {
+        if let Some(n) = self.local.get(&table_idx) {
+            return Some(n.clone());
+        }
+        if !table_idx.is_external() {
+            return None;
+        }
+        let n = ext.try_table(table_idx).and_then(|t| t.class_name.as_deref())?;
+        ext.deferred_class_field_paths
+            .get(n)
+            .is_some_and(|ps| ps.iter().any(|p| p == self.path))
+            .then(|| n.to_string())
+    }
+}
+
+/// A member a file writes onto the value of a workspace class field, which
+/// [`CarriedFields`] carries on the field's type.
+pub(crate) struct CarriedSite {
+    pub(crate) class: String,
+    pub(crate) owner_field: String,
+    pub(crate) member: String,
+    pub(crate) expr: ExprId,
+    pub(crate) range: (u32, u32),
+}
+
+/// The members a file writes onto the values of workspace class fields, with the
+/// receiver each field is written through: `self.header.cells = v`
+/// (`Ir::sub_field_writes`), and a local holding the value (`local header = …;
+/// self._header = header; header.moreButton = …`, matched by `resolve_alias_root`).
+pub(crate) fn carried_sites(ir: &Ir, classes: &FileClasses<'_>, ext: &PreResolvedGlobals) -> Vec<(TableIndex, CarriedSite)> {
+    let mut sites = Vec::new();
     for w in &ir.sub_field_writes {
         if w.bracket_key {
             continue;
         }
         let Some(root) = ir.find_table_for_symbol(&w.root_name, w.scope_idx) else { continue };
-        let Some(name) = class_name_for(root) else { continue };
-        carry(name, &w.owner_field, &w.field_name, w.expr_id, (w.ident_start, w.ident_end));
+        let Some(class) = classes.class_of(ext, root) else { continue };
+        sites.push((root, CarriedSite {
+            class,
+            owner_field: w.owner_field.clone(),
+            member: w.field_name.clone(),
+            expr: w.expr_id,
+            range: (w.ident_start, w.ident_end),
+        }));
     }
-    // ... and through a local alias of the field's value
-    // (`local header = ...; self._header = header; header.moreButton = ...`).
     let alias_roots: Vec<Option<SymbolIndex>> = ir
         .field_assignments
         .iter()
@@ -2982,36 +3069,24 @@ fn accumulate_class_fields_in_file(
         if !matches!(ir.expr(fa.actual_expr), Expr::SymbolRef(..)) {
             continue;
         }
-        let Some(name) = class_name_for(fa.table_idx) else { continue };
+        let Some(class) = classes.class_of(ext, fa.table_idx) else { continue };
         let Some(alias) = ir.find_root_symbol(fa.actual_expr).map(|s| resolve_alias_root(ir, s)) else { continue };
         if *own_root == Some(alias) {
             continue;
         }
         for (fb, root) in ir.field_assignments.iter().zip(&alias_roots) {
             if *root == Some(alias) {
-                carry(name.clone(), &fa.field_name, &fb.field_name, fb.actual_expr, (fb.ident_start, fb.ident_end));
+                sites.push((fa.table_idx, CarriedSite {
+                    class: class.clone(),
+                    owner_field: fa.field_name.clone(),
+                    member: fb.field_name.clone(),
+                    expr: fb.actual_expr,
+                    range: (fb.ident_start, fb.ident_end),
+                }));
             }
         }
     }
-
-    // What the file reads each field it writes as: its own table of the class (a
-    // declaration, a mixin it defines), else its view of the workspace's.
-    let own_tables: HashMap<&str, TableIndex> = class_name_of.iter().map(|(&idx, name)| (name.as_str(), idx)).collect();
-    for ((class, field), entry) in acc.iter_mut() {
-        if !entry.written {
-            continue;
-        }
-        if entry.mixed_map {
-            entry.reading = Some(ValueType::Table(None));
-            continue;
-        }
-        let fi = own_tables.get(class.as_str())
-            .and_then(|&idx| ir.table(idx).fields.get(field))
-            .or_else(|| ir.get_field(*ext.classes.get(class)?, field));
-        let Some(ty) = fi.and_then(|fi| result.resolve_field_type(fi)).map(|ty| ty.widen_literals()) else { continue };
-        let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
-        entry.reading = Some(if entry.lateinit { lifted.strip_nil() } else { lifted });
-    }
+    sites
 }
 
 /// The `@class` fields one file writes, by `(class, field)`.
@@ -3066,14 +3141,14 @@ impl AccField {
 /// ([`Self::onto`]), so cross-file reads resolve, complete, and go-to-define
 /// instead of tripping `undefined-field`.
 #[derive(Default, Clone)]
-struct CarriedFields(std::collections::BTreeMap<String, (Vec<ValueType>, crate::types::ExternalLocation)>);
+pub(crate) struct CarriedFields(std::collections::BTreeMap<String, (Vec<ValueType>, crate::types::ExternalLocation)>);
 
 impl CarriedFields {
     /// The type a site with resolved type `ty` (ext-space lift `lifted`)
     /// contributes. `any` carries nothing and `nil` is the remove-member idiom
     /// (`inst.M = nil`), so neither is carried; an empty `{}`, which lifts to
     /// `any`, is carried as a bare `table` so the member exists.
-    fn site_type(ty: &ValueType, lifted: ValueType) -> Option<ValueType> {
+    pub(crate) fn site_type(ty: &ValueType, lifted: ValueType) -> Option<ValueType> {
         let lifted = match lifted {
             ValueType::Any if matches!(ty, ValueType::Table(Some(_))) => ValueType::Table(None),
             lifted => lifted,
@@ -3082,7 +3157,7 @@ impl CarriedFields {
     }
 
     /// Record a carried site of `name`; the first site's `loc` is its definition.
-    fn add(&mut self, name: &str, site_ty: ValueType, loc: impl FnOnce() -> crate::types::ExternalLocation) {
+    pub(crate) fn add(&mut self, name: &str, site_ty: ValueType, loc: impl FnOnce() -> crate::types::ExternalLocation) {
         let (tys, _) = self.0.entry(name.to_string()).or_insert_with(|| (Vec::new(), loc()));
         if !tys.contains(&site_ty) {
             tys.push(site_ty);
@@ -3094,18 +3169,38 @@ impl CarriedFields {
     /// and overriding one could mask an inherited type. `ty` is a class or an
     /// intersection of classes (`Frame & Template`); one already carrying its own
     /// fields (`Class & { ... }`, see `lift_instance`) gets the ones it lacks added
-    /// to them. `ty` unchanged when none remain or it isn't an external instance.
-    fn onto(self, ty: ValueType, ext: &PreResolvedGlobals) -> ValueType {
+    /// to them; an optional one (`T?`) gets them on its value, `(T & { ... })?`.
+    /// With the analysis `ir` of the file writing them, an instance of a class it
+    /// holds (a call's object, `Ir::call_object_table`) counts as that class. `ty`
+    /// unchanged when none remain or it isn't an external instance.
+    pub(crate) fn onto(self, ty: ValueType, ext: &PreResolvedGlobals, ir: Option<&Ir>) -> ValueType {
+        if let ValueType::Union(members) = &ty
+            && members.contains(&ValueType::Nil)
+        {
+            let mut values = members.iter().filter(|m| !matches!(m, ValueType::Nil));
+            let (Some(value), None) = (values.next(), values.next()) else { return ty };
+            let carried = self.onto(value.clone(), ext, ir);
+            return if carried == *value { ty } else { ValueType::make_union(vec![carried, ValueType::Nil]) };
+        }
         let members: &[ValueType] = match &ty {
             ValueType::Table(Some(_)) => std::slice::from_ref(&ty),
             ValueType::Intersection(members) => members,
             _ => return ty,
         };
+        let mut kept: Vec<ValueType> = Vec::new();
         let mut classes: Vec<TableIndex> = Vec::new();
         let mut own: Option<&crate::types::TableShape> = None;
         for member in members {
+            let instance_of = |idx: TableIndex| {
+                let name = ir?.table(idx).class_name.as_ref()?;
+                ext.classes.get(name).copied().filter(|c| c.is_external())
+            };
             match member {
-                ValueType::Table(Some(idx)) if idx.is_external() => classes.push(*idx),
+                ValueType::Table(Some(idx)) => {
+                    let Some(class) = (if idx.is_external() { Some(*idx) } else { instance_of(*idx) }) else { return ty };
+                    classes.push(class);
+                    kept.push(member.clone());
+                }
                 ValueType::TableShape(shape) if shape.value_type.is_none() && own.is_none() => own = Some(shape),
                 _ => return ty,
             }
@@ -3133,9 +3228,8 @@ impl CarriedFields {
             field_defs.extend(own.field_defs.iter().cloned());
         }
         let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
-        let mut members: Vec<ValueType> = classes.into_iter().map(|idx| ValueType::Table(Some(idx))).collect();
-        members.push(ValueType::TableShape(Box::new(shape)));
-        ValueType::Intersection(members)
+        kept.push(ValueType::TableShape(Box::new(shape)));
+        ValueType::Intersection(kept)
     }
 }
 
@@ -3450,7 +3544,7 @@ fn wrap_overlay_shape(
             name_end: fa.ident_end,
         });
     }
-    carried.onto(lifted, ext)
+    carried.onto(lifted, ext, None)
 }
 
 /// True when ext class `idx` (or any ancestor) declares `field`. `parent_classes`

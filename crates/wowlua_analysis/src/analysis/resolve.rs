@@ -481,6 +481,7 @@ impl<'a> Analysis<'a> {
         // Augment field types with `@narrows-arg` mixins (`Mixin(self.Child, M)`).
         // Runs after the field-assignment pass so the base field type exists.
         self.resolve_deferred_field_mixins();
+        self.carry_own_sub_field_writes();
         // The two passes above can add fields that didn't exist during the
         // fixpoint. Any local that read such a field (e.g. `local Thing =
         // Enum.Thing`, where `Enum` aliases a namespace sub-table via
@@ -494,6 +495,7 @@ impl<'a> Analysis<'a> {
         self.warm_slot_write_targets();
         self.finalize_enum_kinds();
         self.populate_deferred_overlay();
+        self.ir.stand_ins_settled = true;
     }
 
     /// Give the fields read where the fixpoint resolved no read — a condition (`if
@@ -3098,6 +3100,13 @@ impl<'a> Analysis<'a> {
             let Some(mut table_idx) = self.deferred_write_table(sym_idx, ver_idx, &assign.field_name, assign.expr_id) else {
                 continue;
             };
+            // A field write through a value of a workspace class this file declares
+            // is one of the file's own (`Ir::class_stand_ins`).
+            if !assign.is_method_def
+                && let Some(local) = self.ir.stand_in_target(table_idx, &assign.field_name)
+            {
+                table_idx = local;
+            }
             if assign.bracket_key && self.ir.is_element_write(table_idx, &assign.field_name) { continue; }
 
             // A colliding method-style def is mirrored onto the receiver's own
@@ -3250,6 +3259,9 @@ impl<'a> Analysis<'a> {
                     description: None,
                     from_scan,
                 });
+                if !assign.is_method_def && assign.inline_annotation.is_none() {
+                    self.read_workspace_class_field(table_idx, &assign.field_name, assign.expr_id);
+                }
                 // A table this file builds there is the workspace's at that path, as
                 // for a write the build places (`build_ir`, `overlay_ctor_functions`).
                 if !assign.in_function
@@ -3605,6 +3617,105 @@ impl<'a> Analysis<'a> {
 
         if !augmented.is_empty() {
             self.invalidate_field_reads(&augmented, &HashSet::default());
+        }
+    }
+
+    /// Give the workspace class fields this file writes members onto (`self.header.cells
+    /// = {}`, or through a local holding the value) the type the class harvest gives
+    /// them in other files: what the file's writes type the field as, with those members
+    /// carried on it (`deferred::CarriedFields`). Only where the file reads the field by
+    /// its own writes and the harvest's carried type isn't read here already
+    /// (`fill_class_others`); after the fixpoint, as the members' types are. Not in
+    /// a harvest, which carries them itself, lifted (`accumulate_class_fields_in_file`):
+    /// the members' types here are this file's.
+    fn carry_own_sub_field_writes(&mut self) {
+        if self.ir.ext.deferred_class_field_paths.is_empty() || crate::analysis::deferred::harvesting() {
+            return;
+        }
+        let Some(path) = self.ir.file_path.clone() else { return };
+        let ext = std::sync::Arc::clone(&self.ir.ext);
+        let classes = crate::analysis::deferred::FileClasses::of(&self.ir, &ext, &path);
+        let sites = crate::analysis::deferred::carried_sites(&self.ir, &classes, &ext);
+        // By the field a read through the receiver finds, a field read off all of its
+        // class's copies (`Ir::class_peers`) by the class: it takes the members written
+        // through any of them.
+        let mut by_field: std::collections::BTreeMap<(TableIndex, String), Vec<(TableIndex, crate::analysis::deferred::CarriedSite)>> = std::collections::BTreeMap::new();
+        for (receiver, site) in sites {
+            let key = self.copy_of(receiver, &site.owner_field)
+                .and_then(|fi| self.ir.class_peers.get(&fi.expr))
+                .map_or(receiver, |(class_idx, _)| *class_idx);
+            by_field.entry((key, site.owner_field.clone())).or_default().push((receiver, site));
+        }
+        let mut retyped: HashSet<(TableIndex, String)> = HashSet::default();
+        for ((_, field), sites) in by_field {
+            let (receiver, class) = (sites[0].0, sites[0].1.class.clone());
+            let Some(fi) = self.copy_of(receiver, &field) else { continue };
+            // Of a field read off all of the class's copies, each copy reads the members;
+            // of another field several files write, the others' are read already.
+            let peer = self.ir.class_peers.get(&fi.expr).map(|(class_idx, _)| *class_idx);
+            if fi.annotation_text.is_some()
+                || self.ir.carried_fields.contains(&(receiver, field.clone()))
+                || (peer.is_none() && self.ir.class_slots.contains_key(&fi.expr))
+            {
+                continue;
+            }
+            let scan_typed = ext.classes.get(&class)
+                .and_then(|&idx| ext.try_table(idx)?.fields.get(&field))
+                .is_some_and(|scanned| crate::analysis::deferred::class_field_scan_typed(scanned, &ext, &class, &field));
+            if !scan_typed {
+                continue;
+            }
+            let Some(own) = self.resolve_field_of(ValueType::Table(Some(receiver)), &field) else { continue };
+            let mut members = crate::analysis::deferred::CarriedFields::default();
+            for (_, site) in &sites {
+                let Some(ty) = self.resolve_expr(site.expr) else { continue };
+                let ty = ty.widen_literals();
+                let Some(site_ty) = crate::analysis::deferred::CarriedFields::site_type(&ty, ty.clone()) else { continue };
+                let (start, end) = site.range;
+                members.add(&site.member, site_ty, || crate::types::ExternalLocation {
+                    path: path.clone(), start, end, name_start: start, name_end: end,
+                });
+            }
+            let carried = members.onto(own.clone(), &ext, Some(&self.ir));
+            if carried == own {
+                continue;
+            }
+            let mut targets = vec![receiver];
+            if let Some(class_idx) = peer {
+                let copies: Vec<TableIndex> = self.ir.class_copies(class_idx).chain(std::iter::once(class_idx))
+                    .filter(|&t| self.copy_of(t, &field).is_some_and(|fi| self.ir.class_peers.contains_key(&fi.expr)))
+                    .collect();
+                for t in copies {
+                    if !targets.contains(&t) {
+                        targets.push(t);
+                    }
+                }
+            }
+            for target in targets {
+                let fi = if target.is_external() {
+                    self.ir.get_overlay_field_mut(target, &field)
+                } else {
+                    self.ir.tables[target.val()].fields.get_mut(&field)
+                };
+                if let Some(fi) = fi.filter(|fi| fi.annotation_text.is_none()) {
+                    fi.annotation = Some(carried.clone());
+                    self.ir.carried_fields.insert((target, field.clone()));
+                    retyped.insert((target, field.clone()));
+                }
+            }
+        }
+        if !retyped.is_empty() {
+            self.invalidate_field_reads(&retyped, &HashSet::default());
+        }
+    }
+
+    /// This file's copy of the field `field` on `table`: its own, or its overlay of an
+    /// external table's.
+    fn copy_of(&self, table: TableIndex, field: &str) -> Option<&FieldInfo> {
+        if table.is_external() {
+            self.ir.overlay_fields.get(&table)?.get(field)
+        } else {
+            self.ir.tables[table.val()].fields.get(field)
         }
     }
 
@@ -4279,8 +4390,14 @@ impl<'a> Analysis<'a> {
         if !class_slot {
             self.ensure_slot_others(primary, extras);
         }
-        let writes = std::iter::once(primary).chain(extras.iter().copied().filter(|e| !e.is_external()));
-        let mut types: Vec<(ExprId, Option<ValueType>)> = writes.map(|e| (e, self.resolve_expr(e))).collect();
+        let mut writes: Vec<ExprId> = std::iter::once(primary).chain(extras.iter().copied().filter(|e| !e.is_external())).collect();
+        // ... and, read off all of its class's copies, theirs (`Ir::class_peers`).
+        for e in self.ir.class_peer_writes(primary) {
+            if !writes.contains(&e) {
+                writes.push(e);
+            }
+        }
+        let mut types: Vec<(ExprId, Option<ValueType>)> = writes.into_iter().map(|e| (e, self.resolve_expr(e))).collect();
         // The file's own writes: past the workspace's value, but a class field
         // copy's own first write.
         let own = if primary.is_external() { 1 } else { 0 };
@@ -4334,7 +4451,7 @@ impl<'a> Analysis<'a> {
                 .or_else(|| self.ir.class_tables.get(&idx).and_then(|&c| ext.table(c).class_name.clone()));
             let Some(class) = class else { continue };
             for (name, fi) in &table.fields {
-                if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+                if fi.written_in_file() {
                     copies.push((idx, class.clone(), name.clone()));
                 }
             }
@@ -4342,23 +4459,12 @@ impl<'a> Analysis<'a> {
         for (&idx, fields) in &self.ir.overlay_fields {
             let Some(class) = ext.try_table(idx).and_then(|t| t.class_name.clone()) else { continue };
             for (name, fi) in fields {
-                if !fi.expr.is_external() || fi.extra_exprs.iter().any(|e| !e.is_external()) {
+                if fi.written_in_file() {
                     copies.push((idx, class.clone(), name.clone()));
                 }
             }
         }
         copies.sort();
-        let mut carrying = self.ir.carrying_fields();
-        // ... through a local whose fields resolve after the fixpoint (`local h =
-        // Make(); h.flag = true; Class.helper = h`).
-        for fa in &self.ir.field_assignments {
-            if let Expr::SymbolRef(sym, _) = *self.ir.expr(fa.actual_expr)
-                && let SymbolIdentifier::Name(name) = &self.ir.sym(sym).id
-                && self.deferred_field_assignments.iter().any(|d| d.root_name == *name)
-            {
-                carrying.insert(fa.field_name.clone());
-            }
-        }
         for (idx, class, field) in copies {
             // The addon namespace's fields are slots (`fill_slot_others`).
             if ext.addon_ns_class_own_fields.contains_key(&class) {
@@ -4369,18 +4475,39 @@ impl<'a> Analysis<'a> {
             if !crate::analysis::deferred::class_field_scan_typed(scanned, &ext, &class, &field) {
                 continue;
             }
+            // Written through a value of the class by a file that isn't one of its files.
+            if idx.is_external() && !ext.deferred_class_field_paths.get(&class).is_some_and(|ps| ps.contains(&path)) {
+                let primary = self.ir.get_overlay_field_mut(idx, &field).map(|fi| fi.expr);
+                if let Some(primary) = primary {
+                    self.read_workspace_class_field(idx, &field, primary);
+                }
+                continue;
+            }
+            // A class whose only Lua file this is, whose field it writes on more than one
+            // of its copies (a class declared more than once, each `---@class` a table of
+            // its own, and the class itself its methods' `self` is): each copy reads the
+            // writes on all of them (`Ir::class_peers`), as its harvest gives it.
+            if self.ir.class_copy_writes(class_idx, &field).len() > 1
+                && crate::analysis::deferred::single_lua_file(&ext, &class) == Some(path.as_path())
+                && let Some(fi) = (if idx.is_external() { self.ir.get_overlay_field_mut(idx, &field) } else { self.ir.tables[idx.val()].fields.get_mut(&field) })
+                    .filter(|fi| fi.annotation_text.is_none())
+            {
+                let key = fi.expr;
+                fi.annotation = None;
+                fi.annotation_type_raw = None;
+                self.ir.class_peers.insert(key, (class_idx, field.clone()));
+                self.ir.class_slots.insert(key, None);
+                continue;
+            }
             let Some(others) = crate::analysis::deferred::resolve_deferred_class_field_others(&ext, &class, &field, &path) else {
-                // A field only this file writes reads with the fields the file writes
-                // onto its value carried, as other files read it.
-                if carrying.contains(&field)
-                    && let Some(ty) = crate::analysis::deferred::resolve_deferred_class_field_carried(&ext, &class, &field, &path)
-                {
-                    // Not a field the file's own declaration has only through its writes
-                    // there (no annotation): one would make it a declared, required field.
+                // A field only this file writes reads with the fields any of the class's
+                // files writes onto its value carried, as other files read it — never a
+                // declared field for that (`Ir::carried_fields`).
+                if let Some(ty) = crate::analysis::deferred::resolve_deferred_class_field_carried(&ext, &class, &field, &path) {
                     let fi = if idx.is_external() { self.ir.get_overlay_field_mut(idx, &field) } else { self.ir.tables[idx.val()].fields.get_mut(&field) };
-                    if let Some(fi) = fi.filter(|fi| fi.annotation_text.is_none() && (idx.is_external() || fi.annotation.is_some())) {
+                    if let Some(fi) = fi.filter(|fi| fi.annotation_text.is_none()) {
                         fi.annotation = Some(ty);
-                        // What the class's other files write onto the value is carried too.
+                        self.ir.carried_fields.insert((idx, field.clone()));
                         self.ir.deferred_dep_files.extend(ext.deferred_class_field_paths.get(&class).into_iter().flatten().cloned());
                     }
                 }
@@ -4400,6 +4527,33 @@ impl<'a> Analysis<'a> {
             let others = others.map(|ty| self.ir.push_expr(Expr::Literal(ty)));
             self.ir.class_slots.insert(key, others);
         }
+    }
+
+    /// Have this file's copy of the workspace `@class` field `table.field` (the class's
+    /// own table), which it writes though it isn't one of the class's files — through
+    /// a value of the class the workspace scan can't see the class of, `primary` its
+    /// first write — read the type the class harvest gives the field, as the files
+    /// reading it do: none of them sees those writes. A write of another type
+    /// mismatches it (`field-type-mismatch`).
+    fn read_workspace_class_field(&mut self, table: TableIndex, field: &str, primary: ExprId) {
+        let ext = std::sync::Arc::clone(&self.ir.ext);
+        if crate::analysis::deferred::harvesting() || self.ir.class_slots.contains_key(&primary) {
+            return;
+        }
+        let Some(class) = ext.try_table(table).and_then(|t| t.class_name.clone()) else { return };
+        let Some(paths) = ext.deferred_class_field_paths.get(&class) else { return };
+        if self.ir.file_path.as_ref().is_none_or(|p| paths.contains(p)) || ext.addon_ns_class_own_fields.contains_key(&class) {
+            return;
+        }
+        let Some(scanned) = ext.table(table).fields.get(field) else { return };
+        if !crate::analysis::deferred::class_field_scan_typed(scanned, &ext, &class, field) {
+            return;
+        }
+        let Some(workspace) = crate::analysis::deferred::resolve_deferred_class_field_type(&ext, &class, field) else { return };
+        self.ir.deferred_dep_files.extend(paths.iter().cloned());
+        let Some(fi) = self.ir.get_overlay_field_mut(table, field).filter(|fi| fi.annotation_text.is_none() && fi.expr == primary) else { return };
+        fi.annotation = Some(workspace);
+        fi.annotation_type_raw = None;
     }
 
     /// [`Self::ensure_slot_others`] for every slot field this file writes, before the
@@ -4507,6 +4661,12 @@ impl<'a> Analysis<'a> {
     /// Resolve `Expr::FieldAccess`: dot/colon field lookup over a table type (with union/intersection/shape/parent-class handling).
     fn resolve_field_access(&mut self, table: ExprId, field: &str) -> Option<ValueType> {
         let table_type = self.resolve_expr(table)?;
+        self.resolve_field_of(table_type, field)
+    }
+
+    /// What a read of `field` through a receiver of type `table_type` resolves to
+    /// (`resolve_field_access`).
+    fn resolve_field_of(&mut self, table_type: ValueType, field: &str) -> Option<ValueType> {
         // Field access on any yields any
         if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
         // Unwrap opaque aliases — field access works on the inner type

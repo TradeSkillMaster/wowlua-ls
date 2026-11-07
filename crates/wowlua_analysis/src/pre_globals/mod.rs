@@ -697,13 +697,17 @@ fn call_field_method_table(
 /// Only an instance is annotated, as the instance or nil when the call may return
 /// nil, so the call's own writes, typed per file, match it and a file re-declaring
 /// the class still imports the field. An anonymous table stays unannotated, as the
-/// call's placeholder would be: those writes would mismatch it.
+/// call's placeholder would be: those writes would mismatch it. For a call the build
+/// can't type, in the workspace build (`workspace_build`: `build_on_stubs`, not the
+/// stub blob's), it is that placeholder (`TableInfo::placeholder`), which the class
+/// harvest types from the call's file (`deferred::class_field_scan_typed`).
 fn keep_call_field_methods(
     owner: TableIndex,
     field: &str,
     method_table: TableIndex,
     call_type: Option<&ValueType>,
     tables: &mut LayeredVec<TableInfo>,
+    workspace_build: bool,
 ) {
     let call_tables: Vec<TableIndex> = match call_type.map(ValueType::strip_nil) {
         Some(ValueType::Table(Some(idx))) => vec![idx],
@@ -741,6 +745,10 @@ fn keep_call_field_methods(
         t.class_name = class_name;
         t.parent_classes = parents;
     }
+    let untyped = workspace_build && call_type.is_none();
+    if untyped {
+        tables[method_table.ext_offset()].placeholder = true;
+    }
     if let Some(fi) = tables[owner.ext_offset()].fields.get_mut(field) {
         fi.annotation = instance.then(|| {
             let ty = ValueType::Table(Some(method_table));
@@ -753,7 +761,7 @@ fn keep_call_field_methods(
         fi.annotation_type_raw = None;
         // The build's type for it, no author's: the field's writes type it in their
         // files, as other files read the calls' (`Ir::ensure_call_field_overlay`).
-        fi.from_scan = instance;
+        fi.from_scan = instance || untyped;
     }
 }
 
@@ -3003,11 +3011,14 @@ impl BuildContext {
         let call_globals = shared::call_global_names(globals);
         for g in globals {
             let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
+            // A field of a global holding a workspace class is the class's.
+            let class = shared::foreign_class_table(&self.class_globals, &self.classes, &self.tables, &g.name)
+                .filter(|_| path.is_empty());
             // A global a call creates holds what files write on it on a table of its own.
-            if call_globals.contains(g.name.as_str()) && self.slot_tables().slot_table(&g.name, &[]).is_none() {
+            if class.is_none() && call_globals.contains(g.name.as_str()) && self.slot_tables().slot_table(&g.name, &[]).is_none() {
                 shared::call_instance_table(&mut self.call_instances, &mut self.tables, &g.name);
             }
-            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path).or_else(|| {
+            let Some(leaf_idx) = class.or_else(|| self.slot_tables().slot_table(&g.name, path)).or_else(|| {
                 let root = self.slot_tables().slot_table(&g.name, &[])?;
                 shared::materialize_slot_path(&mut self.tables, &mut self.exprs, &mut self.existence_fields, &mut self.sub_tables, root, &g.name, path)
             }) else { continue };
@@ -3344,7 +3355,8 @@ impl BuildContext {
                     } else {
                         self.resolve_write_annotation(&g.returns[0])
                     };
-                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables);
+                    let workspace_build = false;
+                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables, workspace_build);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
                 }

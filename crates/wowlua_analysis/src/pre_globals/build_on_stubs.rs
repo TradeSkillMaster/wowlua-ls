@@ -880,11 +880,14 @@ impl<'a> BuildOnStubsContext<'a> {
         for g in ws_globals {
             let ExternalGlobalKind::ForeignField(path, field_name) = &g.kind else { continue };
             if self.is_stub_global(&g.name) { continue; }
+            // A field of a global holding a workspace class is the class's.
+            let class = super::shared::foreign_class_table(&self.class_globals, &self.classes, &self.tables, &g.name)
+                .filter(|_| path.is_empty());
             // A global a call creates holds what files write on it on a table of its own.
-            if call_globals.contains(g.name.as_str()) && self.slot_tables().slot_table(&g.name, &[]).is_none() {
+            if class.is_none() && call_globals.contains(g.name.as_str()) && self.slot_tables().slot_table(&g.name, &[]).is_none() {
                 super::shared::call_instance_table(&mut self.call_instances, &mut self.tables, &g.name);
             }
-            let Some(leaf_idx) = self.slot_tables().slot_table(&g.name, path).or_else(|| {
+            let Some(leaf_idx) = class.or_else(|| self.slot_tables().slot_table(&g.name, path)).or_else(|| {
                 let root = self.slot_tables().slot_table(&g.name, &[])?;
                 super::shared::materialize_slot_path(&mut self.tables, &mut self.exprs, &mut self.existence_fields, &mut self.sub_tables, root, &g.name, path)
             }) else { continue };
@@ -1347,7 +1350,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     } else {
                         self.resolve_write_annotation(&g.returns[0])
                     };
-                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables);
+                    let workspace_build = true;
+                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables, workspace_build);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     if let Some(fi) = self.tables[local_idx].fields.get(field_name) {
                         self.defer_call_field(fi.expr, &ValueType::Table(Some(method_table)), g, field_name);

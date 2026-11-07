@@ -742,7 +742,9 @@ impl AnalysisResult {
                 follow(*table).map(|p| p.child(literal_key.as_deref().unwrap_or("[]")))
             }
             Expr::BinaryOp { op: Operator::Or, lhs, .. } => follow(*lhs),
-            Expr::BinaryOp { op: Operator::And, rhs, .. } => follow(*rhs),
+            // `a and b` holds `b` only where `a`'s type is known: an untyped `a`
+            // makes the value untyped whatever `b` is.
+            Expr::BinaryOp { op: Operator::And, lhs, rhs } if !crate::analysis::is_unknown_type(self.resolve_expr_type(*lhs).as_ref()) => follow(*rhs),
             Expr::BranchMerge(members) => {
                 let mut member_paths = members.iter().map(|&m| follow(m));
                 let first = member_paths.next()??;

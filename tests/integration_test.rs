@@ -2436,6 +2436,40 @@ fn slot_classes_agree_across_files() {
     assert!(report.contains(", 0 of which disagree"), "{report}");
 }
 
+// `@class` fields typed alike in the files writing and reading them where the
+// writes go through something other than the class's own declaration: the
+// return of a function another of the class's files defines, the class's global
+// in a function body, a call field with members written through it, members
+// written onto a field's value (also one a constructor entry only declares, one
+// a statement initializes to nil, and through two declarations of the class), a
+// value of the class another file gives, a class declared more than once in a
+// file, and a local table exported to the namespace. They need the stubs'
+// `CreateFrame`.
+#[test]
+fn class_writers_crossfile() {
+    for lua_file in [
+        "tests/class-writers/runner_reader.lua",
+        "tests/class-writers/popup_frame.lua",
+        "tests/class-writers/popup_reader.lua",
+        "tests/class-writers/panel.lua",
+        "tests/class-writers/panel_reader.lua",
+        "tests/class-writers/peer_panel.lua",
+        "tests/class-writers/peer_panel_reader.lua",
+        "tests/class-writers/mod_core.lua",
+        "tests/class-writers/mod_test.lua",
+        "tests/class-writers/mod_reader.lua",
+        "tests/class-writers/clock.lua",
+        "tests/class-writers/clock_reader.lua",
+        "tests/class-writers/viewer_reader.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/class-writers"),
+        });
+    }
+}
+
 // Fields other files write on frames a call creates by name, a mixin global an
 // author declares a class of another name that an XML template names as its
 // mixin, and a namespace class's field holding a frame with methods defined
@@ -3032,9 +3066,11 @@ fn carried_class_field_writer_depends_on_class_files() {
 
 #[test]
 fn ns_module_shape_no_union() {
+    // The language server's build: the fields the module's methods write through
+    // `self` are namespace slots, which only it harvests.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ns-module-shape/module.lua",
-        with_stubs: false,
+        with_stubs: true,
         scan_dir: Some("tests/ns-module-shape"),
     });
 }

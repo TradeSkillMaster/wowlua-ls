@@ -135,39 +135,6 @@ field the scan typed by the scan's type, as on main, but for its placeholders:
 discovery can't see the classes a file reads through resolved types, and harvesting
 them along edges it misses re-harvested DeadlyBossMods' core in a second context.
 
-Open, by cause:
-- Constructor entries (slice 3): `DBMMod.{categorySort, id, localization…, revision,
-  vb…, groupOptions, addon}`, `DBMPanel.frame`, `DBTBar.{frame, enlarged}`,
-  `ScannerData.{continentID, mapID}`, the `UtilityHub` class constructor's entries.
-  `DBMMod.addon` newly disagrees: its writer's parameter is now typed (backward
-  inference accepts callers passing tables of one type the body's uses take).
-- Writers the scan doesn't attribute to the class: `DBMTest.timeWarper` (a method on
-  `local test = DBM.Test`), `MacroToolkit.usingiconlib` read from a library file.
-- Generic call results read cross-file coarse (the rule): `MacroToolkit.db.*`,
-  `UtilityHub.Database.global.*` (`AceDB:New(...)` profile fields).
-- A harvest analysis typing a write less precisely than the file's own analysis (reads
-  it cuts, or a class field it reads by the scan's type): `MacroToolkit.MTPF`,
-  `TalentViewerTWW.treeId`.
-- Displays: a write of a constructor showing the constructor (`MacroToolkit.TextureNames`,
-  newly: the other file's `nil` makes the readers' `string[]?`),
-  `(string[])[]` against `string[][]` (`MacroToolkit.scripts`), a saved variable's
-  table lifted as the global's (`MythicPlusPull.DB`, newly carrying the fields
-  written onto it).
-- Deliberate: a subclass writing an inherited field reads its own writes
-  (`BaseInput._escValue`); an XML `parentArray` stays `any` in the file appending to
-  it, whose appends would otherwise check against the template's children
-  (`TopButtons`); a declared `@field` read through a union with a local record
-  (`ScrollTable.ColInfoBase.justifyH`).
-- A class's only Lua file resolves the members it writes onto a field's value without
-  showing them on the field's type, while readers see them carried (`ListRow._frame`, `ScrollTable._header`: `FrameExtended` against
-  `FrameExtended & {…}`, as on main). Reading them carried there harvested the file
-  itself, a second analysis on every edit; the per-file engine has to carry them on the
-  value.
-- A file that only writes onto a field's value (`self.header.extra = 5`, no read) shows
-  the scan's type there: nothing in it reads the field through the harvest.
-- Not yet investigated: `DBMMod.{combatInfo.pull, lastKillTime, lastWipeTime}`,
-  `Glider.SpeedDisplay.Speed`, `TalentViewer_TalentButtonMixinTWW.LevelingOrder`.
-
 `check`: DeadlyBossMods −15 (`undefined-field` on `DBM.Revision`/`ReleaseRevision`,
 `DBMGUI.Enums`), UtilityHub −1, libresinfo-2.0 −22, Auctionator −11/+3 (`EditBox:GetNumber`
 and `ScrollToOffset` passed extra arguments), TestProject 4 messages changed (an existing
@@ -177,6 +144,73 @@ the mixins' own files now see their templates' frames, so existing checks reach 
 counted as true positives), secret values, extra arguments, and ~20 `undefined-field` /
 handler mismatches from `GetParent()`'s bare `Frame` and `SetScript` handler typing that
 other files reading those frames already report.
+
+## Slice 2 status (2026-11-07, second round)
+
+The writes round 1 left out reach the harvest, and every file writing a field reads it
+as readers do (ARCHITECTURE.md, "`@class` field slots"):
+- A class's harvest reads, from one of its files, what another of its files returns
+  (`runner.Warper:New()`): a class unit depends on the file units of its own files,
+  harvested before it, rather than cutting them (`ComponentFrame::reads_before`).
+- A function body's write through a class's global (`MyAddon.flag = v`) gives the class
+  the field (`shared::foreign_class_table`, both builds).
+- A call field with members written through it whose call the build can't type is the
+  scan's placeholder, harvested like any scan-typed field (`keep_call_field_methods`).
+- A file writing members onto a class field's value (an optional field's too) reads the
+  field with them carried, from its own writes after the fixpoint
+  (`Analysis::carry_own_sub_field_writes`), never a harvest of itself; a field's one
+  writer reads the members other files carry (`ClassField::carried`).
+- A value of a class another file gives (a harvested return, a list element) holds the
+  fields the file declaring the class writes as the file's own tables do
+  (`Ir::class_stand_ins`); a file writing a field through one without being one of the
+  class's files reads the workspace's type. A class one file declares several times reads
+  each field off all of the file's copies of it, in both engines, a constructor's `nil`
+  entry declaring the field (`Ir::class_peers`).
+- A `self` write in a method of a local table the file exports to a namespace field
+  is that field's slot (discovery only: a `ForeignField` at the export).
+- `c and x or y` gives `x` where the `and` holds (`Ir::typed_operands`), and
+  `crossfile-types` keys `a and b` by `b` only when `a` is typed.
+
+`crossfile-types`: 14 findings agree (`DBMTest.timeWarper`, `DBMMod.{lastKillTime,
+lastWipeTime, combatInfo.pull}`, `MacroToolkit.{MTPF, usingiconlib}`, `ListRow._frame`,
+`ScrollTable._header`, `TalentViewerTWW.db`, `<ns>.TreeViewer.currentTreeID`, and four
+`and`-guarded reads the tool keyed by their right operand), none newly disagree.
+`check`: −6 false positives (`undefined-field` on keys of their own constructors in
+MythicPlusPull and Numdelicious_QoL_Tweaks, `cannot-call` on a callback a guard checks in
+DeadlyBossMods), +4 true positives (`type-mismatch` in DeadlyBossMods: a timer field read
+off all of its class's copies is `number | string | nil`, a constructor keeping a string
+argument unconverted, and is passed to `number` parameters). `dump-types`: no hover typed
+on main is untyped, 233 gain a type. Analyses (main → now): TradeSkillMaster 451 → 451
+(820 files), DeadlyBossMods 270 → 268, Auctionator 254–256 on both (it varies run to
+run), Baganator 206 → 206, UtilityHub 31 → 32; `check` times unchanged.
+
+Open, by cause:
+- Constructor entries (slice 3): `DBMMod.{categorySort, id, localization…, revision,
+  vb…, addon}`, `DBMPanel.frame`, `DBTBar.{frame, enlarged}`, `ScannerData.{continentID,
+  mapID}`, the `UtilityHub` class constructor's entries.
+- Generic call results read cross-file coarse (the rule): `MacroToolkit.db.*`,
+  `UtilityHub.Database.global.*` (`AceDB:New(...)` profile fields).
+- The scan's guess for a call it can't type (slice 5 retires it): `TalentViewerTWW.treeId`
+  is written only a call into a library the workspace lacks, so its file reads `any`
+  and readers the scan's `table`. The writer can't take the guess (passing it to a typed
+  parameter is a false positive there, as for `MacroToolkit.categoryID`), nor readers
+  drop it (7 typed hovers).
+- `UtilityHub.tempSelectedPreset`: two files the scan doesn't attribute to the class
+  write it through the class's global, the only typed write a coarse generic result
+  (`CopyTable(x)`); harvested, its bare `table` absorbs a preset in the other writer's
+  local merge (14 hovers typed on main).
+- `Glider.SpeedDisplay.Speed`: a member the class's only Lua file writes onto a field's
+  value and never reads: the build puts the write on the call's object, while the field
+  resolves through the scan's table, so the write shows the scan's `Cooldown`.
+- Function-valued mixin fields (`AuctionatorDataProviderMixin.{onPreserveScroll,
+  onSearchStarted}`): signatures, slice 4.
+- Displays: a write of a constructor showing the constructor (`MacroToolkit.TextureNames`),
+  `(string[])[]` against `string[][]` (`MacroToolkit.scripts`), a saved variable's table
+  lifted as the global's (`MythicPlusPull.DB`).
+- Deliberate: a subclass writing an inherited field reads its own writes
+  (`BaseInput._escValue`); an XML `parentArray` stays `any` in the file appending to
+  it (`TopButtons`); a declared `@field` read through a union with a local record
+  (`ScrollTable.ColInfoBase.justifyH`).
 
 ## Acceptance for every slice
 

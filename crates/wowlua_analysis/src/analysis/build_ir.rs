@@ -4677,6 +4677,7 @@ impl<'a> Analysis<'a> {
                     && !ext.addon_ns_class_own_fields.contains_key(name)
                 {
                     self.ir.class_tables.insert(local, ext_idx);
+                    self.ir.class_stand_ins.entry(ext_idx).or_default().push(local);
                 }
             }
         }

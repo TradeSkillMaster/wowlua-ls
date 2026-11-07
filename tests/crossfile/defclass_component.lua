@@ -69,7 +69,7 @@ local localHelper = MyComp.MakeInfo()
 localHelper.flag = true
 -- ^ diag: inject-field
 MyComp._helper = localHelper
---     ^ hover: (field) _helper: UnrelatedInfo & { flag: true } {
+--     ^ hover: (field) _helper: UnrelatedInfo & { flag: boolean } {
 
 -- Dotted field assignment of a defclass call must not overwrite the class's var_to_result mapping.
 -- Regression: `MyComp.COMP_STATUS = EnumFactory.New(...)` extracted lhs_var_name="MyComp",

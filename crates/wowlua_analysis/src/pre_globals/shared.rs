@@ -1157,6 +1157,20 @@ pub fn materialize_slot_path(
     Some(current)
 }
 
+/// The workspace class a function body's write of a field through the global
+/// `name` holding it (`ForeignField`, `MyAddon.flag = true`) gives the field to,
+/// as a method's `self` write would: the class's own table, which the class
+/// harvest types from the write's file.
+pub fn foreign_class_table(
+    class_globals: &HashSet<String>,
+    classes: &HashMap<String, TableIndex>,
+    tables: &LayeredVec<TableInfo>,
+    name: &str,
+) -> Option<TableIndex> {
+    let idx = *classes.get(name).filter(|_| class_globals.contains(name))?;
+    tables[idx.ext_offset()].class_name.is_some().then_some(idx)
+}
+
 /// The workspace globals a call creates or is assigned (`CreateFrame("Frame",
 /// "MyFrame")`, `MyFrame = CreateFrame(...)`) that no write makes a table: the
 /// fields other files write on them live on a table of their own

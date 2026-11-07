@@ -1582,6 +1582,12 @@ impl FieldInfo {
     pub fn scan_inferred(&self) -> bool {
         self.from_scan && self.annotation_text.is_none()
     }
+
+    /// The analyzed file writes the field: one of its writes is the file's own
+    /// expression, not the workspace's (external).
+    pub fn written_in_file(&self) -> bool {
+        !self.expr.is_external() || self.extra_exprs.iter().any(|e| !e.is_external())
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

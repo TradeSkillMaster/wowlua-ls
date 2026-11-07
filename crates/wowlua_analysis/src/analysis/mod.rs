@@ -861,6 +861,18 @@ pub struct Ir {
     /// file's table lacks that the class's own table holds (an XML template's
     /// `parentKey` child, another file's write) is read off it.
     pub class_tables: HashMap<TableIndex, TableIndex>,
+    /// The other way for this file's declarations of workspace classes: the
+    /// workspace class's table to the file's own, in order (each `---@class C` on a
+    /// local is a table of its own). A value of the class from another file (a
+    /// harvested return, a list's element) holds the fields this file writes as its
+    /// own do: a write through it lands on the file's table writing the field
+    /// (`Ir::own_class_field`), which the file's harvest reads it by, as readers of
+    /// the class do.
+    pub class_stand_ins: HashMap<TableIndex, Vec<TableIndex>>,
+    /// Set once the fixpoint and the passes after it have placed every write: from
+    /// then on (hover, diagnostics, `crossfile-types`) a read through a workspace class
+    /// of a field this file writes on its own table reads it there (`stand_in_field`).
+    pub stand_ins_settled: bool,
     /// The assignment targets whose value an author annotation types (`---@type`,
     /// `---@class`), by the same offset: the slot harvest leaves their slot the
     /// annotation's.
@@ -1038,6 +1050,17 @@ pub struct Ir {
     /// The fields (likewise) the call-field or table-field harvest typed, which
     /// the slot harvest leaves to them.
     pub harvest_refined_fields: HashSet<(TableIndex, ExprId)>,
+    /// The fields (by their table) given members written onto their value: the ones
+    /// this file writes (`Analysis::carry_own_sub_field_writes`), or, for a field it
+    /// alone writes, the ones any of the class's files writes, through the harvest's
+    /// carried type (`Analysis::fill_class_others`). A type inferred from the writes,
+    /// never a constructor's contract (`missing-fields`).
+    pub carried_fields: HashSet<(TableIndex, String)>,
+    /// Of the `class_slots`, those (by primary write) of a workspace class whose only
+    /// Lua file this is, which writes the field on more than one of its copies of the
+    /// class (`Self::class_copies`, and its overlay of the class): the class and field,
+    /// whose writes on all of them the field reads.
+    pub class_peers: HashMap<ExprId, (TableIndex, String)>,
     /// For each slot field this file writes, by its workspace value: an expr typed
     /// by what the other files writing it write there, the file's own writes aside
     /// (`Ir::slot_field_other_writes`), or `None` when that is unknown.
@@ -2474,11 +2497,28 @@ impl Ir {
         // than `any`, and the others' — unless all they say is `nil`, which the
         // harvest takes for nothing either (`deferred::gate_harvested_field`).
         if let Some(&others) = self.class_slots.get(&primary) {
-            let own: Vec<ExprId> = std::iter::once(primary).chain(extras.iter().copied())
+            let mut writes: Vec<ExprId> = std::iter::once(primary).chain(extras.iter().copied())
                 .filter(|e| !e.is_external())
-                .flat_map(|e| self.typed_operands(e, &mut resolve))
                 .collect();
+            for e in self.class_peer_writes(primary) {
+                if !writes.contains(&e) {
+                    writes.push(e);
+                }
+            }
+            let mut own: Vec<ExprId> = writes.iter().flat_map(|&e| self.typed_operands(e, &mut resolve)).collect();
+            // Past a write saying no more than `any`, tables saying no more than "a
+            // table" say nothing either (`AnyFieldWrites`; the harvest drops them too).
+            if writes.iter().any(|&e| resolve(e).is_none_or(|ty| ty.contains_any()))
+                && own.iter().all(|&e| resolve(e).is_some_and(|ty| self.is_shapeless_table_type(&ty)))
+            {
+                own.clear();
+            }
             let all = own.into_iter().chain(others).collect::<Vec<_>>();
+            // Nothing saying more than `any` but resets: the workspace's value, as
+            // other files read it.
+            if primary.is_external() && all.iter().all(|&e| matches!(self.expr(e), Expr::Literal(ValueType::Nil))) {
+                return (vec![primary], false);
+            }
             if !all.iter().all(|&e| matches!(resolve(e), Some(ValueType::Nil))) {
                 return (all, true);
             }
@@ -2604,6 +2644,14 @@ impl Ir {
         match *self.expr(expr) {
             Expr::Grouped(inner) => self.typed_operands(inner, resolve),
             Expr::BinaryOp { op: crate::ast::Operator::Or, lhs, rhs } => {
+                // `c and x or y`: where the `and` holds, the `or` gives `x`.
+                let mut lhs = lhs;
+                while let Expr::Grouped(inner) = *self.expr(lhs) {
+                    lhs = inner;
+                }
+                if let Expr::BinaryOp { op: crate::ast::Operator::And, rhs: held, .. } = *self.expr(lhs) {
+                    lhs = held;
+                }
                 let mut out = self.typed_operands(lhs, resolve);
                 out.extend(self.typed_operands(rhs, resolve));
                 out
@@ -2982,6 +3030,96 @@ impl Ir {
             })
     }
 
+    /// The field `field_name` this file writes on its own table of the workspace
+    /// class `table_idx` (`Self::class_stand_ins`), which a read through the class
+    /// reads once the writes are settled (`Self::stand_ins_settled`).
+    pub fn stand_in_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
+        let local = self.own_class_field(table_idx, field_name)?;
+        self.tables[local.val()].fields.get(field_name)
+    }
+
+    /// This file's tables of the workspace class `class`: its declarations of it
+    /// (`Self::class_stand_ins`) and the constructors merged into them
+    /// (`Self::ctor_merged_class`).
+    pub fn class_copies(&self, class: TableIndex) -> impl Iterator<Item = TableIndex> + '_ {
+        let tables = self.class_stand_ins.get(&class).map(Vec::as_slice).unwrap_or_default();
+        let mut ctors: Vec<TableIndex> = self.ctor_merged_class.iter()
+            .filter(|(_, merged)| tables.contains(merged))
+            .map(|(&ctor, _)| ctor)
+            .collect();
+        ctors.sort_unstable();
+        tables.iter().copied().chain(ctors)
+    }
+
+    /// The writes of the field `field_name` on each of this file's copies of the
+    /// workspace class `class` (`Self::class_copies`, then its overlay of the class),
+    /// the copies writing none left out. A constructor's `nil` entry only declares the
+    /// field, as to the harvest (`accumulate_class_fields_in_file`).
+    pub fn class_copy_writes(&self, class: TableIndex, field_name: &str) -> Vec<Vec<ExprId>> {
+        let declared_nil = |t: TableIndex, e: ExprId| {
+            self.ctor_merged_class.contains_key(&t) && matches!(self.expr(e), Expr::Literal(ValueType::Nil))
+        };
+        let tables = self.class_copies(class).filter_map(|t| Some((t, self.tables[t.val()].fields.get(field_name)?)));
+        let overlay = self.overlay_fields.get(&class).and_then(|m| m.get(field_name)).map(|fi| (class, fi));
+        tables.chain(overlay)
+            .map(|(t, fi)| std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
+                .filter(|&e| !e.is_external() && !declared_nil(t, e))
+                .collect::<Vec<_>>())
+            .filter(|writes| !writes.is_empty())
+            .collect()
+    }
+
+    /// The writes on all of this file's copies of a class field whose primary write
+    /// is `primary`, for one read off all of them (`Self::class_peers`).
+    pub fn class_peer_writes(&self, primary: ExprId) -> Vec<ExprId> {
+        let Some((class, field)) = self.class_peers.get(&primary) else { return Vec::new() };
+        self.class_copy_writes(*class, field).into_iter().flatten().collect()
+    }
+
+    /// The first of this file's tables of the workspace class `class`
+    /// (`Self::class_stand_ins`) writing its field `field_name`, when that is a
+    /// field the scan typed (no method, no author's) the file doesn't write through
+    /// the class itself.
+    pub fn own_class_field(&self, class: TableIndex, field_name: &str) -> Option<TableIndex> {
+        self.writing_stand_in(self.stand_ins_holding(class, field_name)?, field_name)
+    }
+
+    /// The table of this file a write of `field_name` through the workspace class
+    /// `class` lands on (`Self::class_stand_ins`): the first of the file's tables of
+    /// the class writing the field, else its first declaration of the class. `None`
+    /// for a field those tables don't hold for the class (`Self::stands_in_for`).
+    pub fn stand_in_target(&self, class: TableIndex, field_name: &str) -> Option<TableIndex> {
+        let tables = self.stand_ins_holding(class, field_name)?;
+        self.writing_stand_in(tables, field_name).or_else(|| tables.first().copied())
+    }
+
+    /// This file's tables of the workspace class `class`, when they hold its field
+    /// `field_name` for it (`Self::stands_in_for`).
+    fn stand_ins_holding(&self, class: TableIndex, field_name: &str) -> Option<&[TableIndex]> {
+        let tables = self.class_stand_ins.get(&class)?;
+        self.stands_in_for(class, field_name).then_some(tables.as_slice())
+    }
+
+    /// The first of `tables` writing its field `field_name`.
+    fn writing_stand_in(&self, tables: &[TableIndex], field_name: &str) -> Option<TableIndex> {
+        tables.iter().copied().find(|&local| self.tables[local.val()].fields.get(field_name).is_some_and(FieldInfo::written_in_file))
+    }
+
+    /// Whether this file's tables of the workspace class `class` hold its field
+    /// `field_name` for it (`Self::class_stand_ins`): one the scan typed, or none at
+    /// all, that the file doesn't write through the class itself.
+    pub fn stands_in_for(&self, class: TableIndex, field_name: &str) -> bool {
+        let writes_through_class = self.overlay_fields.get(&class).and_then(|m| m.get(field_name))
+            .is_some_and(FieldInfo::written_in_file);
+        if writes_through_class {
+            return false;
+        }
+        let ext = &self.ext;
+        let Some(class_name) = ext.try_table(class).and_then(|t| t.class_name.as_deref()) else { return false };
+        ext.table(class).fields.get(field_name)
+            .is_none_or(|fi| crate::analysis::deferred::class_field_scan_typed(fi, ext, class_name, field_name))
+    }
+
     /// Whether the external field `fi` is the workspace scan's unannotated table for a
     /// write it couldn't type, which a declaration of its class doesn't take
     /// (`prescan`'s import, Filter 1) until a harvest types it.
@@ -3015,6 +3153,11 @@ impl Ir {
 
     /// Direct field lookup: overlay → own fields → parent_classes. No metatable fallback.
     fn get_field_direct(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
+        if self.stand_ins_settled
+            && let Some(fi) = self.stand_in_field(table_idx, field_name)
+        {
+            return Some(fi);
+        }
         if table_idx.is_external()
             && let Some(fields) = self.overlay_fields.get(&table_idx)
                 && let Some(fi) = fields.get(field_name) {
@@ -4522,6 +4665,8 @@ impl<'a> Analysis<'a> {
                 write_root_versions: HashMap::default(),
                 exported_tables: HashMap::default(),
                 class_tables: HashMap::default(),
+                class_stand_ins: HashMap::default(),
+                stand_ins_settled: false,
                 annotated_targets: HashSet::default(),
                 field_write_targets: Vec::new(),
                 call_objects: HashMap::default(),
@@ -4567,6 +4712,8 @@ impl<'a> Analysis<'a> {
                 table_fields_checked: HashSet::default(),
                 slot_fields_checked: HashSet::default(),
                 harvest_refined_fields: HashSet::default(),
+                carried_fields: HashSet::default(),
+                class_peers: HashMap::default(),
                 slot_others: HashMap::default(),
                 class_slots: HashMap::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),

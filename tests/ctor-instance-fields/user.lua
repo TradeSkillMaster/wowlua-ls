@@ -80,7 +80,7 @@ local found = ns.FindHolder(1)
 --    ^ hover: (local) found: Holder?
 if found then
     local id = found.id
-    --    ^ hover: (local) id: number?
+    --    ^ hover: (local) id: number
 end
 
 local created = ns.Holder:Create().created
@@ -108,7 +108,7 @@ end
 ---@param o Outer
 local function ReadInner(o)
     local inner = o.inner
-    --    ^ hover: (local) inner: Inner & { a: number, w: true, x: number } {
+    --    ^ hover: (local) inner: Inner & { a: number, w: boolean, x: number } {
 end
 
 local num = ns.num

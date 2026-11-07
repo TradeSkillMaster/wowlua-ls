@@ -22,10 +22,12 @@ function Manager:Start() end
 
 function Manager:Stop() end
 
+-- The fields its methods write through `self` are the namespace field's slots,
+-- read as other files read them: a literal widened, a field only cleared unknown.
 local mgr = ns.Manager
---    ^ hover: (local) mgr: {\n  Init: fun(self: table),\n  Start: fun(self: table),\n  Stop: fun(self: table),\n  active: false,\n  frame: nil\n}
+--    ^ hover: (local) mgr: {\n  Init: fun(self: table),\n  Start: fun(self: table),\n  Stop: fun(self: table),\n  active: boolean,\n  frame: any\n}
 local active = ns.Manager.active
---    ^ hover: (local) active: false
+--    ^ hover: (local) active: boolean
 
 -- A field its methods write before and after the export holds every write.
 local Store = {}

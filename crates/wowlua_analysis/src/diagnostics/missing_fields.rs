@@ -92,6 +92,8 @@ fn check_missing_fields(
     let mut missing: Vec<&str> = Vec::new();
     for (field_name, fi) in &class_table.fields {
         if !is_required_contract_field(analysis, class_name, field_name, fi) { continue; }
+        // A type the file's writes onto the value carry, not a declaration.
+        if analysis.ir.carried_fields.contains(&(class_idx, field_name.clone())) { continue; }
         if !rhs_table.fields.contains_key(field_name.as_str()) {
             missing.push(field_name);
         }
