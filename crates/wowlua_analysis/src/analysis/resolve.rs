@@ -493,6 +493,8 @@ impl<'a> Analysis<'a> {
         }
         self.warm_unresolved_field_reads();
         self.warm_slot_write_targets();
+        self.warm_class_ctor_entries();
+        self.ir.refresh_class_field_copies();
         self.finalize_enum_kinds();
         self.populate_deferred_overlay();
         self.ir.stand_ins_settled = true;
@@ -527,13 +529,68 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Read the fields this file's class constructors write (`---@class C` on a
+    /// constructor, a `setmetatable` instance whose metatable names `C`) through the
+    /// class (`fetch_cross_file_field`), so this file's copies of the class show the
+    /// type every file reads them as (`Ir::refresh_class_field_copies`), the
+    /// constructor's keys included. Not for a class whose only Lua file this is,
+    /// which would harvest itself.
+    fn warm_class_ctor_entries(&mut self) {
+        let ext = std::sync::Arc::clone(&self.ir.ext);
+        if ext.deferred_class_field_paths.is_empty() || crate::analysis::deferred::harvesting() {
+            return;
+        }
+        let Some(path) = self.ir.file_path.clone() else { return };
+        let mut ctors: Vec<(TableIndex, TableIndex, String)> = Vec::new();
+        for (&ctor, &decl) in &self.ir.ctor_merged_class {
+            if self.ir.class_tables.contains_key(&ctor) {
+                continue;
+            }
+            if let Some(class) = self.ir.table(decl).class_name.clone() {
+                ctors.push((ctor, decl, class));
+            }
+        }
+        for (_, expr) in self.ir.local_exprs() {
+            let Expr::TableConstructor(ctor) = *expr else { continue };
+            if self.ir.class_tables.contains_key(&ctor) || self.ir.ctor_merged_class.contains_key(&ctor) {
+                continue;
+            }
+            let Some(class) = self.ir.table(ctor).class_name.clone() else { continue };
+            if let Some(&class_idx) = ext.classes.get(&class) {
+                ctors.push((ctor, class_idx, class));
+            }
+        }
+        ctors.sort();
+        ctors.dedup();
+        let mut reads: Vec<(TableIndex, String)> = Vec::new();
+        for (ctor, view, class) in ctors {
+            if !ext.deferred_class_field_paths.contains_key(&class)
+                || ext.addon_ns_class_own_fields.contains_key(&class)
+                || crate::analysis::deferred::single_lua_file(&ext, &class) == Some(path.as_path())
+            {
+                continue;
+            }
+            for (name, fi) in &self.ir.table(ctor).fields {
+                if !crate::annotations::is_index_entry(name) && !matches!(self.ir.expr(fi.expr), Expr::FunctionDef(_)) {
+                    reads.push((view, name.clone()));
+                }
+            }
+        }
+        reads.sort();
+        for (view, name) in reads {
+            self.fetch_cross_file_field(view, &name);
+        }
+    }
+
     /// Give the fields this file writes on the addon namespace and global tables
     /// the type the files writing them give them (`Ir::ensure_slot_overlay`) where
     /// the field is read at the write — through a table the write may not land on
-    /// (the namespace `@class`'s copy of one) — as at its reads. Only through
-    /// receivers known without resolving them, as `warm_unresolved_field_reads`.
+    /// (the namespace `@class`'s copy of one) — as at its reads, and the fields the
+    /// write reads its receiver through (`App.Flags` in `App.Flags.ready = v`) any
+    /// cross-file type (`fetch_cross_file_field`). Only through receivers known
+    /// without resolving them, as `warm_unresolved_field_reads`.
     fn warm_slot_write_targets(&mut self) {
-        if self.ir.ext.deferred_slot_fields.is_empty() {
+        if self.ir.ext.deferred_slot_fields.is_empty() && self.ir.ext.deferred_class_field_paths.is_empty() {
             return;
         }
         let targets = std::mem::take(&mut self.ir.field_write_targets);
@@ -547,7 +604,7 @@ impl<'a> Analysis<'a> {
                 // The fields the write reads its receiver through are read there too.
                 let tables = self.field_receiver_tables(&receiver.into_strip_opaque());
                 for &idx in &tables {
-                    self.ir.ensure_slot_overlay(idx, name);
+                    self.fetch_cross_file_field(idx, name);
                 }
                 let types: Vec<ValueType> = tables.into_iter()
                     .filter_map(|idx| self.ir.get_field(idx, name)?.annotation.clone())
@@ -1150,11 +1207,7 @@ impl<'a> Analysis<'a> {
         }
         for &(table, key, value) in &self.ir.deferred_element_writes {
             let Some(target) = self.ir.field_read_target(table) else { continue };
-            let appends = matches!(self.expr(key), Expr::BinaryOp { op: Operator::Add, lhs, rhs }
-                if matches!(self.expr(*lhs), Expr::UnaryOp { op: Operator::ArrayLength, operand }
-                    if self.ir.field_read_target(*operand).as_ref() == Some(&target))
-                && self.ir.number_literals.get(rhs).and_then(|n| n.parse::<f64>().ok()) == Some(1.0));
-            if appends {
+            if self.ir.appends_to(key, &target) {
                 listed.insert(target);
             } else if !matches!(self.expr(value), Expr::Literal(ValueType::Nil)) {
                 keyed.insert(target);
@@ -1192,7 +1245,7 @@ impl<'a> Analysis<'a> {
     fn collect_deferred_element_writes(&mut self) -> HashSet<TableIndex> {
         let mut appends = Vec::new();
         let mut field_maps: HashSet<TableIndex> = HashSet::default();
-        for (table, key, value) in std::mem::take(&mut self.ir.deferred_element_writes) {
+        for (table, key, value) in self.ir.deferred_element_writes.clone() {
             // Clearing a slot writes no element.
             if matches!(self.expr(value), Expr::Literal(ValueType::Nil)) {
                 continue;
@@ -4526,6 +4579,11 @@ impl<'a> Analysis<'a> {
             let key = fi.expr;
             let others = others.map(|ty| self.ir.push_expr(Expr::Literal(ty)));
             self.ir.class_slots.insert(key, others);
+            // Written on more than one of the file's copies of the class, each reads the
+            // writes on all of them, as the harvest takes the file's writes.
+            if self.ir.class_copy_writes(class_idx, &field).len() > 1 {
+                self.ir.class_peers.insert(key, (class_idx, field.clone()));
+            }
         }
     }
 
@@ -4643,7 +4701,9 @@ impl<'a> Analysis<'a> {
         let mut fetched = fetch(&self.ir);
         // A workspace class field the scan typed reads as the harvest of its writes
         // (`Ir::ensure_field_overlay`).
-        if fetched.as_ref().is_some_and(|f| f.placeholder || f.scan_inferred) && self.ir.ensure_field_overlay(idx, field) {
+        if fetched.as_ref().is_some_and(|f| f.placeholder || f.scan_inferred || (f.annotation.is_some() && !f.has_author_text && self.ir.is_inferred_ctor_entry(idx, field)))
+            && self.ir.ensure_field_overlay(idx, field)
+        {
             fetched = fetch(&self.ir);
         }
         if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {

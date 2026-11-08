@@ -23,6 +23,18 @@ local function testTypeGuardNumber(x)
 end
 _consume(testTypeGuardNumber)
 
+-- ── A parameter nothing types reads as the guarded type ────────────────
+
+local function testUntypedParamGuard(lit)
+    if type(lit) == "string" then
+        return ("%q"):format(lit)
+        --                   ^ hover: (param) lit: string
+    end
+    return tostring(lit)
+end
+testUntypedParamGuard(1)
+testUntypedParamGuard("a")
+
 -- ── Assert with type guard ─────────────────────────────────────────────
 
 ---@param x table|nil

@@ -212,6 +212,48 @@ Open, by cause:
   it (`TopButtons`); a declared `@field` read through a union with a local record
   (`ScrollTable.ColInfoBase.justifyH`).
 
+## Slice 3 status (2026-11-07)
+
+Constructor entries are writes of their file (ARCHITECTURE.md, "Constructor entries"):
+a namespace's or global's constructor entries are slots, a nested constructor's under
+its key; a `@class`'s own constructors' entries (a declaration's, a `setmetatable`
+instance's) are class-field writes, the placeholder rule gone; a nested `---@class` on a
+constructor-valued entry is that class's constructor; a class field files write
+elements into under run-time keys holds them beside its record, which the files writing
+the field read without them. `crossfile-types`: every constructor-entry path listed for
+this slice agrees but `DBMMod.addon` (below); disagreeing paths (main → now) Auctionator
+142 → 137, Baganator 83 → 82, Coolinator 30 → 29, DeadlyBossMods 436 → 425, NPCScan
+81 → 79, Platynator 39 → 38, TestProject 88 → 87, UtilityHub 81 → 46, wow-ui-source
+42 → 6, TradeSkillMaster 1412 on both, none rising. `check`: +6 true positives in
+DeadlyBossMods (option ids a backward-inferred `string | number | nil` passed to
+`number` parameters, `string | true` to `string?`, `number | string` to a `Number`
+constraint, now that constructor entries carry the parameters they hold), and a
+Syndicator message typed further (`bagID: ?` → `number`). `dump-types`: 11 hovers go
+`nil` → `any` / `any?` on fields with other writers (a module's
+`self.Options.SoundOption`, `DBTBar.callback` set to a handler), the accepted shift; no
+other hover typed on main is untyped, 2185 gain a type. Analyses (main → now):
+TradeSkillMaster 451 → 449 (692 files), DeadlyBossMods 268 → 233 (191), Auctionator
+256 → 258 (343), Baganator 206 → 177 (110), TalentTreeTweaks 11 → 39 (36), NumyTest
+49 → 75 (115), ResearchViewer 4 → 5 (3), every workspace within twice its files;
+`check` times unchanged (TradeSkillMaster 2.0–2.3 s, DeadlyBossMods 2.3–2.9 s).
+
+Component handling: a constructor entry holding a data file's table made
+ResearchViewer's two code files, a cycle, read a unit outside it, so its first round
+could no longer take their discovery analyses (7 analyses for 3 files). A cycle's first
+round now takes them anyway, and the second analyzes those files again whatever changed
+(`first_analysis_or_stale`): one round of analyses fewer wherever a cycle reads outside
+itself (DeadlyBossMods 268 → 233), the same rounds of real analyses.
+
+Open, by cause:
+- `DBMMod.addon`, a deliberate cycle: `DBMMod`'s harvest reads `DBM.AddOns` through
+  `DBM-Core.lua`, which declares both classes, so the entry's parameter stays the
+  scan's in the files reading it.
+- `tests/constructor-twin`'s `G_REPLACED.A` (fixture only): the writer shows the
+  build's call-instance annotation `Other`, readers `Other | Widget`.
+- A parameter whose callers newly disagree (a field the harvest now types passed
+  beside other values) loses its backward-inferred type; hover shows what a `type()`
+  guard proves inside the guard, the fixpoint reads it unknown there.
+
 ## Acceptance for every slice
 
 - `crossfile-types` over TradeSkillMaster and `/home/brian/wowlua-ls/.context/addons`

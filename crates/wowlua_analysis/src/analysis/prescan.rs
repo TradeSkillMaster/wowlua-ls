@@ -2678,10 +2678,34 @@ impl<'a> Analysis<'a> {
         if matches!(arg_type, ValueType::Intersection(_)) && shapes.iter().any(|s| s.is_map()) {
             shapes.retain(|s| s.is_map());
         }
-        shapes.iter()
-            .filter_map(|s| s.container_types())
-            .map(|(k, v)| (k, v.clone()))
-            .collect()
+        // A container holding named fields as well iterates those too.
+        let mut out: Vec<(ValueType, ValueType)> = shapes.iter()
+            .filter_map(|s| {
+                let (k, v) = s.container_types()?;
+                if s.fields.is_empty() {
+                    return Some((k, v.clone()));
+                }
+                let values = s.fields.iter().map(|(_, ty)| ty.clone()).chain(std::iter::once(v.clone())).collect();
+                Some((ValueType::make_union(vec![k, ValueType::String(None)]), ValueType::make_union(values)))
+            })
+            .collect();
+        // A record, as a struct-like table: string keys, its fields' values.
+        if out.is_empty() {
+            fn records<'a>(ty: &'a ValueType, out: &mut Vec<&'a crate::types::TableShape>) {
+                match ty {
+                    ValueType::TableShape(shape) if shape.value_type.is_none() && !shape.fields.is_empty() => out.push(shape),
+                    ValueType::Union(members) => members.iter().for_each(|m| records(m, out)),
+                    _ => {}
+                }
+            }
+            let mut found = Vec::new();
+            records(arg_type, &mut found);
+            out.extend(found.into_iter().map(|shape| (
+                ValueType::String(None),
+                ValueType::make_union(shape.fields.iter().map(|(_, ty)| ty.clone()).collect()),
+            )));
+        }
+        out
     }
 
     /// A named field's contribution to a struct-like table's value type: its

@@ -251,8 +251,15 @@ impl AnalysisResult {
         if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {
             let symbol = self.sym(symbol_idx);
             let is_param = self.is_param_symbol(symbol_idx);
-            // Resolve the type at this reference using shared version-selection logic.
-            let resolved = self.symbol_resolved_type_at(symbol_idx, token_start);
+            // Resolve the type at this reference using shared version-selection logic;
+            // one nothing types, read where `type(x) == "T"` holds, is a `T`.
+            let resolved = self.symbol_resolved_type_at(symbol_idx, token_start).or_else(|| {
+                let scope_idx = self.scope_at_offset(offset)?;
+                let read = symbol_idx.is_external() || self.symbol_version_at.contains_key(&token_start);
+                (read && !self.is_narrowing_overridden_at(symbol_idx, scope_idx, offset))
+                    .then(|| self.get_type_filtering_at(symbol_idx, scope_idx, offset))
+                    .flatten()
+            });
             // Determine kind prefix
             let kind = if symbol_idx.is_external() {
                 "global"

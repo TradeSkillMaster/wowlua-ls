@@ -595,6 +595,13 @@ pub struct ClassDecl {
     /// stub blob).
     #[serde(skip)]
     pub untyped_ctor_entries: HashSet<String>,
+    /// Constructor entries the class scan typed from their value alone (`5`, a
+    /// nested `{}`, or `any` for a reference or a call), not by a type the entry
+    /// declares: a scan inference the class harvest replaces with the type the
+    /// constructor's file gives the entry (`deferred::class_field_scan_typed`).
+    /// Workspace-only (not in the stub blob).
+    #[serde(skip)]
+    pub inferred_ctor_entries: HashSet<String>,
     /// For constructor self-fields whose coarse type is `any` because the RHS is a
     /// function call the scan couldn't resolve: maps field name → the RHS call's
     /// byte range. Lets the deferred harvest recover the field's precise type
@@ -705,7 +712,7 @@ impl ClassDecl {
             bare_inferred_field_names: HashSet::default(),
             typed_ctor_entries: HashSet::default(),
             ctor_function_entries: HashSet::default(),
-            untyped_ctor_entries: HashSet::default(),
+            untyped_ctor_entries: HashSet::default(), inferred_ctor_entries: HashSet::default(),
             deferred_field_call_ranges: HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),
@@ -1373,6 +1380,16 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
     // `local defaults = {...}` inside a function body — still contribute their
     // table-constructor fields to the class cross-file.
     for node in root.descendants() {
+        // A `---@class` on a constructor's entry declares the table the entry holds.
+        if let Some(field) = crate::ast::Field::cast(node) {
+            let Some(FieldKind::Named { value: Expression::TableConstructor(tc), .. }) = field.kind() else { continue };
+            let Some((class_name, comment_start)) = extract_class_from_field_comments(node) else { continue };
+            let Some(class_idx) = class_by_comment.get(&comment_start)
+                .or_else(|| class_by_name.get(class_name.as_str()))
+                .copied() else { continue };
+            add_constructor_entries(&mut result.classes[class_idx], &tc);
+            continue;
+        }
         let Some(stmt) = Statement::cast(node) else { continue };
         // Extract expression list from LocalAssign or Assign (global assignment)
         let expr_list = match &stmt {
@@ -1452,98 +1469,110 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             _ => continue,
         };
 
-        // Collect existing field names to avoid duplicating @field declarations
-        let existing_fields: crate::collections::HashSet<&str> = result.classes[class_idx]
-            .fields.iter().map(|(name, _, _)| name.as_str()).collect();
+        add_constructor_entries(&mut result.classes[class_idx], tc);
+    }
+}
 
-        let mut new_fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
-        let mut new_field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
-        let mut new_literals: HashMap<String, String> = HashMap::default();
-        let mut new_typed: Vec<String> = Vec::new();
-        let mut new_functions: Vec<String> = Vec::new();
-        let mut new_untyped: Vec<String> = Vec::new();
-        for field in tc.fields() {
-            let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
-            if existing_fields.contains(name.as_str()) { continue; }
+/// Add the entries of `tc`, a constructor of the class `class` (its declaration's
+/// `@class` comment annotates it), to the class's fields: each typed as the entry
+/// declares it, else from its value alone (`ClassDecl::inferred_ctor_entries`).
+fn add_constructor_entries(class: &mut ClassDecl, tc: &crate::ast::TableConstructor<'_>) {
+    use crate::ast::{Expression, FieldKind};
+    // Collect existing field names to avoid duplicating @field declarations
+    let existing_fields: crate::collections::HashSet<String> = class
+        .fields.iter().map(|(name, _, _)| name.clone()).collect();
 
-            // If the field has a preceding @class annotation, use the class
-            // name as the type so the parent class's field table records the
-            // subclass type rather than a bare "table"; likewise the type the
-            // entry declares itself (`---@type T`, `--[[@as T]]`).
-            let own_type = extract_class_from_field_comments(field.syntax())
-                .map(|(class_name, _)| AnnotationType::Simple(class_name))
-                .or_else(|| scan_globals::constructor_entry_type(field.syntax(), &value));
-            let typ = if let Some(t) = own_type {
-                new_typed.push(name.clone());
-                t
-            } else if let Some(t) = infer_expression_type(&value) {
-                if matches!(value, Expression::Function(_)) {
-                    new_functions.push(name.clone());
-                }
-                // A nil initializer in a constructor is a placeholder, not a
-                // type constraint.  Skip it so the field's type is inferred
-                // from actual assignments (avoiding field-type-mismatch
-                // false positives when the field is later assigned a real
-                // value).  Cross-file access to a nil-only field will report
-                // undefined-field — add an explicit @field annotation to
-                // declare the field's type for cross-file visibility.
-                if matches!(t, AnnotationType::Simple(ref s) if s == "nil") {
-                    continue;
-                }
-                // Capture literal text for enum value display in hover
-                match &value {
-                    Expression::Literal(lit) => {
-                        if let Some(num) = lit.get_number() {
-                            new_literals.insert(name.clone(), num);
-                        } else if let Some(s) = lit.get_string() {
-                            new_literals.insert(name.clone(), s);
-                        }
-                    }
-                    Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
-                        let terms = u.get_terms();
-                        if let Some(Expression::Literal(lit)) = terms.first()
-                            && let Some(num) = lit.get_number()
-                        {
-                            new_literals.insert(name.clone(), format!("-{}", num));
-                        }
-                    }
-                    _ => {}
-                }
-                t
-            } else {
-                // Unknown type (e.g. function call return) — still register the
-                // field as 'any' so undefined-field doesn't fire cross-file.
-                // Note: cross-file callers will see 'any'; the actual type is only
-                // available in per-file analysis of the defining file.
-                new_untyped.push(name.clone());
-                AnnotationType::Simple("any".into())
-            };
-            let vis = default_visibility_for_name(&name, false);
+    let mut new_fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
+    let mut new_field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
+    let mut new_literals: HashMap<String, String> = HashMap::default();
+    let mut new_typed: Vec<String> = Vec::new();
+    let mut new_functions: Vec<String> = Vec::new();
+    let mut new_untyped: Vec<String> = Vec::new();
+    let mut new_inferred: Vec<String> = Vec::new();
+    for field in tc.fields() {
+        let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
+        if existing_fields.contains(name.as_str()) { continue; }
 
-            // Record field name range for go-to-definition
-            let name_range = field.syntax().children_with_tokens()
-                .find_map(|n| match n {
-                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
-                        let r = t.text_range();
-                        Some((u32::from(r.start()), u32::from(r.end())))
-                    }
-                    _ => None,
-                });
-            if let Some(range) = name_range {
-                new_field_ranges.insert(name.clone(), range);
+        // If the field has a preceding @class annotation, use the class
+        // name as the type so the parent class's field table records the
+        // subclass type rather than a bare "table"; likewise the type the
+        // entry declares itself (`---@type T`, `--[[@as T]]`).
+        let own_type = extract_class_from_field_comments(field.syntax())
+            .map(|(class_name, _)| AnnotationType::Simple(class_name))
+            .or_else(|| scan_globals::constructor_entry_type(field.syntax(), &value));
+        let typ = if let Some(t) = own_type {
+            new_typed.push(name.clone());
+            t
+        } else if let Some(t) = infer_expression_type(&value) {
+            if matches!(value, Expression::Function(_)) {
+                new_functions.push(name.clone());
             }
-            new_fields.push((name, typ, vis));
+            // A nil initializer in a constructor is a placeholder, not a
+            // type constraint.  Skip it so the field's type is inferred
+            // from actual assignments (avoiding field-type-mismatch
+            // false positives when the field is later assigned a real
+            // value).  Cross-file access to a nil-only field will report
+            // undefined-field — add an explicit @field annotation to
+            // declare the field's type for cross-file visibility.
+            if matches!(t, AnnotationType::Simple(ref s) if s == "nil") {
+                continue;
+            }
+            // Capture literal text for enum value display in hover
+            match &value {
+                Expression::Literal(lit) => {
+                    if let Some(num) = lit.get_number() {
+                        new_literals.insert(name.clone(), num);
+                    } else if let Some(s) = lit.get_string() {
+                        new_literals.insert(name.clone(), s);
+                    }
+                }
+                Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+                    let terms = u.get_terms();
+                    if let Some(Expression::Literal(lit)) = terms.first()
+                        && let Some(num) = lit.get_number()
+                    {
+                        new_literals.insert(name.clone(), format!("-{}", num));
+                    }
+                }
+                _ => {}
+            }
+            t
+        } else {
+            // Unknown type (e.g. function call return) — still register the
+            // field as 'any' so undefined-field doesn't fire cross-file.
+            // Note: cross-file callers will see 'any'; the actual type is only
+            // available in per-file analysis of the defining file.
+            new_untyped.push(name.clone());
+            AnnotationType::Simple("any".into())
+        };
+        if !new_typed.contains(&name) {
+            new_inferred.push(name.clone());
         }
+        let vis = default_visibility_for_name(&name, false);
 
-        if !new_fields.is_empty() {
-            let class = &mut result.classes[class_idx];
-            class.fields.extend(new_fields);
-            class.field_ranges.extend(new_field_ranges);
-            class.field_literals.extend(new_literals);
-            class.typed_ctor_entries.extend(new_typed);
-            class.ctor_function_entries.extend(new_functions);
-            class.untyped_ctor_entries.extend(new_untyped);
+        // Record field name range for go-to-definition
+        let name_range = field.syntax().children_with_tokens()
+            .find_map(|n| match n {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                    let r = t.text_range();
+                    Some((u32::from(r.start()), u32::from(r.end())))
+                }
+                _ => None,
+            });
+        if let Some(range) = name_range {
+            new_field_ranges.insert(name.clone(), range);
         }
+        new_fields.push((name, typ, vis));
+    }
+
+    if !new_fields.is_empty() {
+        class.fields.extend(new_fields);
+        class.field_ranges.extend(new_field_ranges);
+        class.field_literals.extend(new_literals);
+        class.typed_ctor_entries.extend(new_typed);
+        class.ctor_function_entries.extend(new_functions);
+        class.untyped_ctor_entries.extend(new_untyped);
+        class.inferred_ctor_entries.extend(new_inferred);
     }
 }
 
@@ -1682,7 +1711,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect(), onload: Default::default() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), inferred_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect(), onload: Default::default() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {

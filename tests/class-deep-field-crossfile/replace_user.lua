@@ -1,7 +1,5 @@
 ---@diagnostic disable: unused-local
 
-local db = DeepFieldReplaced.db
---    ^ hover: (local) db: DeepFieldStore
 local kept = DeepFieldReplaced.kept
 --    ^ hover: (local) kept: DeepFieldStore
 

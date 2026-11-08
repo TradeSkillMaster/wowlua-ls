@@ -2499,6 +2499,51 @@ fn slot_frames_crossfile() {
     assert!(report.contains(", 0 of which disagree"), "{report}");
 }
 
+// Entries of constructors — a `@class` instance a function builds with
+// `setmetatable`, one whose metatable names the class, a global's own `@class`
+// constructor and the tables it nests, an entry declaring a class, two flavor files
+// building one table, a locale table filled through an alias, a record other files
+// fill under run-time keys — read in other files as the file writing them types
+// them. The class harvest exists in the language server's build only, and the
+// entries need the stubs' `setmetatable` and `CreateFrame`.
+#[test]
+fn ctor_entry_slots_crossfile() {
+    for lua_file in [
+        "tests/slot-ctor-entries/mod_user.lua",
+        "tests/slot-ctor-entries/panel_user.lua",
+        "tests/slot-ctor-entries/scan_user.lua",
+        "tests/slot-ctor-entries/events_user.lua",
+        "tests/slot-ctor-entries/locales_user.lua",
+        "tests/slot-ctor-entries/hub_user.lua",
+        "tests/slot-ctor-entries/boss_user.lua",
+        "tests/slot-ctor-entries/opts_store.lua",
+        "tests/slot-ctor-entries/opts_user.lua",
+        "tests/slot-ctor-entries/mix_user.lua",
+    ] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/slot-ctor-entries"),
+        });
+    }
+}
+
+// `crossfile-types` finds no path of `tests/slot-ctor-entries` or
+// `tests/slot-fields` whose type differs between the files reading and writing
+// it: a constructor's key shows the field as the files reading it do.
+#[test]
+fn ctor_entry_slots_agree_across_files() {
+    for dir in ["tests/slot-ctor-entries", "tests/slot-fields"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
+            .args(["crossfile-types", dir])
+            .env("RUST_LOG", "error")
+            .output()
+            .expect("run crossfile-types");
+        let report = String::from_utf8_lossy(&output.stdout);
+        assert!(report.contains(", 0 of which disagree"), "{report}");
+    }
+}
+
 // `crossfile-types` finds no path of `tests/slot-writers` whose type differs
 // between the files reading and writing it.
 #[test]

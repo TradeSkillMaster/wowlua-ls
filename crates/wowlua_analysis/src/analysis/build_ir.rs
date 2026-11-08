@@ -3029,10 +3029,20 @@ impl<'a> Analysis<'a> {
             let scanned_field = self.ir.table(scan_table).fields.get(&name);
             let untyped_entry = untyped && scanned_field
                 .is_some_and(|f| f.annotation.is_none() && matches!(self.ir.expr(f.expr), Expr::Literal(ValueType::Any)));
+            // An entry of the constructor written there that other files read as a
+            // slot (inversion slice 3) is this file's write of it, read as the slot's
+            // other writes are (`Ir::slot_union_exprs`).
+            let slot_entry = scanned_field
+                .filter(|f| replace && f.annotation_text.is_none() && fi.annotation.is_none() && self.ir.is_slot_primary(f.expr))
+                .map(|f| FieldInfo { extra_exprs: vec![fi.expr], annotation: None, annotation_type_raw: None, ..f.clone() });
             let scanned = scanned_field.map(|f| match f.annotation {
                 Some(ValueType::Table(Some(t))) => Some(t),
                 _ => self.ir.find_table_index(f.expr),
             });
+            if let (false, false, Some(slot)) = (overlaid, untyped_entry, slot_entry) {
+                self.ir.insert_overlay_field(scan_table, name, slot);
+                continue;
+            }
             match scanned {
                 // A nested constructor, or a local table the entry holds.
                 Some(Some(nested)) => self.overlay_table_functions(nested, fi.expr, depth + 1, replace, untyped),
@@ -3054,7 +3064,7 @@ impl<'a> Analysis<'a> {
     /// (`finalize_enum_kinds`), resolve from the actual assignment instead of
     /// collapsing to `any`. New fields (not already on the class table) are
     /// inserted wholesale.
-    fn merge_runtime_fields_into_class(&mut self, class_table_idx: TableIndex, rhs_table_idx: TableIndex) {
+    pub(super) fn merge_runtime_fields_into_class(&mut self, class_table_idx: TableIndex, rhs_table_idx: TableIndex) {
         if class_table_idx.is_external()
             || rhs_table_idx.is_external()
             || rhs_table_idx == class_table_idx

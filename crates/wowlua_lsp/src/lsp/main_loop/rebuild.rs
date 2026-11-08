@@ -100,6 +100,7 @@ pub(super) fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
         && x.typed_ctor_entries == y.typed_ctor_entries
         && x.ctor_function_entries == y.ctor_function_entries
         && x.untyped_ctor_entries == y.untyped_ctor_entries
+        && x.inferred_ctor_entries == y.inferred_ctor_entries
         && x.onload == y.onload
         // The call's argument *values* are the members; their ranges are positional.
         && x.enum_call.as_ref().map(|c| (&c.callee, c.args.iter().map(|(v, _)| v).collect::<Vec<_>>()))

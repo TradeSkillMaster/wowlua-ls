@@ -42,7 +42,5 @@ takesFmt(DeepMethodCalls.Fmt)
 takesFmt(DeepMethodSlot.Fmt)
 local callFmt = DeepMethodCalls.Fmt
 --    ^ hover: (local) callFmt: DeepMethodFmt
-local slotFmt = DeepMethodSlot.Fmt
---    ^ hover: (local) slotFmt: DeepMethodFmt
 local typedCache = DeepMethodTyped.cache
 --    ^ hover: (local) typedCache: table

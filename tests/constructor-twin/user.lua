@@ -26,11 +26,11 @@ local declared = NS.DECLARED.h
 local declaredAbove = NS.DECLARED.w
 --    ^ hover: (local) declaredAbove: Widget
 local replaced = NS.REPLACED.A
---    ^ hover: (local) replaced: Other
+--    ^ hover: (local) replaced: Widget | Other
 local gReplaced = G_REPLACED.A
---    ^ hover: (local) gReplaced: Other
+--    ^ hover: (local) gReplaced: Widget | Other
 local shadowed = NS.SHADOWED.A
---    ^ hover: (local) shadowed: any
+--    ^ hover: (local) shadowed: number
 local gA = G_ENTRIES.A
 --    ^ hover: (local) gA: Widget
 local gB = G_ENTRIES.sub.B

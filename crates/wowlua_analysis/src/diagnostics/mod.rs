@@ -940,6 +940,8 @@ fn any_table_lacks_own_field_annotation(analysis: &AnalysisResult, ty: &ValueTyp
                     .is_some_and(|pfi| pfi.annotation.is_some() && pfi.def_range == child_range)
             })
         }
+        // A record another file's table was lifted to, as that table (no `@class`).
+        ValueType::TableShape(shape) => shape.field(field).is_some(),
         ValueType::Union(types) | ValueType::Intersection(types) => {
             types.iter().any(|t| any_table_lacks_own_field_annotation(analysis, t, field))
         }

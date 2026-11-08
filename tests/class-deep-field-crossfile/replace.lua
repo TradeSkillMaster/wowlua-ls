@@ -1,6 +1,6 @@
--- A write of a constructor entry that deep writes extend still replaces it, as
--- it would the entry's bare `table`: a typed value wins; over an untyped one,
--- other files read the entry as this file does.
+-- A constructor entry deep writes extend and a write of the field: other files
+-- read the field as this file does, both of them; an entry an annotated write
+-- types keeps the annotation.
 
 ---@class DeepFieldStore
 ---@field count number

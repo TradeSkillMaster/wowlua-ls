@@ -1017,20 +1017,75 @@ impl SlotTables<'_> {
         }
     }
 
+    /// Register the entries of the constructor the build made `table` from
+    /// (`entries`, the scan's shape of it) as slots `writer` writes (its path, and
+    /// whether the table is the addon namespace's): those whose value is a call, a
+    /// reference or a table, which only the file's analysis types, not a function,
+    /// whose signature crosses files on its own, nor one an author annotation types.
+    /// A literal, which the scan types, goes to `literals`: it writes only a slot
+    /// another file's entry makes (two files building one table). A nested
+    /// constructor's entries are slots under its key.
+    fn ctor_entry_slots(
+        &self,
+        table: TableIndex,
+        entries: &[(&String, &crate::annotations::FieldValueKind)],
+        writer: (&PathBuf, bool),
+        fields: &mut HashMap<ExprId, crate::analysis::deferred::DeferredSlot>,
+        literals: &mut Vec<(ExprId, PathBuf)>,
+        depth: usize,
+    ) {
+        use crate::annotations::FieldValueKind;
+        if depth > 8 {
+            return;
+        }
+        let (path, in_namespace) = writer;
+        for &(name, kind) in entries {
+            if crate::annotations::is_index_entry(name) || matches!(kind, FieldValueKind::Nil | FieldValueKind::Function) {
+                continue;
+            }
+            let Some(fi) = self.tables[table.ext_offset()].fields.get(name) else { continue };
+            if fi.annotation_text.is_some() || self.call_field_methods.contains(&(table, name.clone())) {
+                continue;
+            }
+            if matches!(kind, FieldValueKind::String(_) | FieldValueKind::Number(_) | FieldValueKind::Boolean) {
+                literals.push((fi.expr, path.clone()));
+                continue;
+            }
+            let built = self.built_type(fi.annotation.as_ref(), fi.expr);
+            if let (FieldValueKind::Table(nested), Some(ValueType::Table(Some(sub)))) = (kind, &built)
+                && self.tables[sub.ext_offset()].class_name.is_none()
+                && !self.tables[sub.ext_offset()].is_shapeless()
+            {
+                let nested: Vec<(&String, &FieldValueKind)> = nested.iter().map(|(n, k)| (n, k)).collect();
+                self.ctor_entry_slots(*sub, &nested, writer, fields, literals, depth + 1);
+                continue;
+            }
+            if !self.slot_holds_value(name, built.as_ref()) {
+                continue;
+            }
+            let slot = fields.entry(fi.expr).or_insert_with(|| crate::analysis::deferred::DeferredSlot {
+                writers: Vec::new(),
+                in_namespace,
+            });
+            if !slot.writers.contains(path) {
+                slot.writers.push(path.clone());
+            }
+        }
+    }
+
     /// The fields of the addon namespace and of workspace global tables, and the
     /// workspace globals, typed by the values the files writing them write there
     /// (`PreResolvedGlobals::deferred_slot_fields` / `deferred_slot_globals`), each
-    /// with those files. A field an author annotation types, a constructor entry
-    /// (typed by its constructor, unless it is an empty table a statement writes),
-    /// a call's object methods are defined through, a function and a table holding
-    /// other slots are none — but a global holding one that a file writes another
-    /// value is.
+    /// with those files. A table constructor's entries are writes of their file
+    /// (`ctor_entry_slots`). A field an author annotation types, a call's object
+    /// methods are defined through, a function and a table holding other slots are
+    /// none — but a global holding one that a file writes another value is.
     pub fn deferred_slots(
         &self,
         ws_globals: &[crate::annotations::ExternalGlobal],
     ) -> (HashMap<ExprId, crate::analysis::deferred::DeferredSlot>, HashMap<SymbolIndex, crate::analysis::deferred::DeferredSlot>) {
         use crate::analysis::deferred::DeferredSlot;
-        use crate::annotations::{ExternalGlobalKind, ADDON_NS_NAME};
+        use crate::annotations::{ExternalGlobalKind, FieldValueKind, ADDON_NS_NAME};
         let mut fields: HashMap<ExprId, DeferredSlot> = HashMap::default();
         let mut globals: HashMap<SymbolIndex, DeferredSlot> = HashMap::default();
         // A slot any write of which an author annotation types keeps the annotation.
@@ -1063,13 +1118,7 @@ impl SlotTables<'_> {
                         annotated_fields.insert(fi.expr);
                     }
                     let key = (table, field.clone());
-                    // An empty table a constructor holds there says nothing of what
-                    // a statement writes it (`App = { Store = {} }`, `App.Store =
-                    // CreateStore()` in a function).
-                    let empty_entry = || matches!(self.built_type(fi.annotation.as_ref(), fi.expr),
-                        Some(ValueType::Table(Some(idx))) if self.tables[idx.ext_offset()].is_shapeless());
                     if fi.annotation_text.is_some()
-                        || (self.ctor_entries.contains(&key) && !empty_entry())
                         || self.call_field_methods.contains(&key)
                         || !self.slot_holds_value(field, self.built_type(fi.annotation.as_ref(), fi.expr).as_ref())
                     {
@@ -1105,6 +1154,32 @@ impl SlotTables<'_> {
                     add(slot, path);
                 }
                 _ => {}
+            }
+        }
+        // A table constructor's entries are writes of its fields by its file
+        // (`X = { a = Call() }`, `X.f = { a = ref }`), a nested constructor's under
+        // its key.
+        let mut literals: Vec<(ExprId, PathBuf)> = Vec::new();
+        for g in ws_globals {
+            let Some(path) = &g.source_path else { continue };
+            let (table, entries): (Option<TableIndex>, Vec<(&String, &FieldValueKind)>) = match &g.kind {
+                ExternalGlobalKind::Table if !g.ctor_fields.is_empty() => {
+                    (self.slot_table(&g.name, &[]), g.ctor_fields.iter().map(|f| (&f.name, &f.kind)).collect())
+                }
+                ExternalGlobalKind::TableField(chain, field, FieldValueKind::Table(entries)) => {
+                    let mut at = chain.clone();
+                    at.push(field.clone());
+                    (self.slot_table(&g.name, &at), entries.iter().map(|(n, k)| (n, k)).collect())
+                }
+                _ => continue,
+            };
+            // A constructor typed by a class writes the class's fields (`---@type C`).
+            let Some(table) = table.filter(|t| self.tables[t.ext_offset()].class_name.as_ref().is_none_or(|c| *c == g.name)) else { continue };
+            self.ctor_entry_slots(table, &entries, (path, g.name == ADDON_NS_NAME), &mut fields, &mut literals, 0);
+        }
+        for (expr, path) in literals {
+            if let Some(slot) = fields.get_mut(&expr) {
+                add(slot, &path);
             }
         }
         fields.retain(|expr, _| !annotated_fields.contains(expr));

@@ -509,6 +509,12 @@ pub struct PreResolvedGlobals {
     /// than harvested from a single first-seen file. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_class_field_paths: HashMap<String, Vec<PathBuf>>,
+    /// The fields of each workspace `@class` a constructor of it typed from the
+    /// entry's value alone (`ClassDecl::inferred_ctor_entries`): a scan inference
+    /// the class harvest replaces (`deferred::class_field_scan_typed`). Runtime only
+    /// — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub inferred_ctor_entries: HashMap<String, HashSet<String>>,
     /// Fields the workspace scan typed as an empty table (`ns.list = {}`,
     /// `Global.list = {}`, in `build_on_stubs`) → every file writing them, sorted.
     /// A file writing a list there types the field by its own writes; a read in
@@ -3637,6 +3643,7 @@ impl BuildContext {
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
+            inferred_ctor_entries: HashMap::default(),
             deferred_table_fields: HashMap::default(),
             deferred_slot_fields: HashMap::default(),
             deferred_slot_globals: HashMap::default(),
@@ -4057,6 +4064,7 @@ impl PreResolvedGlobals {
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
+            inferred_ctor_entries: HashMap::default(),
             deferred_table_fields: HashMap::default(),
             deferred_slot_fields: HashMap::default(),
             deferred_slot_globals: HashMap::default(),
@@ -5548,7 +5556,7 @@ mod tests {
             bare_inferred_field_names: crate::collections::HashSet::default(),
             typed_ctor_entries: crate::collections::HashSet::default(),
             ctor_function_entries: crate::collections::HashSet::default(),
-            untyped_ctor_entries: crate::collections::HashSet::default(),
+            untyped_ctor_entries: crate::collections::HashSet::default(), inferred_ctor_entries: crate::collections::HashSet::default(),
             deferred_field_call_ranges: crate::collections::HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),

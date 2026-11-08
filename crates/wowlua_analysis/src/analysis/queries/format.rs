@@ -387,7 +387,9 @@ fn resolve_expr_type_uncleared(
                         // Skip nil primary when there are reassignments
                         let nil_primary = !extras.is_empty()
                             && matches!(resolve_expr_type_impl(ir, resolved_expr_cache, primary, visited, depth + 1), Some(ValueType::Nil));
-                        let (all_exprs, skip_primary) = ir.slot_union_exprs(primary, &extras, nil_primary, |e| resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1));
+                        // Its own `visited`: what choosing the writes resolves, the loop
+                        // below resolves again.
+                        let (all_exprs, skip_primary) = ir.slot_union_exprs(primary, &extras, nil_primary, |e| resolve_expr_type_impl(ir, resolved_expr_cache, e, &mut visited.clone(), depth + 1));
                         let mut has_unresolvable = false;
                         for eid in all_exprs {
                             if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {

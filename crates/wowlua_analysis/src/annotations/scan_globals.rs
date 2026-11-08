@@ -830,10 +830,14 @@ fn classify_ctor_entry(field: SyntaxNode<'_>, value: &Expression<'_>, scope: &Ca
     }
 }
 
-/// The type a table-constructor entry declares: a `---@type T` on the entry, else
-/// a `--[[@as T]]` cast on its value.
+/// The type a table-constructor entry declares: a `---@type T` on the entry, a
+/// `---@class C` declaring the table it holds, else a `--[[@as T]]` cast on its
+/// value.
 pub(super) fn constructor_entry_type(field: SyntaxNode<'_>, value: &Expression<'_>) -> Option<AnnotationType> {
     super::annotation_scanning::extract_inline_type_from_node(field)
+        .or_else(|| matches!(value, Expression::TableConstructor(_))
+            .then(|| super::extract_class_from_field_comments(field).map(|(class_name, _)| AnnotationType::Simple(class_name)))
+            .flatten())
         .or_else(|| super::annotation_scanning::extract_inline_as(value.syntax()))
 }
 
@@ -1164,7 +1168,9 @@ impl CtorEntryScan<'_> {
             }
             let Some((name, value, key)) = named_ctor_entry(&field) else { continue };
             if let Some(declared) = constructor_entry_type(field.syntax(), &value) {
-                if matches!(entries, CtorEntries::All | CtorEntries::Exported) {
+                // The class declaration types a class constructor's own entries, not
+                // those of the tables it nests.
+                if matches!(entries, CtorEntries::All | CtorEntries::Exported) || !path.is_empty() && entries == CtorEntries::Methods {
                     globals.push(self.write(owner, path, name, FieldValueKind::Unknown, vec![declared], key));
                 }
                 continue;

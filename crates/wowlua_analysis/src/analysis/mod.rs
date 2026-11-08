@@ -1013,7 +1013,8 @@ pub struct Ir {
     pub scanned_field_maps: HashSet<TableIndex>,
     /// Bracket assignments into a table only a field holds (`self.items[k] = v`,
     /// or `l[k] = v` after `local l = self.items`): (table expr, key, value),
-    /// resolved when the fixpoint starts (`collect_deferred_element_writes`).
+    /// resolved when the fixpoint starts (`collect_deferred_element_writes`) and
+    /// kept for the class harvest (`deferred::accumulate_class_fields_in_file`).
     pub deferred_element_writes: Vec<(ExprId, ExprId, ExprId)>,
     /// Per-file overlay of precise `Function`s for deferred (body-derived)
     /// external functions this file references. Populated lazily by the
@@ -1056,10 +1057,10 @@ pub struct Ir {
     /// carried type (`Analysis::fill_class_others`). A type inferred from the writes,
     /// never a constructor's contract (`missing-fields`).
     pub carried_fields: HashSet<(TableIndex, String)>,
-    /// Of the `class_slots`, those (by primary write) of a workspace class whose only
-    /// Lua file this is, which writes the field on more than one of its copies of the
-    /// class (`Self::class_copies`, and its overlay of the class): the class and field,
-    /// whose writes on all of them the field reads.
+    /// Of the `class_slots`, those (by primary write) this file writes on more than
+    /// one of its copies of the class (`Self::class_copies`, and its overlay of the
+    /// class) — of a class whose only Lua file this is, or one other files write too:
+    /// the class and field, whose writes on all of them the field reads.
     pub class_peers: HashMap<ExprId, (TableIndex, String)>,
     /// For each slot field this file writes, by its workspace value: an expr typed
     /// by what the other files writing it write there, the file's own writes aside
@@ -2252,9 +2253,18 @@ impl Ir {
         tables
     }
 
+    /// Whether `key` appends to the field `target` reads (`t.f[#t.f + 1]`).
+    pub(crate) fn appends_to(&self, key: ExprId, target: &(TableIndex, String)) -> bool {
+        use crate::ast::Operator;
+        matches!(self.expr(key), Expr::BinaryOp { op: Operator::Add, lhs, rhs }
+            if matches!(self.expr(*lhs), Expr::UnaryOp { op: Operator::ArrayLength, operand }
+                if self.field_read_target(*operand).as_ref() == Some(target))
+            && self.number_literals.get(rhs).and_then(|n| n.parse::<f64>().ok()) == Some(1.0))
+    }
+
     /// The field `expr` reads — `X.f`, or a local bound to one — as its
     /// receiver's table and the field's name.
-    pub(super) fn field_read_target(&self, expr: ExprId) -> Option<(TableIndex, String)> {
+    pub(crate) fn field_read_target(&self, expr: ExprId) -> Option<(TableIndex, String)> {
         let mut expr = expr;
         for depth in 0..8 {
             expr = match self.expr(expr) {
@@ -2507,11 +2517,21 @@ impl Ir {
             }
             let mut own: Vec<ExprId> = writes.iter().flat_map(|&e| self.typed_operands(e, &mut resolve)).collect();
             // Past a write saying no more than `any`, tables saying no more than "a
-            // table" say nothing either (`AnyFieldWrites`; the harvest drops them too).
-            if writes.iter().any(|&e| resolve(e).is_none_or(|ty| ty.contains_any()))
-                && own.iter().all(|&e| resolve(e).is_some_and(|ty| self.is_shapeless_table_type(&ty)))
+            // table" say nothing either (`AnyFieldWrites`), when the others are all
+            // such, or one is a list or map of typed elements: as the harvest drops
+            // them (`deferred::gate_class_fields`).
+            let untyped = writes.iter().any(|&e| resolve(e).is_none_or(|ty| ty.contains_any()));
+            let shapeless = |ty: &ValueType| self.is_shapeless_table_type(ty);
+            let typed_elements = |ty: &ValueType| match ty {
+                ValueType::Table(Some(idx)) => self.table(*idx).value_type.as_ref().is_some_and(|v| !v.contains_any()),
+                ValueType::TableShape(shape) => shape.value_type.as_ref().is_some_and(|v| !v.contains_any()),
+                _ => false,
+            };
+            if untyped
+                && (own.iter().all(|&e| resolve(e).is_some_and(|ty| shapeless(&ty)))
+                    || own.iter().any(|&e| resolve(e).is_some_and(|ty| typed_elements(&ty))))
             {
-                own.clear();
+                own.retain(|&e| !resolve(e).is_some_and(|ty| shapeless(&ty)));
             }
             let all = own.into_iter().chain(others).collect::<Vec<_>>();
             // Nothing saying more than `any` but resets: the workspace's value, as
@@ -2521,6 +2541,11 @@ impl Ir {
             }
             if !all.iter().all(|&e| matches!(resolve(e), Some(ValueType::Nil))) {
                 return (all, true);
+            }
+            // Resets beside a write of what the file can't type, where no other file's
+            // writes say more than `any`: it holds that too.
+            if untyped && others.is_none() && !all.is_empty() && self.class_peers.contains_key(&primary) {
+                return (writes, true);
             }
         }
         if self.is_container_primary(primary) {

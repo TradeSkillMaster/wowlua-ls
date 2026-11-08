@@ -430,12 +430,19 @@ impl ValueType {
     /// Collect inline `TableShape` field types for `field` across this type,
     /// recursing into `Union`/`Intersection` members and unwrapping opaque
     /// aliases. Each pushed type is already in ext-index space (the shape carries
-    /// resolved types). Empty when no shape member declares `field`.
+    /// resolved types). A record holding elements under run-time string keys as
+    /// well reads a field it lacks as one of them. Empty when no shape member
+    /// declares `field`.
     pub fn collect_shape_field_types(&self, field: &str, out: &mut Vec<ValueType>) {
         match self {
             ValueType::TableShape(shape) => {
                 if let Some(t) = shape.field(field) {
                     out.push(t.clone());
+                } else if !shape.fields.is_empty()
+                    && matches!(shape.key_type.as_deref(), Some(ValueType::String(None)))
+                    && let Some(elements) = shape.value_type.as_deref()
+                {
+                    out.push(elements.clone());
                 }
             }
             ValueType::Union(members) | ValueType::Intersection(members) => {

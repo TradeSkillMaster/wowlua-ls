@@ -4,3 +4,8 @@
 -- defining file reads it.
 local cache = DeepFieldReplaced.cache
 --    ^ hover: (local) cache: { size: number }
+
+-- An entry deep writes extend and a write of the field, as the defining file
+-- reads it.
+local db = DeepFieldReplaced.db
+--    ^ hover: (local) db: { seen: true } | DeepFieldStore

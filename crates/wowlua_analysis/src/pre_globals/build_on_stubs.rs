@@ -729,6 +729,18 @@ impl<'a> BuildOnStubsContext<'a> {
                     {
                         fi.annotation_text = super::shared::declared_type_text(g);
                     }
+                    // A constructor written where another file's built an anonymous
+                    // table (two flavor files' `X.Events = { ... }`): its entries are
+                    // that table's fields too, which their files' writes type (slots).
+                    if let FieldValueKind::Table(sub_fields) = value_kind
+                        && super::shared::declared_type_text(g).is_none()
+                        && let Some(existing) = self.tables[local_idx].fields.get(field_name).filter(|fi| fi.annotation_text.is_none())
+                        && let Some(ValueType::Table(Some(sub_idx))) = existing.annotation.clone()
+                        && self.tables[sub_idx.ext_offset()].class_name.is_none()
+                        && self.tables[sub_idx.ext_offset()].value_type.is_none()
+                    {
+                        merge_table_fields(sub_idx, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries, &mut self.nested_ctor_calls);
+                    }
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                     self.note_field_write(leaf_idx, field_name, g);
                     continue;
@@ -1891,6 +1903,10 @@ impl<'a> BuildOnStubsContext<'a> {
         // Drop names that contributed no file at all, so `contains_key` stays a precise
         // "has a re-analyzable source" test (matching the old def_path-only behavior).
         deferred_class_field_paths.retain(|_, paths| !paths.is_empty());
+        let mut inferred_ctor_entries: HashMap<String, HashSet<String>> = HashMap::default();
+        for class in ws_classes.iter().filter(|c| !c.inferred_ctor_entries.is_empty()) {
+            inferred_ctor_entries.entry(class.name.clone()).or_default().extend(class.inferred_ctor_entries.iter().cloned());
+        }
 
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
@@ -1939,6 +1955,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_field_type_args,
             deferred_field_type_args_by_path,
             deferred_class_field_paths,
+            inferred_ctor_entries,
             deferred_table_fields,
             deferred_slot_fields,
             deferred_slot_globals,

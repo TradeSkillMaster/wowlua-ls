@@ -283,8 +283,8 @@ impl AnalysisResult {
     /// global, with the value written (`Ir::target_values`), or `None` for one an
     /// author annotation types (`Ir::annotated_targets`): the slot keyed as
     /// [`Self::path_accesses`] keys the write, through the cross-file table its
-    /// receiver's path reaches.
-    pub fn slot_writes(&self, tree: &SyntaxTree, ext_paths: &TablePaths) -> Vec<(WrittenSlot, Option<ExprId>)> {
+    /// receiver's path reaches; and whether the write is a constructor's entry.
+    pub fn slot_writes(&self, tree: &SyntaxTree, ext_paths: &TablePaths) -> Vec<(WrittenSlot, Option<ExprId>, bool)> {
         if self.ir.target_values.is_empty() && self.ir.annotated_targets.is_empty() {
             return Vec::new();
         }
@@ -307,7 +307,23 @@ impl AnalysisResult {
                 .map(|(name, fi)| (name, fi.annotation.is_none().then_some(fi.expr)))
                 .collect();
             entries.sort();
-            out.extend(entries.into_iter().map(|(name, value)| (WrittenSlot::Field(ext_table, name.clone()), value)));
+            out.extend(entries.into_iter().map(|(name, value)| (WrittenSlot::Field(ext_table, name.clone()), value, true)));
+        }
+        // The entries the build placed on the workspace's own copy of a slot field
+        // (a constructor written into another file's table, `overlay_table_functions`),
+        // which no path of the file names.
+        let mut emitted: HashSet<ExprId> = out.iter().filter_map(|&(_, value, _)| value).collect();
+        let mut overlays: Vec<(TableIndex, &String, &FieldInfo)> = self.ir.overlay_fields.iter()
+            .flat_map(|(&table, fields)| fields.iter().map(move |(name, fi)| (table, name, fi)))
+            .filter(|(_, _, fi)| self.ir.is_slot_primary(fi.expr))
+            .collect();
+        overlays.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        for (table, name, fi) in overlays {
+            for &value in fi.extra_exprs.iter().filter(|e| !e.is_external() && !written.contains(e)) {
+                if emitted.insert(value) {
+                    out.push((WrittenSlot::Field(table, name.clone()), Some(value), true));
+                }
+            }
         }
         for (offset, value) in writes {
             let Some(token) = root.token_at_offset(TextSize::from(offset)).right_biased() else { continue };
@@ -318,7 +334,7 @@ impl AnalysisResult {
                     let receiver = self.syntax_value_path(tree, bracket.children().next()?, &paths, 0)?;
                     self.written_field_slot(receiver, &field, &paths)
                 });
-                out.extend(slot.map(|slot| (slot, value)));
+                out.extend(slot.map(|slot| (slot, value, false)));
                 continue;
             }
             if token.kind() != SyntaxKind::Name { continue; }
@@ -332,7 +348,7 @@ impl AnalysisResult {
                     .filter(|(sym_idx, ..)| self.is_global_symbol(*sym_idx))
                     .map(|(_, name, _)| WrittenSlot::Global(name))
             };
-            out.extend(slot.map(|slot| (slot, value)));
+            out.extend(slot.map(|slot| (slot, value, false)));
         }
         out
     }
@@ -384,18 +400,69 @@ impl AnalysisResult {
         let owners = self.constructor_key_owners(token);
         let ctor = *owners.last()?;
         let field = token.text();
-        let path = match owners.iter().find_map(|&t| self.table_path(t, paths)) {
+        let receiver = owners.iter().find_map(|&t| self.table_path(t, paths));
+        // A field the class the constructor writes declares (`---@type C` on it, or
+        // a `setmetatable` instance of `C`) shows the declared type, as its other
+        // writes do.
+        let declared = receiver.clone()
+            .and_then(|r| self.canonical_path(r, paths).1)
+            .filter(|t| self.table(*t).class_name.as_ref()
+                .is_some_and(|class| self.ir.ext.declared_class_fields.get(class).is_some_and(|d| d.contains(field))))
+            .and_then(|t| self.get_field(t, field));
+        let path = match receiver {
             Some(receiver) => self.field_path(receiver, field, paths),
             None => Err(self.unkeyed(Some(&ValueType::Table(Some(ctor))))),
         }.and_then(|p| self.unless_builtin(p));
         let offset = u32::from(token.text_range().start());
         let _secrecy = self.secrecy_display_at(offset);
-        let display = match declared_maps.get(&ctor) {
-            Some(element) => collapse_shapes(&self.format_type_depth(element, 1)),
-            None => owners.iter().find_map(|&t| self.get_field(t, field))
-                .map_or_else(|| "<none>".to_string(), |fi| collapse_shapes(&self.format_field_type(fi, 0))),
+        // A slot the constructor writes shows as this file reads it, with the other
+        // files' writes: off the workspace's table it writes (`Ir::exported_tables`).
+        let slot = self.ir.exported_tables.get(&ctor)
+            .and_then(|&copy| self.get_field(copy, field))
+            .filter(|fi| self.ir.is_slot_primary(fi.expr));
+        // A `setmetatable` instance's entry is a field of the class its metatable names.
+        let class = self.table(ctor).class_name.as_ref()
+            .filter(|_| !self.ir.ctor_merged_class.contains_key(&ctor))
+            .and_then(|name| self.ir.ext.classes.get(name).copied());
+        let owner_field = slot
+            .or(declared)
+            .or_else(|| owners.iter().take(owners.len() - 1).find_map(|&t| self.get_field(t, field)))
+            .or_else(|| class.and_then(|c| self.get_field(c, field)));
+        let display = match (declared_maps.get(&ctor), owner_field, self.get_field(ctor, field)) {
+            (Some(element), ..) => collapse_shapes(&self.format_type_depth(element, 1)),
+            (None, None, None) => "<none>".to_string(),
+            (None, Some(fi), _) | (None, None, Some(fi)) => match self.resolve_field_type(fi) {
+                // A generic call's result nothing bound is unknown, as to the files
+                // reading it (`deferred` lifts it to `any`).
+                Some(ValueType::TypeVariable(_)) => "any".to_string(),
+                // An entry of the record this file writes a slot that another file's
+                // record lacks: the workspace merges the records (`deferred::merge_records`).
+                Some(ty) if owner_field.is_none() && self.slot_record_lacks(ctor, field) => {
+                    collapse_shapes(&self.format_type_depth(&ValueType::make_union(vec![ty.widen_literals(), ValueType::Nil]), 1))
+                }
+                _ => collapse_shapes(&self.format_field_type(fi, 0)),
+            },
         };
         Some(PathAccess { offset, path, display, write: true })
+    }
+
+    /// Whether the constructor `ctor` is a record this file writes a slot
+    /// (`App.Layout = { wide = true }`) that another file writes a record lacking
+    /// `field` (`Ir::slot_others`).
+    fn slot_record_lacks(&self, ctor: TableIndex, field: &str) -> bool {
+        self.ir.field_assignments.iter()
+            .filter(|fa| self.ir.find_table_index(fa.actual_expr) == Some(ctor))
+            .filter_map(|fa| self.get_field(fa.table_idx, &fa.field_name))
+            .filter_map(|fi| self.ir.slot_others.get(&fi.expr).copied().flatten())
+            .filter_map(|others| self.resolve_expr_type(others))
+            .any(|others| {
+                let members: Vec<&ValueType> = match &others {
+                    ValueType::Union(members) => members.iter().collect(),
+                    other => vec![other],
+                };
+                members.iter().any(|m| matches!(m, ValueType::TableShape(shape)
+                    if shape.value_type.is_none() && shape.key_type.is_none() && shape.field(field).is_none()))
+            })
     }
 
     /// The element type of each table constructor this file writes to a field
@@ -839,16 +906,60 @@ fn collapse_shapes(s: &str) -> String {
     canonical_union(&out)
 }
 
+/// `s` with each parenthesized union in it canonical (see [`canonical_union`]), its
+/// parentheses dropped where one member remains: `({…} | {…})[]` is `{…}[]`, while
+/// `(A & B)[]` keeps them.
+fn canonical_groups(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('(') {
+        out.push_str(&rest[..open]);
+        let inner_start = open + 1;
+        let mut depth = 1usize;
+        let mut close = None;
+        for (i, c) in rest[inner_start..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(inner_start + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = canonical_union(&rest[inner_start..close]);
+        if inner.contains(" | ") || inner.contains(" & ") || inner.ends_with('?') {
+            out.push('(');
+            out.push_str(&inner);
+            out.push(')');
+        } else {
+            out.push_str(&inner);
+        }
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// A collapsed union with its members sorted, each once, and `nil` last (`X?` for
 /// one other member): the order of a union's members is no difference between
 /// files, nor are the records one file writes and another reads merged into one
-/// (`{…} | {…}` and `{…}`), nor a bare `table` beside a typed list or map. A
-/// display holding a signature is kept, its return's union being
-/// indistinguishable from the whole's.
+/// (`{…} | {…}` and `{…}`), nor a bare `table` beside a typed list or map, at any
+/// depth (`({…} | {…})[]`). A display holding a signature is kept, its return's
+/// union being indistinguishable from the whole's.
 fn canonical_union(s: &str) -> String {
     if s.contains("fun(") {
         return s.to_string();
     }
+    let grouped = canonical_groups(s);
+    let s = grouped.as_str();
     let mut members: Vec<&str> = Vec::new();
     let mut depth = 0usize;
     let mut start = 0;
@@ -898,5 +1009,17 @@ fn canonical_union(s: &str) -> String {
         ([only], true) => format!("{only}?"),
         (_, true) => format!("{} | nil", out.join(" | ")),
         (_, false) => out.join(" | "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_union;
+
+    #[test]
+    fn canonical_union_drops_parens_only_around_one_atom() {
+        assert_eq!(canonical_union("({…} | {…})[]"), "{…}[]");
+        assert_eq!(canonical_union("(string | number)[]"), "(number | string)[]");
+        assert_eq!(canonical_union("(Frame & Mixin)[]"), "(Frame & Mixin)[]");
     }
 }

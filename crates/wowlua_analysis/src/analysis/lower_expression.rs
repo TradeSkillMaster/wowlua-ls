@@ -697,14 +697,7 @@ impl<'a> Analysis<'a> {
                                 if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
                                     && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
                                 {
-                                    let runtime_fields: Vec<(String, FieldInfo)> =
-                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect();
-                                    for (field_name, field_info) in runtime_fields {
-                                        self.ir.tables[class_table_idx.val()].fields
-                                            .entry(field_name).or_insert(field_info);
-                                    }
+                                    self.merge_runtime_fields_into_class(class_table_idx, rhs_table_idx);
                                 }
                                 expr_id = self.ir.push_expr(Expr::Literal(
                                     ValueType::Table(Some(class_table_idx))

@@ -55,9 +55,13 @@
 //!
 //! The harvest only replaces the scan's type where it says more: not `any` or `nil`,
 //! not a bare `table` where the scan gave a table, nor a table the scan gave typed
-//! contents or that other files fill (`keeps_scanned_table`). A constructor's entry
-//! keeps the placeholder rule (`field_is_coarse_placeholder`) until slice 3, as does the
-//! addon namespace's `@class`, whose fields are slots. Upgrading to a genuine *nameable*
+//! contents or that other files fill (`keeps_scanned_table`). A constructor's entries
+//! are writes like any other, a `setmetatable` instance's included
+//! (`PreResolvedGlobals::inferred_ctor_entries`); elements files write into a field's
+//! value under run-time keys make its records maps of them beside their fields
+//! ([`with_dynamic_elements`]), which the files writing the field itself don't read
+//! (`ClassField::written`). The addon namespace's `@class` keeps the placeholder rule
+//! (`field_is_coarse_placeholder`): its fields are slots. Upgrading to a genuine *nameable*
 //! class is a real sharpening: like any precise type it may surface a correct new
 //! diagnostic. A union of writes keeps nilability (a field cleared to nil in another
 //! file is `T?`); a `lateinit` (`T!`) field reads non-nil; a type touching a type
@@ -292,6 +296,10 @@ pub struct ClassField {
     writer: Option<PathBuf>,
     /// `ty` carries members files write onto the field's value (`CarriedFields`).
     carried: bool,
+    /// `ty` without the elements files write into the field's value under run-time
+    /// keys, when there are such: what each of several files writing it reads it as,
+    /// as through its own table of the class (`Ir::slot_union_exprs`).
+    written: Option<ValueType>,
 }
 
 impl ClassField {
@@ -900,7 +908,7 @@ impl Ir {
         let Some(def_paths) = self.ext.deferred_class_field_paths.get(&class_name).cloned() else {
             return false;
         };
-        let Some(ty) = resolve_deferred_class_field_type(&self.ext, &class_name, field_name) else {
+        let Some(ty) = resolve_deferred_class_field_type_in(&self.ext, &class_name, field_name, self.file_path.as_deref()) else {
             return false;
         };
         // The harvest reads *every* declaring or assigning file, so a change to any of
@@ -912,6 +920,51 @@ impl Ir {
         precise.annotation = Some(ty);
         self.overlay_fields.entry(owner_idx).or_default().insert(field_name.to_string(), precise);
         true
+    }
+
+    /// Give every copy of a harvested `@class` field on this file's tables of the
+    /// class the harvest's type, as reading the field through that table would
+    /// (`ensure_field_overlay`): a read the fixpoint made through one declaration of
+    /// a class declared more than once leaves the others' copies the scan's.
+    pub fn refresh_class_field_copies(&mut self) {
+        if self.overlay_fields.is_empty() {
+            return;
+        }
+        let mut refreshed: Vec<(TableIndex, String, ValueType)> = Vec::new();
+        for &local in self.class_tables.keys() {
+            for (name, fi) in &self.tables[local.val()].fields {
+                if fi.written_in_file() {
+                    continue;
+                }
+                let Some(owner) = self.field_owner_table(local, name).filter(|o| *o != local && o.is_external()) else { continue };
+                let Some(overlay) = self.overlay_fields.get(&owner).and_then(|m| m.get(name)) else { continue };
+                if overlay.expr != fi.expr {
+                    continue;
+                }
+                if let Some(ty) = overlay.annotation.clone().filter(|ty| fi.annotation.as_ref() != Some(ty)) {
+                    refreshed.push((local, name.clone(), ty));
+                }
+            }
+        }
+        for (local, name, ty) in refreshed {
+            if let Some(fi) = self.tables[local.val()].fields.get_mut(&name) {
+                let expr = fi.expr;
+                fi.annotation = Some(ty);
+                self.harvest_refined_fields.insert((local, expr));
+            }
+        }
+    }
+
+    /// Whether `field_name`, read through `table_idx`, is an entry a constructor of
+    /// the table's class or one of its parents typed from its value alone
+    /// (`PreResolvedGlobals::inferred_ctor_entries`), which the class harvest types.
+    pub fn is_inferred_ctor_entry(&self, table_idx: TableIndex, field_name: &str) -> bool {
+        if self.ext.inferred_ctor_entries.is_empty() {
+            return false;
+        }
+        std::iter::once(table_idx).chain(self.table(table_idx).parent_classes.iter().copied())
+            .filter_map(|t| self.table(t).class_name.as_ref())
+            .any(|class| self.ext.inferred_ctor_entries.get(class).is_some_and(|fields| fields.contains(field_name)))
     }
 
     /// The workspace class's own table a table of this file standing for the class
@@ -1479,7 +1532,7 @@ fn harvest_slots(
         .filter(|fi| !fi.expr.is_external() && !fi.extra_exprs.is_empty() && matches!(ir.expr(fi.expr), Expr::Literal(ValueType::Nil)))
         .map(|fi| fi.expr)
         .collect();
-    for (slot, value) in result.slot_writes(tree, ext.slot_table_paths()) {
+    for (slot, value, ctor_entry) in result.slot_writes(tree, ext.slot_table_paths()) {
         if value.is_some_and(|v| nil_initializers.contains(&v)) {
             continue;
         }
@@ -1531,6 +1584,10 @@ fn harvest_slots(
             .map(|ty| container.map_or_else(|| ty.clone(), |(table, name)| as_global_table(&ty, table, ir, name)));
         match resolved {
             Some(ty) if scanned_function && is_function_value(&ty) => values.function = true,
+            // An empty table a constructor holds there that the file leaves empty
+            // (`App = { Store = {} }`, `App.Store = CreateStore()` elsewhere) says
+            // nothing of what the slot holds.
+            Some(ValueType::Table(Some(idx))) if ctor_entry && !idx.is_external() && ir.table(idx).is_shapeless() => {}
             // A map whose elements the file reads as unknown (its keyed writes fill
             // it) is a plain `table` there; a list's constructor types its elements.
             Some(ValueType::Table(Some(idx)))
@@ -1684,6 +1741,23 @@ pub fn resolve_deferred_class_field_type(
     field_name: &str,
 ) -> Option<ValueType> {
     read_class(ext, class_name, |fields| fields.get(field_name)?.ty.clone())
+}
+
+/// [`resolve_deferred_class_field_type`], as `reader` reads it: one of several files
+/// writing the field, the union of the writes ([`ClassField::written`]).
+fn resolve_deferred_class_field_type_in(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+    reader: Option<&Path>,
+) -> Option<ValueType> {
+    read_class(ext, class_name, |fields| {
+        let field = fields.get(field_name)?;
+        match &field.written {
+            Some(written) if reader.is_some_and(|r| field.writers.iter().any(|(path, _)| path == r)) => Some(written.clone()),
+            _ => field.ty.clone(),
+        }
+    })
 }
 
 /// What the files other than `writer` write the workspace `@class` field
@@ -1966,15 +2040,24 @@ fn discovery_reads(ext: &Arc<PreResolvedGlobals>, path: &Path) -> Arc<[Unit]> {
 /// `members` that would cut every read it made: one of a member, of its own file, or
 /// into a file in progress. The same analysis, so it isn't run again.
 fn first_analysis(ext: &Arc<PreResolvedGlobals>, path: &Path, members: &[Unit], frame: &ComponentFrame) -> Option<Arc<FirstAnalysis>> {
+    first_analysis_or_stale(ext, path, members, frame).and_then(|(first, stale)| (!stale).then_some(first))
+}
+
+/// `path`'s discovery analysis, and whether it is stale for a harvest of `members`:
+/// it cut a read the harvest makes, of a unit outside them harvested before.
+fn first_analysis_or_stale(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+    members: &[Unit],
+    frame: &ComponentFrame,
+) -> Option<(Arc<FirstAnalysis>, bool)> {
     let harvests = &ext.deferred_harvests;
     let reads = harvests.reads.read().ok()?.get(path).cloned()?;
     let cut = |unit: &Unit| {
         members.contains(unit) || unit.files(ext).iter().any(|f| f == path || (in_progress(f) && !frame.reads_before(unit, f)))
     };
-    if !reads.iter().all(cut) {
-        return None;
-    }
-    harvests.first.read().ok()?.get(path).cloned()
+    let stale = !reads.iter().all(cut);
+    Some((harvests.first.read().ok()?.get(path).cloned()?, stale))
 }
 
 /// RAII recorder of the units a discovery analysis reads (see [`DISCOVERY`]); stops
@@ -2010,7 +2093,10 @@ const COMPONENT_ROUNDS: usize = 4;
 /// in rounds ([`harvest_round`]): each reads the others' results from the previous
 /// round (nothing in the first, so those reads are cut), until a round reproduces the
 /// previous one or [`COMPONENT_ROUNDS`] run out; anything else sees the members as in
-/// progress. So what a member resolves to doesn't depend on which of them a reader
+/// progress. The first round takes the files' discovery analyses, even those that cut
+/// reads of units harvested before the cycle, which the second analyzes again: one
+/// round of analyses fewer, and the same rounds of them as from a first one that ran
+/// them. So what a member resolves to doesn't depend on which of them a reader
 /// reached first, and the cycle costs a bounded number of analyses however densely its
 /// members read each other. A unit the discovery graph reaches from the component is
 /// read as harvested before it ([`read_unit`]).
@@ -2028,7 +2114,9 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
     let mut round_files: Vec<(PathBuf, Option<RoundFile>)> = files.iter().map(|f| (f.clone(), None)).collect();
     // The members as the round before `previous` gave them (none before the first).
     let mut older: Option<Arc<HashMap<Unit, Harvest>>> = None;
-    for i in 0..if cycle { COMPONENT_ROUNDS } else { 1 } {
+    let mut rounds = if cycle { COMPONENT_ROUNDS } else { 1 };
+    let mut i = 0;
+    while i < rounds {
         let round = cycle.then(|| Arc::new(Round { members: component.to_vec(), previous: previous.clone() }));
         let scope = DepsScope::open();
         let mut values: HashMap<Unit, Harvest> = HashMap::default();
@@ -2055,12 +2143,16 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
             }
         }
         deps.extend(scope.close());
+        if i == 0 && round_files.iter().any(|(_, f)| f.as_ref().is_some_and(|f| f.stale)) {
+            rounds += 1;
+        }
         let stable = previous.as_deref() == Some(&values);
         older = previous.take();
         previous = Some(Arc::new(values));
         if stable {
             break;
         }
+        i += 1;
     }
     drop(guard);
     let group: Arc<[PathBuf]> = files.into();
@@ -2080,6 +2172,9 @@ struct RoundFile {
     harvest: Option<Arc<FileHarvest>>,
     acc: Arc<FileClassFields>,
     reads: Vec<(Unit, ReadPart)>,
+    /// Its discovery analysis, which cut reads of units outside the cycle: the next
+    /// round analyzes it again whatever changed.
+    stale: bool,
 }
 
 /// The members of a cycle as the last two rounds gave them (`before` is `None` after
@@ -2121,6 +2216,7 @@ fn harvest_round(
         .collect();
     for (path, last) in files.iter_mut() {
         if let (Some(changed), Some(last)) = (changed, &*last)
+            && !last.stale
             && !last.reads.iter().any(|(unit, part)| changed.part(unit, part))
         {
             continue;
@@ -2129,16 +2225,16 @@ fn harvest_round(
         let of_file = component.contains(&unit);
         let of_class = classes.iter().any(|c| ext.deferred_class_field_paths.get(*c).is_some_and(|ps| ps.contains(path)));
         if changed.is_none()
-            && let Some(first) = first_analysis(ext, path, component, frame)
+            && let Some((first, stale)) = first_analysis_or_stale(ext, path, component, frame)
         {
             let reads = discovery_reads(ext, path).iter().filter(|u| component.contains(u)).map(|u| (u.clone(), ReadPart::Whole)).collect();
             let harvest = of_file.then(|| Arc::clone(&first.harvest));
             let acc = if of_class { Arc::clone(&first.acc) } else { Arc::default() };
-            *last = Some(RoundFile { harvest, acc, reads });
+            *last = Some(RoundFile { harvest, acc, reads, stale });
             continue;
         }
         let analysis = AnalysisScope::enter(vec![path.clone()], Some(Arc::clone(round)), Some(Arc::clone(frame)));
-        let mut file = RoundFile { harvest: None, acc: Arc::default(), reads: Vec::new() };
+        let mut file = RoundFile { harvest: None, acc: Arc::default(), reads: Vec::new(), stale: false };
         if let Some((tree, result)) = analyze_file(ext, path) {
             if of_file {
                 file.harvest = Some(Arc::new(file_harvest(ext, path, &tree, &result)));
@@ -2184,22 +2280,11 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
     for ((cls, fname), files) in by_key {
         let writing: Vec<&(&PathBuf, &AccField)> = files.iter().filter(|(_, f)| f.written).collect();
         let writers: Vec<&Path> = writing.iter().map(|(path, _)| path.as_path()).collect();
-        if keeps_scanned_table(ext, &cls, &fname, &writers) {
+        // A record files write elements into under run-time keys is no more the
+        // scan's record than what its files build there.
+        let element_writes = files.iter().any(|(_, f)| f.element_writes);
+        if !element_writes && keeps_scanned_table(ext, &cls, &fname, &writers) {
             by_class.entry(cls).or_default().insert(fname, ClassField::default());
-            continue;
-        }
-        // A constructor's entry is typed by its constructor (inversion slice 3), but
-        // for the scan's placeholders, typed by the union of the writes.
-        if files.iter().any(|(_, f)| f.ctor) {
-            let mut all = AccField::default();
-            for (_, f) in &files {
-                all.absorb(f);
-            }
-            let placeholder = ext.classes.get(&cls)
-                .and_then(|&idx| ext.try_table(idx)?.fields.get(&fname))
-                .is_some_and(|fi| field_is_coarse_placeholder(fi, ext));
-            let ty = if placeholder { gate_writes(ext, &all, true) } else { None };
-            by_class.entry(cls).or_default().insert(fname, ClassField { ty, ..ClassField::default() });
             continue;
         }
         let field = match writing.as_slice() {
@@ -2226,7 +2311,7 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                         (ty, carried)
                     }
                 };
-                ClassField { ty, writers: Vec::new(), writer: Some((*only_path).clone()), carried }
+                ClassField { ty, writers: Vec::new(), writer: Some((*only_path).clone()), carried, written: None }
             }
             _ => {
                 // In file order, as one accumulation over the files adds their writes;
@@ -2237,9 +2322,13 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                 let effective = |f: &AccField| {
                     let mut f = f.clone();
                     if f.unresolved {
+                        // Its writes but the bare tables, when they type it (a typed map
+                        // beside a write it can't type), else what it reads it as.
+                        let typed: Vec<ValueType> = f.tys.iter().filter(|ty| !matches!(ty, ValueType::Table(None))).cloned().collect();
                         match f.reading.clone() {
+                            _ if has_typed_elements(&typed, ext) => f.tys = typed,
                             Some(reading) if !says_nothing(&reading) => f.tys = vec![reading],
-                            _ => f.tys.retain(|ty| !matches!(ty, ValueType::Table(None))),
+                            _ => f.tys = typed,
                         }
                     }
                     f
@@ -2263,6 +2352,24 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                 ClassField { ty: contribution(&all), writers, ..ClassField::default() }
             }
         };
+        // A record files write elements into under run-time keys holds those too.
+        let field = if element_writes {
+            let mut elements: Vec<ValueType> = Vec::new();
+            for (_, f) in &files {
+                for ty in &f.element_tys {
+                    if !elements.contains(ty) {
+                        elements.push(ty.clone());
+                    }
+                }
+            }
+            let elements = ValueType::make_union(elements);
+            let foreign = foreign_scan_fields(ext, &cls, &fname);
+            let written = field.ty.clone().map(|ty| with_record_fields(ty, &foreign));
+            let ty = written.clone().map(|ty| with_dynamic_elements(ty, &elements));
+            ClassField { written: written.filter(|_| !field.writers.is_empty() && ty != field.ty), ty, ..field }
+        } else {
+            field
+        };
         // A bare `table` says no more than a table the scan gave the field, and would
         // drop what files add to it (`ensure_slot_overlay`).
         let field = match field {
@@ -2272,6 +2379,63 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
         by_class.entry(cls).or_default().insert(fname, field);
     }
     by_class
+}
+
+/// The fields of the scan's table of `class.field` that files other than the class's
+/// write onto its value (`self.Options.flag = v` in a module), with the scan's types:
+/// writes no analysis of the class's harvest sees.
+fn foreign_scan_fields(ext: &PreResolvedGlobals, class: &str, field: &str) -> Vec<(String, ValueType)> {
+    let Some(idx) = scanned_table(ext, class, field) else { return Vec::new() };
+    let (Some(locations), Some(paths)) = (ext.field_locations.get(&idx), ext.deferred_class_field_paths.get(class)) else { return Vec::new() };
+    let mut fields: Vec<(String, ValueType)> = ext.table(idx).fields.iter()
+        .filter(|(name, _)| locations.get(*name).is_some_and(|loc| !paths.contains(&loc.path)))
+        .filter_map(|(name, fi)| {
+            let ty = fi.annotation.clone().or_else(|| match ext.expr(fi.expr) {
+                Expr::Literal(ty) => Some(ty.clone()),
+                _ => None,
+            })?;
+            Some((name.clone(), ty))
+        })
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    fields
+}
+
+/// `ty` with each record in it holding `fields` it lacks.
+fn with_record_fields(ty: ValueType, fields: &[(String, ValueType)]) -> ValueType {
+    if fields.is_empty() {
+        return ty;
+    }
+    match ty {
+        ValueType::TableShape(shape) if shape.value_type.is_none() && shape.key_type.is_none() => {
+            let mut shape = *shape;
+            for (name, field_ty) in fields {
+                if shape.field(name).is_none() {
+                    shape.fields.push((name.clone(), field_ty.clone()));
+                }
+            }
+            shape.fields.sort_by(|a, b| a.0.cmp(&b.0));
+            ValueType::TableShape(Box::new(shape))
+        }
+        ValueType::Union(members) => ValueType::make_union(members.into_iter().map(|m| with_record_fields(m, fields)).collect()),
+        other => other,
+    }
+}
+
+/// `ty` with each record in it a map of `elements` beside its fields, for a field
+/// files write elements into under keys known only at run time: a read under such
+/// a key is one of them, not one of the record's fields.
+fn with_dynamic_elements(ty: ValueType, elements: &ValueType) -> ValueType {
+    match ty {
+        ValueType::TableShape(shape) if shape.value_type.is_none() && shape.key_type.is_none() => {
+            let mut shape = *shape;
+            shape.key_type = Some(Box::new(ValueType::String(None)));
+            shape.value_type = Some(Box::new(elements.clone()));
+            ValueType::TableShape(Box::new(shape))
+        }
+        ValueType::Union(members) => ValueType::make_union(members.into_iter().map(|m| with_dynamic_elements(m, elements)).collect()),
+        other => other,
+    }
 }
 
 /// Whether what a file reads a class field as says no more than `any` or `nil` (see
@@ -2891,13 +3055,24 @@ fn accumulate_class_fields_in_file(
             entry.unresolved = true;
         }
     }
-    // The entries of a class's own constructor (`---@class C` on `C = { f = Call() }`),
-    // which the class scan types by their shape alone (a call: `any`). A `nil` entry
-    // only declares the field, as it does to the scan; a table merged into the class
-    // that isn't a constructor (another declaration's) holds no entries.
+    // The entries of a class's own constructors, which the class scan types by their
+    // shape alone (a call: `any`): one merged into a declaration (`---@class C` on
+    // `C = { f = Call() }`), and a `setmetatable` instance's, the class its metatable
+    // names (`setmetatable({ f = v }, { __index = C })`). A `nil` entry only declares
+    // the field, as it does to the scan; a declaration's table merged into another
+    // holds no entries.
+    let constructed: HashSet<TableIndex> = ir.local_exprs()
+        .filter_map(|(_, e)| match e {
+            Expr::TableConstructor(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
     let mut ctors: Vec<(TableIndex, &String)> = ir.ctor_merged_class.iter()
-        .filter(|(ctor, _)| ir.table(**ctor).class_name.is_none())
+        .filter(|(ctor, _)| !ir.class_tables.contains_key(*ctor))
         .filter_map(|(&ctor, class)| Some((ctor, classes.local.get(class)?)))
+        .chain(classes.local.iter()
+            .filter(|(t, _)| constructed.contains(t) && !ir.class_tables.contains_key(*t) && !ir.ctor_merged_class.contains_key(*t))
+            .map(|(&t, name)| (t, name)))
         .collect();
     ctors.sort_unstable();
     for (ctor, name) in ctors {
@@ -2909,7 +3084,6 @@ fn accumulate_class_fields_in_file(
             }
             let entry = acc.entry((name.clone(), field.clone())).or_default();
             entry.written = true;
-            entry.ctor = true;
             if let Some(ty) = result.resolve_expr_type(expr).map(|ty| ty.widen_literals()) {
                 let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, path, &globals);
                 if !entry.tys.contains(&lifted) {
@@ -2939,6 +3113,31 @@ fn accumulate_class_fields_in_file(
             name_start: start,
             name_end: end,
         });
+    }
+
+    // Elements written into a class field's value under a string key known only at
+    // run time (`self.options[name] = v`), not a list's appends or another map's keys.
+    let string_key = |ty: &ValueType| match ty {
+        ValueType::Union(members) => members.iter().all(|m| matches!(m, ValueType::Any | ValueType::String(_) | ValueType::Nil)),
+        other => matches!(other, ValueType::Any | ValueType::String(_)),
+    };
+    for &(table, key, value) in &ir.deferred_element_writes {
+        if ir.string_literals.contains_key(&key) || matches!(ir.expr(value), Expr::Literal(ValueType::Nil)) {
+            continue;
+        }
+        let Some(target) = ir.field_read_target(table) else { continue };
+        if ir.appends_to(key, &target) || result.resolve_expr_type(key).is_some_and(|ty| !string_key(&ty)) {
+            continue;
+        }
+        let (receiver, field) = target;
+        let Some(class) = classes.class_of(ext, receiver) else { continue };
+        let ty = result.resolve_expr_type(value)
+            .map_or(ValueType::Any, |ty| lift_local_type_to_ext_with(&ty.widen_literals(), ir, ext, result, path, &globals));
+        let entry = acc.entry((class, field)).or_default();
+        entry.element_writes = true;
+        if !entry.element_tys.contains(&ty) {
+            entry.element_tys.push(ty);
+        }
     }
 
     // What the file reads each field it writes as: its own table of the class (a
@@ -3104,10 +3303,13 @@ struct AccField {
     sub_fields: CarriedFields,
     /// The field is written (not only fields of its value).
     written: bool,
-    /// An entry of the class's constructor writes it.
-    ctor: bool,
     /// A write is a map whose entries' types differ (`Ir::writes_mixed_map`).
     mixed_map: bool,
+    /// Elements are written into the field's value under keys known only at run
+    /// time (`self.options[name] = v`): a record it holds is a map as well, of
+    /// these values (`any` among them for one that doesn't resolve).
+    element_writes: bool,
+    element_tys: Vec<ValueType>,
     /// What the file reads the field as, lifted — what other files read a field one
     /// file writes as, with the sub-fields written onto its value carried.
     reading: Option<ValueType>,
@@ -3124,8 +3326,13 @@ impl AccField {
         self.lateinit |= other.lateinit;
         self.unresolved |= other.unresolved;
         self.written |= other.written;
-        self.ctor |= other.ctor;
         self.mixed_map |= other.mixed_map;
+        self.element_writes |= other.element_writes;
+        for ty in &other.element_tys {
+            if !self.element_tys.contains(ty) {
+                self.element_tys.push(ty.clone());
+            }
+        }
         for (name, (tys, loc)) in &other.sub_fields.0 {
             for ty in tys {
                 self.sub_fields.add(name, ty.clone(), || loc.clone());
@@ -3171,8 +3378,10 @@ impl CarriedFields {
     /// fields (`Class & { ... }`, see `lift_instance`) gets the ones it lacks added
     /// to them; an optional one (`T?`) gets them on its value, `(T & { ... })?`.
     /// With the analysis `ir` of the file writing them, an instance of a class it
-    /// holds (a call's object, `Ir::call_object_table`) counts as that class. `ty`
-    /// unchanged when none remain or it isn't an external instance.
+    /// holds (a call's object, `Ir::call_object_table`) counts as that class. A
+    /// record, or a bare `table` (an empty constructor), holds the ones it lacks as
+    /// fields of its own (a `TableShape`). `ty` unchanged when none remain or it is
+    /// none of these.
     pub(crate) fn onto(self, ty: ValueType, ext: &PreResolvedGlobals, ir: Option<&Ir>) -> ValueType {
         if let ValueType::Union(members) = &ty
             && members.contains(&ValueType::Nil)
@@ -3181,6 +3390,31 @@ impl CarriedFields {
             let (Some(value), None) = (values.next(), values.next()) else { return ty };
             let carried = self.onto(value.clone(), ext, ir);
             return if carried == *value { ty } else { ValueType::make_union(vec![carried, ValueType::Nil]) };
+        }
+        // A record, or a table with nothing known in it (an empty constructor), holds
+        // the members written onto it as fields of its own.
+        let record = match &ty {
+            ValueType::Table(None) => Some(None),
+            ValueType::TableShape(shape) if shape.value_type.is_none() && shape.key_type.is_none() => Some(Some(&**shape)),
+            _ => None,
+        };
+        if let Some(record) = record {
+            let mut fields: Vec<(String, ValueType)> = record.map(|r| r.fields.clone()).unwrap_or_default();
+            let mut field_defs: Vec<(String, crate::types::ExternalLocation)> = record.map(|r| r.field_defs.clone()).unwrap_or_default();
+            let mut added = false;
+            for (name, (mut tys, loc)) in self.0 {
+                if fields.iter().any(|(n, _)| *n == name) {
+                    continue;
+                }
+                let field_ty = if tys.len() == 1 { tys.pop().unwrap() } else { ValueType::make_union(tys) };
+                field_defs.push((name.clone(), loc));
+                fields.push((name, field_ty));
+                added = true;
+            }
+            if !added {
+                return ty;
+            }
+            return ValueType::TableShape(Box::new(crate::types::TableShape::new_with_defs(fields, field_defs)));
         }
         let members: &[ValueType] = match &ty {
             ValueType::Table(Some(_)) => std::slice::from_ref(&ty),
@@ -3354,9 +3588,9 @@ fn contains_bare_table(ty: &ValueType) -> bool {
 /// sharpening to a non-callable class would false-positive `cannot-call`. Those are
 /// the regression-prone slice left for a later phase.
 ///
-/// What a harvest analysis, a constructor's entry and the addon namespace's `@class`
-/// harvest of a class field (see [`class_field_scan_typed`]); also what a constructor
-/// twin may replace (`resolve_field_access`).
+/// What a harvest analysis and the addon namespace's `@class` harvest of a class field
+/// (see [`class_field_scan_typed`]); also what a constructor twin may replace
+/// (`resolve_field_access`).
 pub(crate) fn field_is_coarse_placeholder(fi: &crate::types::FieldInfo, ext: &PreResolvedGlobals) -> bool {
     matches!(fi.annotation, Some(ValueType::Any))
         || (fi.annotation.is_none()
@@ -3386,8 +3620,9 @@ pub(crate) fn class_field_scan_typed(fi: &crate::types::FieldInfo, ext: &PreReso
         return field_is_coarse_placeholder(fi, ext);
     }
     let scanned_function = |ty: &ValueType| is_function_value(ty) && !contains_untyped(ty);
+    let ctor_entry = || ext.inferred_ctor_entries.get(class).is_some_and(|fields| fields.contains(field));
     fi.annotation_text.is_none()
-        && (fi.from_scan || field_is_coarse_placeholder(fi, ext))
+        && (fi.from_scan || field_is_coarse_placeholder(fi, ext) || ctor_entry())
         && !ext.declared_class_fields.get(class).is_some_and(|d| d.contains(field))
         && !fi.annotation.as_ref().is_some_and(scanned_function)
         && !(fi.expr.is_external() && matches!(ext.expr(fi.expr), Expr::Literal(ty) if scanned_function(ty)))
