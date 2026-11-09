@@ -12,7 +12,7 @@ util:UMethod()
 -- (`U_Thing`), which `Method`-kind globals carry in `returns` rather than as the
 -- field type.
 local getThing = ns.GetThing
---    ^ hover: (local) function getThing(self)
+--    ^ hover: (local) function getThing(self: U_NS)\n-> U_Thing
 -- Calling it still yields the declared return type.
 local thing = ns:GetThing()
 --    ^ hover: (local) thing: U_Thing  def: local

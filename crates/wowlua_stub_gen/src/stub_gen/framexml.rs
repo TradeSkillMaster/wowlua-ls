@@ -86,9 +86,9 @@ pub(in crate::stub_gen) fn extract_inferred_return(
         ar.format_inferred_returns(func, 1)
     };
 
-    if return_types.is_empty()
-        || return_types.iter().all(|t| t == "any" || t == "?" || t == "nil")
-    {
+    // `any & any` (a call combining types it couldn't resolve) says no more than `any`.
+    let untyped = |t: &str| t.split(['&', '|']).map(str::trim).all(|m| matches!(m, "any" | "?" | "nil"));
+    if return_types.is_empty() || return_types.iter().all(|t| untyped(t)) {
         return None;
     }
 

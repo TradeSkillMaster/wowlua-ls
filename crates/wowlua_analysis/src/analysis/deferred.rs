@@ -200,11 +200,15 @@ pub struct DeferredFieldTypeArgs {
 /// produces, so adding the next datum costs a struct field, not a new cache.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeferredSig {
-    /// Per-slot precise return types (coarse `any` slots upgraded).
+    /// Per-slot precise return types (coarse `any` slots upgraded); only for a
+    /// function whose returns its body gives (`deferred_returns`).
     pub returns: Vec<ValueType>,
     /// Precise correlated return-only "case" overloads (and any other inferred
-    /// overloads), with their types lifted into ext space.
+    /// overloads), with their types lifted into ext space; likewise.
     pub overloads: Vec<ResolvedOverload>,
+    /// The type the defining file's analysis gives each parameter no `@param`
+    /// types, by position (`None`: annotated, the receiver, or no more than `any`).
+    pub params: Vec<Option<ValueType>>,
 }
 
 /// A unit of deferred harvest: one file analyzed on its own (its deferred returns,
@@ -762,20 +766,48 @@ impl Ir {
     /// transparently returns the precise function for `func_idx`, so resolution,
     /// diagnostics, hover, and signature help all see the same body-derived type
     /// the definition site infers — no `effective_*` plumbing required.
+    ///
+    /// A parameter no `@param` types reads as the defining file's analysis types it
+    /// too (`symbol_overlay`), so a call checks its arguments against it and hover
+    /// and signature help show it.
     pub fn ensure_overlay(&mut self, func_idx: FunctionIndex) {
-        if !func_idx.is_external() || self.overlay.contains_key(&func_idx) {
+        if !func_idx.is_external() || !self.signatures_checked.insert(func_idx) {
             return;
         }
-        let Some(sig) = resolve_deferred_sig(&self.ext, func_idx) else {
+        let ext = Arc::clone(&self.ext);
+        let returns = ext.deferred_returns.contains(&func_idx);
+        if !returns && !ext.deferred_params.contains(&func_idx) {
+            return;
+        }
+        let Some(sig) = resolve_deferred_sig(&ext, func_idx) else {
             return;
         };
-        if let Some(loc) = self.ext.function_locations.get(&func_idx) {
+        if let Some(loc) = ext.function_locations.get(&func_idx) {
             self.deferred_dep_files.insert(loc.path.clone());
         }
-        let mut precise = self.ext.func(func_idx).clone();
-        precise.return_annotations = sig.returns;
-        precise.overloads = sig.overloads;
-        self.overlay.insert(func_idx, precise);
+        let coarse = ext.func(func_idx);
+        for (pos, ty) in sig.params.iter().enumerate() {
+            let (Some(ty), Some(&sym_idx)) = (ty, coarse.args.get(pos)) else { continue };
+            let mut sym = ext.sym(sym_idx).clone();
+            let Some(ver) = sym.versions.get_mut(coarse.param_version(pos)) else { continue };
+            ver.resolved_type = Some(ty.clone());
+            self.symbol_overlay.insert(sym_idx, sym);
+        }
+        if returns {
+            let mut precise = coarse.clone();
+            precise.return_annotations = sig.returns;
+            precise.overloads = sig.overloads;
+            self.overlay.insert(func_idx, precise);
+        }
+    }
+
+    /// This file's functions by the start of their definitions, the key
+    /// `function_locations` gives a workspace function's definition by.
+    pub(crate) fn functions_by_start(&self) -> HashMap<u32, FunctionIndex> {
+        self.functions.iter().enumerate()
+            .filter(|(_, f)| f.def_node != DefNode::DUMMY)
+            .map(|(i, f)| (f.def_node.start, FunctionIndex(i)))
+            .collect()
     }
 
     /// Ensure the per-file `symbol_overlay` holds a precise `Symbol` for an
@@ -1163,6 +1195,7 @@ impl Analysis<'_> {
     /// out-of-scope diagnostic passes read the precise type without harvesting at
     /// query time (queries run `&self` and cannot mutate the overlay).
     pub fn populate_deferred_overlay(&mut self) {
+        self.overlay_own_functions();
         // Collect candidate external function indices first, so we don't hold a
         // borrow of `self.ir` across the mutating `ensure_overlay` calls.
         let mut candidates: HashSet<FunctionIndex> = HashSet::default();
@@ -1183,6 +1216,48 @@ impl Analysis<'_> {
         }
         for f in candidates {
             self.ir.ensure_overlay(f);
+        }
+    }
+}
+
+impl Analysis<'_> {
+    /// The workspace functions this file defines read, through their external
+    /// index, as their definitions here type them: a harvest cuts a file's reads of
+    /// itself, so a method this file defines through another file's table would
+    /// otherwise show here the coarse signature other files read harvested.
+    fn overlay_own_functions(&mut self) {
+        if harvesting() {
+            return;
+        }
+        let ext = Arc::clone(&self.ir.ext);
+        let Some(funcs) = self.ir.file_path.as_ref().and_then(|path| ext.deferred_sigs_by_path.get(path)) else { return };
+        let by_start = self.ir.functions_by_start();
+        for &fidx in funcs {
+            let Some(&local_idx) = ext.function_locations.get(&fidx).and_then(|loc| by_start.get(&loc.start)) else { continue };
+            if !self.ir.signatures_checked.insert(fidx) {
+                continue;
+            }
+            let coarse = ext.func(fidx);
+            let local = &self.ir.functions[local_idx.val()];
+            let params: Vec<(usize, ValueType)> = (0..coarse.args.len())
+                .filter(|&pos| untyped_param(&ext, coarse, pos))
+                .filter_map(|pos| Some((pos, self.ir.param_decl_type(local, pos).filter(|t| !t.contains_any())?.clone())))
+                .collect();
+            for (pos, ty) in params {
+                let sym_idx = coarse.args[pos];
+                let mut sym = ext.sym(sym_idx).clone();
+                if let Some(v) = sym.versions.get_mut(coarse.param_version(pos)) {
+                    v.resolved_type = Some(ty);
+                    self.ir.symbol_overlay.insert(sym_idx, sym);
+                }
+            }
+            if ext.deferred_returns.contains(&fidx) {
+                let local = &self.ir.functions[local_idx.val()];
+                let mut precise = coarse.clone();
+                precise.return_annotations = crate::analysis::queries::inferred_return_types(&self.ir, local);
+                precise.overloads = local.overloads.clone();
+                self.ir.overlay.insert(fidx, precise);
+            }
         }
     }
 }
@@ -1221,7 +1296,7 @@ pub fn resolve_deferred_sig(
     ext: &Arc<PreResolvedGlobals>,
     func_idx: FunctionIndex,
 ) -> Option<DeferredSig> {
-    if !ext.deferred_returns.contains(&func_idx) {
+    if !ext.deferred_returns.contains(&func_idx) && !ext.deferred_params.contains(&func_idx) {
         return None;
     }
     let path = ext.function_locations.get(&func_idx)?.path.clone();
@@ -2669,19 +2744,13 @@ fn harvest_sigs(
     globals: &GlobalTables,
 ) -> HashMap<FunctionIndex, DeferredSig> {
     let ir = &result.ir;
-    // Index local functions by their definition start offset, matching the
-    // external `function_locations` start (both are the FunctionDefinition node's
-    // text-range start).
-    let mut by_start: HashMap<u32, usize> = HashMap::default();
-    for (i, f) in ir.functions.iter().enumerate() {
-        if f.def_node != DefNode::DUMMY {
-            by_start.insert(f.def_node.start, i);
-        }
-    }
+    // Local functions by their definition start, matching the external
+    // `function_locations` start (both the FunctionDefinition node's start).
+    let by_start = ir.functions_by_start();
 
     // Use the reverse-indexed path→functions map (O(1) per file) instead of
     // iterating all deferred functions across the workspace.
-    let deferred_in_file = ext.deferred_returns_by_path.get(path);
+    let deferred_in_file = ext.deferred_sigs_by_path.get(path);
 
     // Collect a signature bundle for every deferred function defined in this
     // file. Insert an entry for *every* one (bundle may have empty overloads) so
@@ -2691,8 +2760,12 @@ fn harvest_sigs(
         for &fidx in func_indices {
             let Some(loc) = ext.function_locations.get(&fidx) else { continue };
             let sig = match by_start.get(&loc.start) {
+                Some(&local_idx) if !ext.deferred_returns.contains(&fidx) => DeferredSig {
+                    params: harvest_params(ext, fidx, &ir.functions[local_idx.val()], result, path, globals),
+                    ..DeferredSig::default()
+                },
                 Some(&local_idx) => {
-                    let local = &ir.functions[local_idx];
+                    let local = &ir.functions[local_idx.val()];
                     // Derive both arity and per-slot types from the engine's
                     // inferred returns, using the *same* summary the definition
                     // site displays (`inferred_return_types`): when the engine
@@ -2711,8 +2784,12 @@ fn harvest_sigs(
                         .enumerate()
                         .map(|(slot, t)| {
                             let lifted = lift_local_type_to_ext_with(&t, ir, ext, result, path, globals);
-                            if lifted.contains_any() { return ValueType::Any; }
-                            let holders = returned_holders(result, FunctionIndex(local_idx), slot);
+                            // An `any` member of an intersection (`Frame & any`, a template the
+                            // call couldn't type) is the defining file's type as much as the rest.
+                            if matches!(&lifted, ValueType::Any) || matches!(&lifted, ValueType::Union(m) if m.contains(&ValueType::Any)) {
+                                return ValueType::Any;
+                            }
+                            let holders = returned_holders(result, local_idx, slot);
                             wrap_overlay_shape(&t, lifted, result, ext, &holders, path, globals)
                         })
                         .collect();
@@ -2724,19 +2801,58 @@ fn harvest_sigs(
                         .iter()
                         .map(|o| lift_overload_to_ext(o, ir, ext, globals))
                         .collect();
-                    DeferredSig { returns, overloads }
+                    let params = harvest_params(ext, fidx, local, result, path, globals);
+                    DeferredSig { returns, overloads, params }
                 }
                 // No matching function in the re-analyzed file (shouldn't happen, but
                 // be safe): keep the coarse values so we don't re-analyze repeatedly.
                 None => DeferredSig {
                     returns: ext.func(fidx).return_annotations.clone(),
                     overloads: ext.func(fidx).overloads.clone(),
+                    params: Vec::new(),
                 },
             };
             harvested.insert(fidx, sig);
         }
     }
     harvested
+}
+
+/// The types `local`, the defining file's function for the deferred `fidx`, has for
+/// the parameters no `@param` types, lifted into ext space by position: what readers
+/// check arguments against and show. `None` for a parameter the build typed (an
+/// annotated one, a `:` method's implicit `self`) and a type saying no more than
+/// `any` (generics stay coarse through the lift).
+fn harvest_params(
+    ext: &Arc<PreResolvedGlobals>,
+    fidx: FunctionIndex,
+    local: &crate::types::Function,
+    result: &crate::analysis::AnalysisResult,
+    path: &Path,
+    globals: &GlobalTables,
+) -> Vec<Option<ValueType>> {
+    if !ext.deferred_params.contains(&fidx) {
+        return Vec::new();
+    }
+    let ir = &result.ir;
+    let coarse = ext.func(fidx);
+    (0..coarse.args.len()).map(|i| {
+        if !untyped_param(ext, coarse, i) {
+            return None;
+        }
+        let ty = ir.param_decl_type(local, i)?;
+        let lifted = lift_local_type_to_ext_with(ty, ir, ext, result, path, globals);
+        (!lifted.contains_any()).then_some(lifted)
+    }).collect()
+}
+
+/// Whether the build left parameter `pos` of the workspace function `coarse` untyped
+/// (no `@param`, nor a type it gave, as a `:` method's receiver): the parameters
+/// whose type the defining file's analysis supplies ([`harvest_params`],
+/// `Analysis::overlay_own_functions`).
+fn untyped_param(ext: &PreResolvedGlobals, coarse: &crate::types::Function, pos: usize) -> bool {
+    coarse.param_annotations.get(pos).is_some_and(crate::annotations::annotation_type_is_empty)
+        && ext.sym(coarse.args[pos]).versions.get(coarse.param_version(pos)).is_some_and(|v| v.resolved_type.is_none())
 }
 
 /// The resolved type of every call-typed global defined in `path` (`None` when
@@ -3647,6 +3763,17 @@ fn resolve_alias_root(ir: &Ir, mut sym: SymbolIndex) -> SymbolIndex {
     sym
 }
 
+/// What return slot `slot` of the local function `func`, whose type here is `ty`,
+/// reads as in other files when it returns an instance of an external class carrying
+/// fields written through it here (`Class & { … }`, [`wrap_overlay_shape`]): the
+/// defining file's display of the function, which would otherwise name the class alone.
+pub(crate) fn carried_return_type(result: &crate::analysis::AnalysisResult, func: FunctionIndex, slot: usize, ty: &ValueType) -> Option<ValueType> {
+    let path = result.ir.file_path.as_deref()?;
+    let holders = returned_holders(result, func, slot);
+    let wrapped = wrap_overlay_shape(ty, ty.clone(), result, &result.ir.ext, &holders, path, &GlobalTables::default());
+    (wrapped != *ty).then_some(wrapped)
+}
+
 /// The locals the value a function returns in `slot` may be held in, each
 /// resolved to its alias root ([`resolve_alias_root`]): the variable a `return`
 /// statement names and, through a call to a function of this file (returned
@@ -3741,6 +3868,15 @@ fn wrap_overlay_shape(
     def_path: &Path,
     globals: &GlobalTables,
 ) -> ValueType {
+    // A nilable instance (`T?`, an implicit `nil` return beside it) carries its fields
+    // as `T` does.
+    if let ValueType::Union(members) = orig
+        && let [only] = members.iter().filter(|m| !matches!(m, ValueType::Nil)).collect::<Vec<_>>().as_slice()
+        && members.len() == 2
+    {
+        let wrapped = wrap_overlay_shape(only, lifted.strip_nil(), result, ext, holders, def_path, globals);
+        return ValueType::make_union(vec![wrapped, ValueType::Nil]);
+    }
     // The tables a write through the value lands on: its class, or the members of
     // its intersection (an external class's overlay takes a frame's writes).
     let tables: Vec<TableIndex> = match orig {

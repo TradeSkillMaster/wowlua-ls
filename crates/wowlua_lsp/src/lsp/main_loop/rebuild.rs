@@ -19,6 +19,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
     x.name == y.name
         && x.kind == y.kind
         && x.params == y.params
+        && x.self_param == y.self_param
         && x.returns == y.returns
         && x.overloads == y.overloads
         && x.deprecated == y.deprecated

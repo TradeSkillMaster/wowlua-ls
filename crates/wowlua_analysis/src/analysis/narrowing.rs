@@ -1604,6 +1604,51 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// If `expr` tests a plain name for nil (`not x`, `x == nil`, `nil == x`),
+    /// resolve it to its symbol.
+    pub(super) fn nil_tested_symbol(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        let name = |e: &Expression<'_>| match e {
+            Expression::Identifier(ident) if ident.syntax().kind() == SyntaxKind::NameRef => self.bare_name_symbol(e, scope_idx),
+            _ => None,
+        };
+        match expr {
+            Expression::GroupedExpression(g) => g.get_expression().and_then(|inner| self.nil_tested_symbol(&inner, scope_idx)),
+            Expression::BinaryExpression(b) if b.kind() == Operator::Equals => {
+                let is_nil = |e: &Expression<'_>| matches!(e, Expression::Literal(l) if l.is_nil());
+                match b.get_terms().as_slice() {
+                    [a, b] if is_nil(b) => name(a),
+                    [a, b] if is_nil(a) => name(b),
+                    _ => None,
+                }
+            }
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => u.get_terms().first().and_then(name),
+            _ => None,
+        }
+    }
+
+    /// The variable a plain `if not x then x = … end` (or `if x == nil then`) gives a
+    /// default: one branch, no `else`, its block assigning `x` itself.
+    pub(super) fn nil_defaulted_symbol(&self, if_chain: &IfChain<'_>, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        let branches = if_chain.if_branches();
+        let [branch] = branches.as_slice() else { return None };
+        if if_chain.else_branch().is_some() {
+            return None;
+        }
+        let sym = self.nil_tested_symbol(&branch.expression()?, scope_idx)?;
+        branch.block().is_some_and(|block| self.block_assigns(&block, sym, scope_idx)).then_some(sym)
+    }
+
+    /// Whether a statement of `block` (not a nested one) assigns the plain name `sym`.
+    fn block_assigns(&self, block: &Block<'_>, sym: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        block.statements().iter().any(|stmt| {
+            let Statement::Assign(assign) = stmt else { return false };
+            assign.variable_list()
+                .and_then(|vars| vars.identifiers().first().copied())
+                .is_some_and(|id| id.syntax().kind() == SyntaxKind::NameRef
+                    && self.get_symbol(&SymbolIdentifier::Name(id.names()[0].clone()), scope_idx) == Some(sym))
+        })
+    }
+
     /// Record an implication from one ordering of an `assert(... or ...)`: if
     /// `not_term` is `not A` and `bare_term` is a bare name `B`, then `A` being
     /// truthy implies `B` is truthy. The current symbol versions are captured so

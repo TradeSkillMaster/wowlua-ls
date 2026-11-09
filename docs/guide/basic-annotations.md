@@ -291,3 +291,5 @@ register(ItemRefTooltip)
 ```
 
 This is intentional. The LS won't pick one caller's type and reject the other. Add `@param frame Frame` (or whatever the common base type is) to resolve it.
+
+A parameter given a default (`name = name or "x"`, or `if not name then name = "x" end`) is inferred optional (`string?`). Inferred parameter types apply wherever the function is called: other files show them in hover and signature help and check their arguments against them. Only calls in the defining file count toward the incompatible-callers rule above, so annotate a function that other files call with different types.

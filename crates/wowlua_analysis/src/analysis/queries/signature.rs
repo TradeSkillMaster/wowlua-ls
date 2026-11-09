@@ -126,7 +126,7 @@ impl AnalysisResult {
         let mut param_counts: Vec<(usize, bool)> = Vec::new(); // (param_count, is_vararg)
 
         // Primary signature
-        let primary = self.build_signature_info(func, is_colon);
+        let primary = self.build_signature_info(func_idx, is_colon);
         let primary_param_count = primary.params.len();
         let primary_is_vararg = func.is_vararg;
         signatures.push(primary);
@@ -162,7 +162,8 @@ impl AnalysisResult {
         })
     }
 
-    pub(super) fn build_signature_info(&self, func: &Function, skip_self: bool) -> SignatureInfo {
+    pub(super) fn build_signature_info(&self, func_idx: FunctionIndex, skip_self: bool) -> SignatureInfo {
+        let func = self.func(func_idx);
         let args: Vec<(String, Option<String>, Option<String>)> = func.args.iter()
             .enumerate()
             .filter(|&(_, &sym_idx)| {
@@ -207,7 +208,7 @@ impl AnalysisResult {
                 format_vararg_return(formatted, i, func)
             }).collect()
         } else {
-            self.format_inferred_returns(func, 1)
+            self.format_inferred_returns_shown(func_idx, 1)
         };
 
         let mut params: Vec<String> = args.iter().map(|(name, type_str, _)| {

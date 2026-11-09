@@ -32,7 +32,7 @@
 //!   FrameXML scope-0 symbols; the warm path layers onto `stubs_base` (inheriting
 //!   `creates_global_specs`, metatable indices, stub end markers, event maps,
 //!   …) and builds the multi-definition `*_all` location maps. Their two
-//!   identical sub-computations are [`deferred_returns_by_path`] and
+//!   identical sub-computations are [`deferred_sigs_by_path`] and
 //!   [`deferred_call_globals_by_path`].
 
 use crate::collections::{HashMap, HashSet};
@@ -304,14 +304,51 @@ pub fn annotated_table_global_type(annotation: &ValueType, own: TableIndex, tabl
     }
 }
 
-/// Group deferred-return function indices by their defining file path. Identical
-/// across both `finish()` implementations.
-pub fn deferred_returns_by_path(
-    deferred_returns: &HashSet<FunctionIndex>,
+/// Registers what the signature harvest (`analysis/deferred.rs`) types of the
+/// workspace function `g`, built as `func_idx`: its returns when its body gives
+/// them (no `@return`), and its parameters when no `@param` types one. Identical
+/// across both builds.
+pub fn register_deferred_sig(
+    g: &crate::annotations::ExternalGlobal,
+    func_idx: FunctionIndex,
+    deferred_returns: &mut HashSet<FunctionIndex>,
+    deferred_params: &mut HashSet<FunctionIndex>,
+) {
+    if g.body_derived_returns {
+        deferred_returns.insert(func_idx);
+    }
+    if g.params.iter().any(|p| p.name != "..." && crate::annotations::annotation_type_is_empty(&p.typ)) {
+        deferred_params.insert(func_idx);
+    }
+}
+
+/// Types the implicit `self` of `func_idx`, a workspace method defined with `:` on
+/// `receiver`, as that table where neither `@param self` nor a generic class's
+/// parameters type it: what the method's receiver path reads as, in the defining
+/// file and in every other. Returns whether it did. Identical across both builds;
+/// never the stub blob's.
+pub fn type_method_receiver(ctx: &mut FnBuildCtx<'_>, func_idx: FunctionIndex, receiver: TableIndex) -> bool {
+    let func = &ctx.functions[func_idx.ext_offset()];
+    if !func.param_annotations.first().is_some_and(crate::annotations::annotation_type_is_empty) {
+        return false;
+    }
+    let Some(&self_sym) = func.args.first() else { return false };
+    let Some(ver) = ctx.symbols[self_sym.ext_offset()].versions.first_mut() else { return false };
+    if ver.resolved_type.is_some() {
+        return false;
+    }
+    ver.resolved_type = Some(ValueType::Table(Some(receiver)));
+    true
+}
+
+/// Group the functions whose signature is harvested (`deferred`, each once) by their
+/// defining file path. Identical across both `finish()` implementations.
+pub fn deferred_sigs_by_path<'a>(
+    deferred: impl IntoIterator<Item = &'a FunctionIndex>,
     function_locations: &SharedMap<FunctionIndex, ExternalLocation>,
 ) -> HashMap<std::path::PathBuf, Vec<FunctionIndex>> {
     let mut by_path: HashMap<std::path::PathBuf, Vec<FunctionIndex>> = HashMap::default();
-    for &fidx in deferred_returns {
+    for &fidx in deferred {
         if let Some(loc) = function_locations.get(&fidx) {
             by_path.entry(loc.path.clone()).or_default().push(fidx);
         }
@@ -993,7 +1030,7 @@ impl SlotTables<'_> {
     }
 
     /// Whether the slot `name` holding `vt` is typed by the values the files write
-    /// there: not a function (its signature crosses on its own) nor a table other
+    /// there: not a function the build made (its signature crosses on its own) nor a table other
     /// slots hang off (`ns.Module = {}` with fields written, whose fields are slots;
     /// the class the scan names after a global holding a table is one). A table
     /// the scan saw nothing of (`ns.list = { ... }` of positional entries), or only
@@ -1001,7 +1038,10 @@ impl SlotTables<'_> {
     /// its files build.
     fn slot_holds_value(&self, name: &str, vt: Option<&ValueType>) -> bool {
         match vt {
-            Some(ValueType::Function(_) | ValueType::FunctionSig(_)) => false,
+            // A function the build made crosses files with its signature; a bare
+            // `function` (a function value the scan only saw stored) is what its
+            // files write there.
+            Some(ValueType::Function(Some(_)) | ValueType::FunctionSig(_)) => false,
             Some(ValueType::Table(Some(idx))) => {
                 let table = &self.tables[idx.ext_offset()];
                 let untyped_map = table.class_name.is_none()

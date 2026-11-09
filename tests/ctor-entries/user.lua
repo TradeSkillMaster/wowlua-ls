@@ -65,7 +65,7 @@ local nestedSize = ns.Sub.Nested.size
 local catalogFirst = Catalog.Entries:First()
 --    ^ hover: (local) catalogFirst: string
 local inner = ns.Holder.inner
---    ^ hover: (local) inner: {\n  Depth: fun(self): number,\n  depth: number\n}
+--    ^ hover: (local) inner: {\n  Depth: fun(self: table): number,\n  depth: number\n}
 local innerDepth = ns.Holder.inner:Depth()
 --    ^ hover: (local) innerDepth: number
 local leafLevel = ns.Branch.leaf:Level()

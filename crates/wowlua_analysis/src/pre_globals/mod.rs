@@ -427,10 +427,22 @@ pub struct PreResolvedGlobals {
     /// Runtime only — `#[serde(skip)]` so the stub blob is unaffected.
     #[serde(skip)]
     pub deferred_returns: HashSet<FunctionIndex>,
-    /// Reverse index: path → deferred function indices defined in that file.
-    /// Avoids O(total_deferred) scan per harvest — each file only visits its own.
+    /// Workspace function indices with a parameter no `@param` types, whose type
+    /// readers take from the defining file's analysis (backward inference) through
+    /// the same signature harvest. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
-    pub deferred_returns_by_path: HashMap<PathBuf, Vec<FunctionIndex>>,
+    pub deferred_params: HashSet<FunctionIndex>,
+    /// The workspace methods defined with `:` through the addon namespace whose
+    /// implicit `self` the build typed as their receiver table
+    /// (`shared::type_method_receiver`): retyped to the class their file declares on
+    /// the namespace (`merge_addon_ns_into_classes`), else to their addon's own copy
+    /// of the table (`build_per_addon_tables`). Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub addon_ns_methods: Vec<FunctionIndex>,
+    /// Reverse index: path → the `deferred_returns` and `deferred_params` functions
+    /// defined in that file, so each harvest only visits its own.
+    #[serde(skip)]
+    pub deferred_sigs_by_path: HashMap<PathBuf, Vec<FunctionIndex>>,
     /// Workspace function indices that have *multiple* cross-file definitions
     /// disagreeing on arity — e.g. a namespaced function (`ns.A.B`) or class
     /// method defined with different parameter counts in mutually-exclusive
@@ -1725,6 +1737,8 @@ pub struct FnMeta<'a> {
     pub stores_into_raw: Option<usize>,
     pub requires_raw: Vec<(String, String)>,
     pub is_colon: bool,
+    /// The `@param self` typing a `:` method's implicit `self`.
+    pub self_param: Option<&'a crate::annotations::ParamInfo>,
     pub owner_class_name: Option<&'a str>,
     pub class_type_params: &'a [String],
     pub implicit_nil_return: bool,
@@ -1769,6 +1783,7 @@ impl<'a> FnMeta<'a> {
             stores_into_raw: None,
             requires_raw: Vec::new(),
             is_colon: false,
+            self_param: None,
             owner_class_name: None,
             class_type_params: &[],
             implicit_nil_return: false,
@@ -1813,6 +1828,7 @@ impl<'a> FnMeta<'a> {
             stores_into_raw: g.stores_into,
             requires_raw: g.requires.clone(),
             is_colon,
+            self_param: g.self_param.as_ref().filter(|_| is_colon),
             owner_class_name,
             class_type_params,
             implicit_nil_return: g.implicit_nil_return,
@@ -2261,6 +2277,8 @@ struct BuildContext {
     // Lazy cross-file return resolution: workspace functions whose returns were
     // inferred from the body (coarse) and should be resolved precisely on demand.
     deferred_returns: HashSet<FunctionIndex>,
+    deferred_params: HashSet<FunctionIndex>,
+    addon_ns_methods: Vec<FunctionIndex>,
     // Functions with multiple cross-file definitions disagreeing on arity (e.g.
     // flavor-split namespaced functions). `call_arity` skips arity checks for these.
     conflicting_arity_funcs: HashSet<FunctionIndex>,
@@ -2272,6 +2290,9 @@ struct BuildContext {
     implicit_protected_prefix: bool,
     /// See `shared::register_classes_and_aliases`.
     extend_aliases: bool,
+    /// Building the stub blob, whose methods' `self` stays untyped
+    /// (`shared::type_method_receiver`).
+    stub_blob: bool,
 }
 
 impl BuildContext {
@@ -2319,10 +2340,13 @@ impl BuildContext {
             constructor_method_names: HashSet::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
+            deferred_params: HashSet::default(),
+            addon_ns_methods: Vec::new(),
             conflicting_arity_funcs: HashSet::default(),
             deferred_call_globals: HashMap::default(),
             implicit_protected_prefix: false,
             extend_aliases: true,
+            stub_blob: false,
         }
     }
 
@@ -2766,8 +2790,12 @@ impl BuildContext {
                                 path: source_path.clone(), start: g.def_start, end: g.def_end,
                                 name_start: g.name_start, name_end: g.name_end,
                             });
-                            if g.body_derived_returns {
-                                self.deferred_returns.insert(func_idx);
+                            shared::register_deferred_sig(g, func_idx, &mut self.deferred_returns, &mut self.deferred_params);
+                            if *is_colon && !self.stub_blob
+                                && shared::type_method_receiver(&mut self.fn_build_ctx(), func_idx, target_idx)
+                                && is_addon_ns
+                            {
+                                self.addon_ns_methods.push(func_idx);
                             }
                             // Record display name for unused-function diagnostics. A constructor's
                             // function entries are values frameworks often call (option and
@@ -3130,9 +3158,7 @@ impl BuildContext {
                     };
                     self.function_locations.insert(func_idx, loc.clone());
                     self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
-                    if g.body_derived_returns {
-                        self.deferred_returns.insert(func_idx);
-                    }
+                    shared::register_deferred_sig(g, func_idx, &mut self.deferred_returns, &mut self.deferred_params);
                 }
                 self.exprs.push(Expr::FunctionDef(func_idx));
 
@@ -3587,7 +3613,7 @@ impl BuildContext {
             }
         }
 
-        let deferred_returns_by_path = shared::deferred_returns_by_path(&self.deferred_returns, &self.function_locations);
+        let deferred_sigs_by_path = shared::deferred_sigs_by_path(self.deferred_returns.union(&self.deferred_params), &self.function_locations);
         let deferred_call_globals_by_path = shared::deferred_call_globals_by_path(&self.deferred_call_globals);
 
         PreResolvedGlobals {
@@ -3628,8 +3654,10 @@ impl BuildContext {
             callback_registries: HashMap::default(),
             callback_event_methods: HashMap::default(),
             declared_class_fields: self.declared_class_fields,
-            deferred_returns_by_path,
+            deferred_sigs_by_path,
             deferred_returns: self.deferred_returns,
+            deferred_params: self.deferred_params,
+            addon_ns_methods: self.addon_ns_methods,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
             deferred_harvests: Default::default(),
             narrowing_methods: Default::default(),
@@ -4053,7 +4081,9 @@ impl PreResolvedGlobals {
             callback_event_methods: HashMap::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
-            deferred_returns_by_path: HashMap::default(),
+            deferred_params: HashSet::default(),
+            addon_ns_methods: Vec::new(),
+            deferred_sigs_by_path: HashMap::default(),
             conflicting_arity_funcs: HashSet::default(),
             deferred_harvests: Default::default(),
             narrowing_methods: Default::default(),
@@ -4126,6 +4156,7 @@ impl PreResolvedGlobals {
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
         ctx.extend_aliases = !stub_blob;
+        ctx.stub_blob = stub_blob;
         let mut class_field_paths = ClassFieldPaths::new(globals, external_classes);
         ctx.register_classes_and_aliases(external_classes, external_aliases);
         ctx.populate_class_fields(external_classes);
@@ -4235,6 +4266,16 @@ impl PreResolvedGlobals {
         addon_ns_class_names.dedup();
         if addon_ns_class_names.is_empty() { return; }
         let Some(addon_idx) = self.addon_table_idx else { return; };
+        // A method a file declaring the namespace's class defines through it has
+        // that class as its `self`, as there.
+        for i in 0..self.addon_ns_methods.len() {
+            let func = self.addon_ns_methods[i];
+            let Some(&class_idx) = self.function_locations.get(&func)
+                .and_then(|loc| addon_ns_class_files.get(&loc.path))
+                .and_then(|name| self.classes.get(name))
+            else { continue };
+            self.retype_method_receiver(func, addon_idx, class_idx);
+        }
         let addon_local = addon_idx.ext_offset();
         // Single-class case: no filtering needed — all addon-ns fields belong to the one class.
         let multiple_classes = addon_ns_class_names.len() > 1;
@@ -4532,9 +4573,13 @@ impl PreResolvedGlobals {
             .cloned()
             .unwrap_or_default();
 
+        // Each addon's copy of the combined tables, for the methods defined through them.
+        let mut copies_by_root: HashMap<&Path, HashMap<TableIndex, TableIndex>> = HashMap::default();
         for addon_root in &addon_roots {
             let owned_set = &owned[*addon_root];
+            let mut copies: HashMap<TableIndex, TableIndex> = HashMap::default();
             let table_idx = TableIndex(EXT_BASE + self.tables.len());
+            copies.insert(combined_idx, table_idx);
             // Reserve this addon's table slot up front: `rebuild_owned_subtable`
             // below pushes freshly-filtered sub-tables, which must land *after*
             // `table_idx` so it stays the index we record. Filled in at the end.
@@ -4563,7 +4608,7 @@ impl PreResolvedGlobals {
                     let sub = self.field_subtable(&fi).filter(|&sub| !self.shares_call_field_class(&fi, sub));
                     if let (Some(paths_this), Some(sub)) = (paths_this, sub) {
                         let new_sub = self.rebuild_owned_subtable(
-                            sub, std::slice::from_ref(field_name), addon_root, paths_this, &owned_all, 0,
+                            sub, std::slice::from_ref(field_name), addon_root, paths_this, &owned_all, 0, &mut copies,
                         );
                         self.repoint_field_subtable(&mut fi, new_sub, addon_root);
                     }
@@ -4583,6 +4628,7 @@ impl PreResolvedGlobals {
 
             self.tables[table_idx.ext_offset()] = table;
             self.addon_tables.insert(addon_root.to_path_buf(), table_idx);
+            copies_by_root.insert(*addon_root, copies);
 
             // Merge per-addon fields into that addon's @class (like merge_addon_ns_into_classes
             // but scoped to this addon root's class names).
@@ -4620,6 +4666,23 @@ impl PreResolvedGlobals {
                         }
                     }
                 }
+            }
+        }
+
+        // A method defined through the namespace has its addon's copy of its receiver
+        // as its `self`, as that addon's files read the receiver: the combined table
+        // holds every addon's fields.
+        for i in 0..self.addon_ns_methods.len() {
+            let func = self.addon_ns_methods[i];
+            let self_sym = self.functions[func.ext_offset()].args[0];
+            let Some(ValueType::Table(Some(receiver))) = self.symbols[self_sym.ext_offset()].versions[0].resolved_type else { continue };
+            let copy = self.function_locations.get(&func)
+                .and_then(|loc| file_addon_roots.get(&loc.path))
+                .and_then(|root| copies_by_root.get(root.as_path()))
+                .and_then(|copies| copies.get(&receiver))
+                .copied();
+            if let Some(copy) = copy {
+                self.retype_method_receiver(func, receiver, copy);
             }
         }
     }
@@ -4687,6 +4750,7 @@ impl PreResolvedGlobals {
     /// (`owned_all` distinguishes the two). Returns the new sub-table's index.
     /// `prefix` is this sub-table's path under the namespace root (e.g. `["db"]`);
     /// recursion is depth-bounded so a cyclic `Table` reference can't loop forever.
+    #[allow(clippy::too_many_arguments)] // threads the recursion's per-addon state; bundling adds indirection
     fn rebuild_owned_subtable(
         &mut self,
         combined_sub_idx: TableIndex,
@@ -4695,6 +4759,7 @@ impl PreResolvedGlobals {
         owned_this: &HashSet<Vec<String>>,
         owned_all: &HashSet<Vec<String>>,
         depth: u32,
+        copies: &mut HashMap<TableIndex, TableIndex>,
     ) -> TableIndex {
         const MAX_DEPTH: u32 = 8;
         let mut table = self.tables[combined_sub_idx.ext_offset()].clone();
@@ -4715,7 +4780,7 @@ impl PreResolvedGlobals {
             let child_sub = table.fields.get(&name)
                 .and_then(|fi| self.field_subtable(fi).filter(|&sub| !self.shares_call_field_class(fi, sub)));
             if let Some(child_sub) = child_sub {
-                let new_child = self.rebuild_owned_subtable(child_sub, &child_path, addon_root, owned_this, owned_all, depth + 1);
+                let new_child = self.rebuild_owned_subtable(child_sub, &child_path, addon_root, owned_this, owned_all, depth + 1, copies);
                 let mut fi = table.fields.remove(&name).unwrap();
                 self.repoint_field_subtable(&mut fi, new_child, addon_root);
                 table.fields.insert(name, fi);
@@ -4732,7 +4797,17 @@ impl PreResolvedGlobals {
             }
         }
         self.tables.push(table);
+        copies.insert(combined_sub_idx, new_idx);
         new_idx
+    }
+
+    /// Retype the implicit `self` of the method `func`, typed as table `from`, as `to`.
+    fn retype_method_receiver(&mut self, func: FunctionIndex, from: TableIndex, to: TableIndex) {
+        let self_sym = self.functions[func.ext_offset()].args[0];
+        let ver = &mut self.symbols[self_sym.ext_offset()].versions[0];
+        if ver.resolved_type == Some(ValueType::Table(Some(from))) {
+            ver.resolved_type = Some(ValueType::Table(Some(to)));
+        }
     }
 
     /// Look up the per-addon namespace table for a file, given its addon root.
@@ -5149,6 +5224,7 @@ impl PreResolvedGlobals {
             stores_into_raw,
             requires_raw,
             is_colon,
+            self_param,
             owner_class_name,
             class_type_params,
             implicit_nil_return,
@@ -5166,33 +5242,6 @@ impl PreResolvedGlobals {
             is_loop: false,
         });
 
-        let mut arg_symbols = Vec::new();
-        // Inject implicit self param for colon-defined methods, matching
-        // insert_function_definition in build_ir.rs.  Without this, dot-calls
-        // to stub colon methods (e.g. GameTooltip.Show(frame)) would report a
-        // false-positive redundant-parameter diagnostic.
-        if is_colon {
-            let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
-            ctx.symbols.push(Symbol {
-                id: SymbolIdentifier::Name("self".to_string()),
-                scope_idx: func_scope,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: None,
-                    type_args: Vec::new(),
-                    created_in_scope: func_scope,
-                    creation_order: 0,
-                    original_type_source: None,
-                }],
-                flavor_guard: 0,
-                flavors: 0,
-            });
-            ctx.scopes[func_scope_local].symbols.insert(
-                SymbolIdentifier::Name("self".to_string()), sym_idx,
-            );
-            arg_symbols.push(sym_idx);
-        }
         // Build effective generics early so param/return resolution sees class type params.
         let class_tp_constraints: Vec<Option<String>> = owner_class_name
             .and_then(|name| ctx.classes.get(name))
@@ -5209,6 +5258,35 @@ impl PreResolvedGlobals {
             }
         }
         let generic_annotations = effective_generic_annotations.as_slice();
+        let mut arg_symbols = Vec::new();
+        // Inject implicit self param for colon-defined methods, matching
+        // insert_function_definition in build_ir.rs.  Without this, dot-calls
+        // to stub colon methods (e.g. GameTooltip.Show(frame)) would report a
+        // false-positive redundant-parameter diagnostic.
+        if is_colon {
+            let self_type = self_param.and_then(|p| Self::resolve_annotation_gen(&p.typ, generic_annotations, ctx)
+                .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt }));
+            let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
+            ctx.symbols.push(Symbol {
+                id: SymbolIdentifier::Name("self".to_string()),
+                scope_idx: func_scope,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type: self_type,
+                    type_args: Vec::new(),
+                    created_in_scope: func_scope,
+                    creation_order: 0,
+                    original_type_source: None,
+                }],
+                flavor_guard: 0,
+                flavors: 0,
+            });
+            ctx.scopes[func_scope_local].symbols.insert(
+                SymbolIdentifier::Name("self".to_string()), sym_idx,
+            );
+            arg_symbols.push(sym_idx);
+        }
         let mut has_vararg_param = false;
         for p in params {
             if p.name == "..." {
@@ -5448,11 +5526,13 @@ impl PreResolvedGlobals {
         let mut param_annotations_vec: Vec<AnnotationType> = non_vararg_params.map(|p| p.typ.clone()).collect();
         // Prepend self entry for colon methods (matching the injected self in arg_symbols).
         if is_colon {
-            param_optional_vec.insert(0, false);
-            param_descriptions_vec.insert(0, None);
+            param_optional_vec.insert(0, self_param.is_some_and(|p| p.optional));
+            param_descriptions_vec.insert(0, self_param.and_then(|p| p.description.clone()));
+            if let Some(p) = self_param {
+                param_annotations_vec.insert(0, p.typ.clone());
             // Synthesize Parameterized self annotation for generic classes so
             // receiver-binding in resolve_function_call binds type params automatically.
-            if !class_type_params.is_empty() && let Some(name) = owner_class_name {
+            } else if !class_type_params.is_empty() && let Some(name) = owner_class_name {
                 param_annotations_vec.insert(0, AnnotationType::Parameterized(
                     name.to_string(),
                     class_type_params.iter().map(|p| AnnotationType::Simple(p.clone())).collect(),

@@ -32,9 +32,9 @@ addonTable.OnClick("click")          -- forwarded from a parameter
 local gv = addonTable.GetValue()     -- forwarded from another field
 --                    ^ hover: (field) GetValue: fun(): string
 addonTable.Sub.Run()                 -- forwarded onto a deep path
--- a function-literal field stays plain `function` (not the forwarded intersection)
+-- a function-literal field reads as its signature (not the forwarded intersection)
 addonTable.Render()
---         ^ hover: (field) Render: function
+--         ^ hover: (field) Render: fun()
 
 -- negative control: a field assigned nowhere still reports undefined-field
 local bad = addonTable.NeverAssigned

@@ -78,7 +78,7 @@ local di = DataLib.inner.MY_ENABLED_INFO
 -- Global non-class table with deep methods (Auctionator-like pattern):
 -- sub-table access and method calls resolve correctly.
 local sr = GadgetTools.Search
---                     ^ hover: (field) Search: {\n  Filter: fun(text: string): number,\n  IsActive: fun(self): boolean\n}  def: external
+--                     ^ hover: (field) Search: {\n  Filter: fun(text: string): number,\n  IsActive: fun(self: table): boolean\n}  def: external
 local fl = GadgetTools.Search.Filter("test")
 --    ^ hover: (local) fl: number  def: local
 local ia = GadgetTools.Search:IsActive()

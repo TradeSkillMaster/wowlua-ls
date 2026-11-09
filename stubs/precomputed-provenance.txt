@@ -1,5 +1,5 @@
 # wowlua-ls precomputed stubs
-# Generated: 2026-11-06T13:06:09Z
+# Generated: 2026-11-09T16:52:48Z
 # Source: https://github.com/Ketho/vscode-wow-api.git @ d0b5b51fac4c52c493371b9b18e66ce604ea4326
 # Source: https://github.com/Gethe/wow-ui-source.git @ 15881d522c44 (branch: live)
 # Source: https://github.com/Gethe/wow-ui-source.git @ 4192ac60067f (branch: classic_era)
@@ -9,5 +9,5 @@
 # Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ 1f1dec331d23927fefe3d50c3d7f6e0915cda96f (branch: classic_era)
 # Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ 877c67e9e0a64b5daae348a7b72b7a64bfaab90f (branch: classic)
 # Source: https://github.com/Ketho/BlizzardInterfaceResources.git @ d1ee569878094270c0ad8d8b00de0762158fd578 (branch: forever)
-# Symbols: 172573, Functions: 61750, Tables: 33050
+# Symbols: 172583, Functions: 61754, Tables: 33051
 # Embedded source files: 2883

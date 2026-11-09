@@ -702,6 +702,9 @@ impl<'a> Analysis<'a> {
             .is_some_and(|b| Self::block_always_exits(&b)));
         let mut branch_scopes: Vec<ScopeIndex> = Vec::new();
         let mut exiting_scopes: Vec<ScopeIndex> = Vec::new();
+        if let Some(sym) = self.nil_defaulted_symbol(if_chain, scope_idx) {
+            self.nil_defaulted_symbols.insert(sym);
+        }
         for (i, branch) in branches.iter().enumerate() {
             if i == 0 {
                 // First branch: lower condition in parent scope

@@ -2544,6 +2544,34 @@ fn ctor_entry_slots_agree_across_files() {
     }
 }
 
+// A function's signature reads alike in the file defining it and the files
+// calling it: the implicit `self`, backward-inferred parameters, `@param self`,
+// `@return built:`, function values a mixin stores on `self`, and methods defined
+// through another file's class (`tests/slot-signatures`).
+#[test]
+fn slot_signatures_crossfile() {
+    for lua_file in ["tests/slot-signatures/reader.lua", "tests/slot-signatures/helpers.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/slot-signatures"),
+        });
+    }
+}
+
+// `crossfile-types` finds no path of `tests/slot-signatures` whose type differs
+// between the files reading and writing it.
+#[test]
+fn slot_signatures_agree_across_files() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
+        .args(["crossfile-types", "tests/slot-signatures"])
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("run crossfile-types");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains(", 0 of which disagree"), "{report}");
+}
+
 // `crossfile-types` finds no path of `tests/slot-writers` whose type differs
 // between the files reading and writing it.
 #[test]
@@ -6222,6 +6250,17 @@ fn multi_addon_shared_class_name_unrelated_i() {
 }
 
 #[test]
+fn multi_addon_namespace_method_receiver() {
+    // A method defined through AddonA's namespace takes AddonA's namespace as its
+    // `self`, not the combined table holding AddonB's fields too.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-receivers/AddonA/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-receivers"),
+    });
+}
+
+#[test]
 fn multi_addon_namespace_isolation() {
     // AddonA should see its own namespace fields but NOT AddonB's
     run_annotation_tests(&TestConfig {
@@ -7772,6 +7811,25 @@ fn source_action_generate_stubs_no_annotations() {
     assert!(func_line_idx > 0);
     let before = result.lines().nth(func_line_idx - 1).unwrap_or("");
     assert!(before.contains("---@"), "line before function should be annotation, got: {:?}", before);
+}
+
+#[test]
+fn source_action_generate_stubs_writes_plain_returned_frame() {
+    // A factory writing fields on its frame shows `Frame & { … }` (as other files read
+    // it), but the generated `@return` is the plain class: a `{… N fields}` shape has no
+    // annotation syntax.
+    let src = "function MakeBox()\n    local f = CreateFrame(\"Frame\")\n    f.a, f.b, f.c, f.d, f.e = 1, 2, 3, 4, 5\n    return f\nend\n";
+    let tree = wowlua_ls::syntax::parser::parse(src);
+    let config = AnalysisConfig { file_path: Some("/tmp/box.lua".into()), ..AnalysisConfig::default() };
+    let mut a = Analysis::new_with_tree(&tree, Arc::clone(&STUB_GLOBALS), config);
+    a.resolve_types();
+    let analysis = a.into_result();
+    let hover = analysis.hover_at(&tree, 10).expect("hover on MakeBox").type_str;
+    assert!(hover.contains("-> Frame & {"), "{hover}");
+    let action = generate_stubs_at(src, &tree, &analysis, 0, 10).expect("source action for MakeBox");
+    let edit = action.edit.unwrap().changes.unwrap().into_values().next().unwrap().into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@return Frame\n"), "{result}");
 }
 
 #[test]

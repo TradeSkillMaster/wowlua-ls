@@ -12,4 +12,4 @@ local b = TIERS_PER_RANK ---@diagnostic disable-line: unused-local
 local c = Toolkit.FACTOR ---@diagnostic disable-line: unused-local
 --                ^ hover: (field) FACTOR: number
 local d = Toolkit.GetFactor ---@diagnostic disable-line: unused-local
---                ^ hover: (field) function GetFactor(self)
+--                ^ hover: (field) function GetFactor(self: {FACTOR: number, GetFactor: fun(self: table): number})\n-> number

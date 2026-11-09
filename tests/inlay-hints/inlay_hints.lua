@@ -208,6 +208,15 @@ local function getMessage()
     return "hello"
 end
 
+-- `@return built: X` is annotated: no return hint, as for `@return self`
+---@class HintBuilt
+local HintBuilt = {}
+---@return built: HintBuilt
+function HintBuilt:Build()
+--                        ^ hint: none
+    return {}
+end
+
 -- Annotated @return: no hint
 ---@return boolean
 local function isReady()

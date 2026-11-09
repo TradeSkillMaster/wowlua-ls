@@ -447,6 +447,11 @@ pub struct ExternalGlobal {
     /// (stub globals have no bodies), so no BLOB_VERSION bump is needed.
     #[serde(skip)]
     pub body_derived_returns: bool,
+    /// The `@param self` annotation of a method defined with `:`, which types its
+    /// implicit `self` (`params` holds the parameters the definition lists).
+    /// Runtime only — `#[serde(skip)]`, no BLOB_VERSION bump.
+    #[serde(skip)]
+    pub self_param: Option<ParamInfo>,
     /// True for globals produced by `@creates-global` detection (e.g. the
     /// `_G.MyFrame` created by `CreateFrame("Frame", "MyFrame", ...)`). Such a
     /// global has no explicit `returns`; its type is harvested lazily from the
@@ -599,6 +604,7 @@ impl ExternalGlobal {
             callback_event_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            self_param: None,
             deferred_call_type: false,
             assigned_call_offset: None,
             extra_call_offsets: Vec::new(),
@@ -1682,6 +1688,7 @@ pub fn scan_method_funcall_self_fields(
             callback_event_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            self_param: None,
             deferred_call_type: false,
             assigned_call_offset,
             extra_call_offsets,

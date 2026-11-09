@@ -336,6 +336,8 @@ impl<'a> Analysis<'a> {
                     union_alt_func_indices,
                 } => (func_idx, constructor_table_idx, call_func_table_idx, call_func_is_metamethod, union_alt_func_indices),
             };
+        // A workspace function's harvested signature, before its parameters are read.
+        self.ir.ensure_overlay(func_idx);
 
 
         // setmetatable / getmetatable: metatable type inference
@@ -4481,6 +4483,15 @@ impl<'a> Analysis<'a> {
                 // boolean special-case in the promotion path suppresses nil evidence
                 // from truthiness/`and` tests (since `false` is also falsy).
                 let caller_has_nil = sym_hints.caller.iter().any(|c| c.contains_nil());
+                let others: Vec<ValueType> = sym_hints.compared.iter()
+                    .filter(|t| !t.is_assignable_to(&inferred))
+                    .cloned()
+                    .collect();
+                let inferred = if others.is_empty() {
+                    inferred
+                } else {
+                    ValueType::make_union(std::iter::once(inferred).chain(others).collect())
+                };
                 let inferred = if (baseline_has_nil || sym_hints.used_as_or_lhs || caller_has_nil) && !inferred.contains_nil() {
                     ValueType::union(inferred, ValueType::Nil)
                 } else {
@@ -4601,6 +4612,8 @@ impl<'a> Analysis<'a> {
         let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::default();
         let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::default();
         let mut and_lhs_params: HashSet<SymbolIndex> = HashSet::default();
+        // The literals each param is compared with (`param == "A"`): values it may hold.
+        let mut compared_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::default();
         let mut member_reads: HashMap<SymbolIndex, Vec<MemberRead>> = HashMap::default();
         let mut passed_to_generic: HashSet<SymbolIndex> = HashSet::default();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
@@ -4649,6 +4662,13 @@ impl<'a> Analysis<'a> {
                         // be nil so the inferred type includes nil.
                         if let Some(s) = lhs_sym {
                             or_lhs_params.insert(s);
+                        }
+                    } else if matches!(op, Operator::Equals | Operator::NotEquals) {
+                        for (sym, other) in [(lhs_sym, rhs), (rhs_sym, lhs)] {
+                            let Some(s) = sym else { continue };
+                            if let Expr::Literal(lit @ (ValueType::String(_) | ValueType::Number | ValueType::NumberLiteral(_) | ValueType::Boolean(Some(_)))) = self.expr(other) {
+                                compared_types.entry(s).or_default().push(lit.widen_literals());
+                            }
                         }
                     } else if op == Operator::And {
                         // `param and expr` — the `and` LHS is a truthiness test,
@@ -4752,7 +4772,9 @@ impl<'a> Analysis<'a> {
                                 }
                                 continue;
                             }
-                            if sig_param.optional {
+                            if sig_param.optional && sig_param.inferred && !substituted.contains_any() {
+                                record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, ValueType::union(substituted, ValueType::Nil));
+                            } else if sig_param.optional {
                                 narrowing_hints.entry(sym).or_default().push(substituted);
                             } else {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, substituted);
@@ -4916,11 +4938,13 @@ impl<'a> Analysis<'a> {
                 .filter(|t| !matches!(t, ValueType::Any))
                 .collect();
             let caller = caller_types.remove(&s).unwrap_or_default();
-            let used_as_or_lhs = or_lhs_params.contains(&s);
+            // `if not param then param = default end` accepts nil, as `param or default` does.
+            let used_as_or_lhs = or_lhs_params.contains(&s) || self.nil_defaulted_symbols.contains(&s);
             let member_reads = member_reads.remove(&s).unwrap_or_default();
             out.insert(s, BackwardInferenceHints {
                 baseline, narrowing, caller, used_as_or_lhs, member_reads,
                 passed_to_generic: passed_to_generic.contains(&s),
+                compared: Vec::new(),
             });
         }
 
@@ -4954,6 +4978,7 @@ impl<'a> Analysis<'a> {
                 used_as_or_lhs: has_nil_evidence,
                 member_reads: member_reads.remove(&s).unwrap_or_default(),
                 passed_to_generic: passed_to_generic.contains(&s),
+                compared: compared_types.remove(&s).unwrap_or_default(),
             });
         }
 
@@ -5052,7 +5077,7 @@ impl<'a> Analysis<'a> {
                         return None;
                     }
                     let vt = self.param_symbol_resolved_type(sym_idx)?;
-                    build_sig_param(vt)
+                    build_sig_param(vt).map(|p| BackwardInferenceSigParam { inferred: !is_annotated(i), ..p })
                 })
                 .collect();
             out.push(BackwardInferenceSignature { params });
@@ -5558,9 +5583,9 @@ fn build_sig_param(vt: ValueType) -> Option<BackwardInferenceSigParam> {
         if matches!(&stripped, ValueType::Union(m) if m.is_empty()) {
             return None;
         }
-        Some(BackwardInferenceSigParam { ty: stripped, optional: true })
+        Some(BackwardInferenceSigParam { ty: stripped, optional: true, inferred: false })
     } else {
-        Some(BackwardInferenceSigParam { ty: vt, optional: false })
+        Some(BackwardInferenceSigParam { ty: vt, optional: false, inferred: false })
     }
 }
 
@@ -5594,6 +5619,10 @@ struct BackwardInferenceSignature {
 struct BackwardInferenceSigParam {
     ty: ValueType,
     optional: bool,
+    /// The type is what backward inference gave an unannotated parameter (in this
+    /// file, or its defining file through the signature harvest): an optional one
+    /// accepts nil as much as `ty`.
+    inferred: bool,
 }
 
 struct BackwardInferenceHints {
@@ -5610,6 +5639,9 @@ struct BackwardInferenceHints {
     /// (`table.insert(list, param)`, `Mixin(param, M)`): its type can follow it
     /// into the call's result or another argument.
     passed_to_generic: bool,
+    /// For a type only guarded uses give (`if p then p.x end`), the literals the
+    /// body compares the parameter with (`p == "A"`): values it holds besides.
+    compared: Vec<ValueType>,
 }
 
 /// A read of a member on a candidate param (`pin:OnReleased()`).

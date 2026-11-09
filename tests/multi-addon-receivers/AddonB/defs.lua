@@ -1,0 +1,3 @@
+local _, ns = ...
+ns.other = 2
+function ns:Hello() end

@@ -7,4 +7,4 @@ local InfRepo = {}
 
 local item = InfRepo:GetItem("x")
 --    ^ hover: (local) item: InfThing?  def: local
---                   ^ hover: (method) function InfRepo:GetItem(key)\n-> InfThing?  def: external
+--                   ^ hover: (method) function InfRepo:GetItem(key: string)\n-> InfThing?  def: external

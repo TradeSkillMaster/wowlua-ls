@@ -153,6 +153,29 @@ pub fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType
     by_index.into_values().collect()
 }
 
+/// The per-slot return types `func`'s body gives it, as its definition displays them
+/// ([`AnalysisResult::inferred_return_types`]): the union across its synthesized
+/// return-only overloads when it has them, else each slot's returns, made optional by
+/// an implicit `nil` return.
+pub fn inferred_return_types(ir: &Ir, func: &Function) -> Vec<ValueType> {
+    let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
+        .filter(|o| o.is_return_only).collect();
+    if !return_only.is_empty() {
+        return AnalysisResult::return_only_overload_summary(&return_only);
+    }
+    let implicit_nil = func.implicit_nil_return;
+    dedup_return_types(ir, &func.rets).into_iter().map(|rt| match rt {
+        Some(rt) => {
+            if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
+                ValueType::make_union(vec![rt, ValueType::Nil])
+            } else {
+                rt
+            }
+        }
+        None => ValueType::Any,
+    }).collect()
+}
+
 /// Maximum recursion depth for read-only expression resolution.
 const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
 
@@ -1465,7 +1488,7 @@ impl AnalysisResult {
                 format_vararg_return(formatted, i, func)
             }).collect()
         } else {
-            self.format_inferred_returns(func, 1)
+            self.format_inferred_returns_shown(func_idx, 1)
         };
         if rets.is_empty() {
             Some(format!("__call({})", all_args.join(", ")))
@@ -1541,6 +1564,18 @@ impl AnalysisResult {
                     && let Some(&copy) = self.ir.exported_tables.get(table_idx)
                 {
                     return self.format_value_type_depth(&ValueType::Table(Some(copy)), depth);
+                }
+                // A plain global table standing for the workspace class of its name (a
+                // mixin, `Ir::class_tables`) is that class to other files.
+                if depth > 0
+                    && table.class_name.is_none()
+                    && let Some(&class) = self.ir.class_tables.get(table_idx)
+                    && let Some(class_name) = self.table(class).class_name.as_ref()
+                    && self.ir.ext.scope0_symbols.get(&SymbolIdentifier::Name(class_name.clone()))
+                        .and_then(|&g| self.sym(g).versions.last())
+                        .is_some_and(|v| v.resolved_type == Some(ValueType::Table(Some(class))))
+                {
+                    return class_name.clone();
                 }
                 // Array/map types: table has value_type and no class_name
                 if table.class_name.is_none()
@@ -1692,6 +1727,11 @@ impl AnalysisResult {
                 // shape's key was already decided at lift time (`Some` ⟺ map — see
                 // `analysis::deferred`), so pass `is_explicit_map = true`, which
                 // makes `table_is_map` key purely off key presence.
+                // As deep as an anonymous `Table` collapses, a shape does: it is one
+                // lifted into another file, which shows it as its own file does.
+                if depth > 4 {
+                    return "table".to_string();
+                }
                 if shape.fields.is_empty()
                     && let Some(ref val_vt) = shape.value_type {
                     return render_array_or_map(
@@ -1891,7 +1931,7 @@ impl AnalysisResult {
                 format_vararg_return(formatted, i, func)
             }).collect()
         } else {
-            self.format_inferred_returns(func, depth + 1)
+            self.format_inferred_returns_shown(func_idx, depth + 1)
         };
         if rets.is_empty() {
             format!("fun({})", all_args.join(", "))
@@ -2285,6 +2325,24 @@ impl AnalysisResult {
     /// When there are inferred returns and the function has an implicit nil
     /// return, nil is unioned into each resolved position.
     pub fn format_inferred_returns(&self, func: &Function, depth: usize) -> Vec<String> {
+        self.format_inferred_returns_with(func, None, depth)
+    }
+
+    /// As [`Self::format_inferred_returns`], for display: the local function
+    /// `func_idx` returning an external class's instance carrying fields this file
+    /// writes through it shows them (`Class & { … }`), as other files read it
+    /// ([`crate::analysis::deferred::carried_return_type`]). Annotation generators
+    /// write the plain form, a `{… N fields}` shape having no annotation syntax.
+    pub fn format_inferred_returns_shown(&self, func_idx: FunctionIndex, depth: usize) -> Vec<String> {
+        self.format_inferred_returns_with(self.func(func_idx), Some(func_idx).filter(|idx| !idx.is_external()), depth)
+    }
+
+    fn format_inferred_returns_with(&self, func: &Function, carry: Option<FunctionIndex>, depth: usize) -> Vec<String> {
+        // `@return built: Parent` returns the table the calls built, a `Parent`
+        // in every file, whatever its body returns.
+        if func.returns_built && let Some(parent) = &func.returns_built_parent {
+            return vec![parent.clone()];
+        }
         // When synthesized return-only overloads exist, derive the summary type
         // per position by unioning across the overloads. This is more accurate
         // than reading FunctionRet symbols which may hold stale placeholder types
@@ -2302,8 +2360,19 @@ impl AnalysisResult {
         if inferred.is_empty() {
             return vec![];
         }
-        inferred.iter().map(|rt| match rt.as_ref() {
+        // An external class's instance carrying fields this file writes through it
+        // reads as `Class & { … }` in other files, so here too.
+        let ext_instance = |t: &ValueType| match t.strip_nil() {
+            ValueType::Table(Some(idx)) => idx.is_external(),
+            ValueType::Intersection(members) => members.iter().any(|m| matches!(m, ValueType::Table(Some(idx)) if idx.is_external())),
+            _ => false,
+        };
+        inferred.iter().enumerate().map(|(slot, rt)| match rt.as_ref() {
             Some(rt) => {
+                let carried = carry
+                    .filter(|_| ext_instance(rt))
+                    .and_then(|idx| crate::analysis::deferred::carried_return_type(self, idx, slot, rt));
+                let rt = carried.as_ref().unwrap_or(rt);
                 let display = if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
                     ValueType::make_union(vec![rt.clone(), ValueType::Nil])
                 } else {
@@ -2344,23 +2413,7 @@ impl AnalysisResult {
     /// `Any`). Used by the cross-file deferred harvest so a cross-file caller's
     /// base return slots equal the definition-site summary.
     pub fn inferred_return_types(&self, func: &Function) -> Vec<ValueType> {
-        let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
-            .filter(|o| o.is_return_only).collect();
-        if !return_only.is_empty() {
-            return Self::return_only_overload_summary(&return_only);
-        }
-        let inferred = dedup_return_types(&self.ir, &func.rets);
-        let implicit_nil = func.implicit_nil_return;
-        inferred.into_iter().map(|rt| match rt {
-            Some(rt) => {
-                if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
-                    ValueType::make_union(vec![rt, ValueType::Nil])
-                } else {
-                    rt
-                }
-            }
-            None => ValueType::Any,
-        }).collect()
+        inferred_return_types(&self.ir, func)
     }
 
     /// Recognizes the FrameXML "static factory" idiom for stub generation: a
@@ -2507,7 +2560,7 @@ impl AnalysisResult {
                 }
             }).collect()
         } else {
-            self.format_inferred_returns(func, 1)
+            self.format_inferred_returns_shown(func_idx, 1)
         };
         let args_joined = all_args.join(", ");
         let single_line = format!("function {}({})", name, args_joined);

@@ -1348,3 +1348,30 @@ local function releaseEither(p)
     hideEither(p)
     p:OnReleased()
 end
+
+-- ── A guard-promoted type takes the literals the body compares the param with ──
+-- `kind` is compared with strings and indexed where neither holds: a string or a table.
+local function describeKind(kind, key)
+--                          ^ hover: (param) kind: table | string?
+    if kind and kind == "core" then
+        return key
+    elseif kind then
+        return kind.Options[key]
+    end
+end
+describeKind("core", "k")
+
+-- ── `if not p then p = default end` accepts nil, as `p or default` does ──
+local function nilDefaultCount(count)
+--                             ^ hover: (param) count: number?
+    if not count then count = 0 end
+    return count + 1
+end
+nilDefaultCount(nil)
+
+-- ── Forwarding to a parameter inferred optional types the forwarded one alike ──
+local function forwardDefaultCount(count)
+--                                 ^ hover: (param) count: number?
+    return nilDefaultCount(count)
+end
+forwardDefaultCount(1)

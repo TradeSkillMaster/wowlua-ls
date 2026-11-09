@@ -1038,6 +1038,9 @@ pub struct Ir {
     /// The workspace `@class` fields (by the table declaring them and the field's
     /// coarse expr) `ensure_field_overlay` has consulted, so each is harvested once.
     pub class_fields_checked: HashSet<(TableIndex, ExprId)>,
+    /// The external functions `ensure_overlay` has consulted, so each signature is
+    /// read once.
+    pub signatures_checked: HashSet<FunctionIndex>,
     /// The fields of this file's tables typed by its own writes over the type the
     /// workspace scan gave them (`type_scanned_fields_by_own_writes`), by the scanned
     /// field's coarse expr, for the table-field harvest (`harvest_table_fields`).
@@ -4449,6 +4452,10 @@ pub struct Analysis<'a> {
     /// Populated once during `build_ir` (an AST-level property) and read-only
     /// thereafter — no clearing between fixpoint iterations.
     pub conditionally_reached_exprs: HashSet<ExprId>,
+    /// Symbols a plain `if not x then x = … end` (or `if x == nil then`) gives a
+    /// default: a parameter defaulted so accepts nil, as one used `x or default`
+    /// does (backward param-type inference).
+    pub nil_defaulted_symbols: HashSet<SymbolIndex>,
     /// Pending refinements for synthesized return-only overloads. Each entry
     /// points at one `overloads[overload_idx].returns[ret_pos]` slot that was
     /// emitted as `ValueType::Any` at build time because the return expression
@@ -4733,6 +4740,7 @@ impl<'a> Analysis<'a> {
                 symbol_overlay: HashMap::default(),
                 call_fields_checked: HashSet::default(),
                 class_fields_checked: HashSet::default(),
+                signatures_checked: HashSet::default(),
                 scan_field_takeovers: HashMap::default(),
                 table_fields_checked: HashSet::default(),
                 slot_fields_checked: HashSet::default(),
@@ -4777,6 +4785,7 @@ impl<'a> Analysis<'a> {
             and_field_derivations: HashMap::default(),
             and_or_num_sentinel: HashMap::default(),
             conditionally_reached_exprs: HashSet::default(),
+            nil_defaulted_symbols: HashSet::default(),
             synth_return_overload_refinements: Vec::new(),
             defclass_vars: HashMap::default(),
             narrowing: NarrowingState::default(),

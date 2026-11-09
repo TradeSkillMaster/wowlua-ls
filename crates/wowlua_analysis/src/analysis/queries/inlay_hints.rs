@@ -177,7 +177,7 @@ impl AnalysisResult {
         let Some(func_idx) = self.ir.function_defined_at(node_start) else { return };
         let func = self.func(func_idx);
 
-        if !func.return_annotations.is_empty() || func.returns_self || func.explicit_void_return {
+        if !func.return_annotations.is_empty() || func.returns_self || func.returns_built || func.explicit_void_return {
             return;
         }
 

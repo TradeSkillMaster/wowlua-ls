@@ -254,6 +254,97 @@ Open, by cause:
   beside other values) loses its backward-inferred type; hover shows what a `type()`
   guard proves inside the guard, the fixpoint reads it unknown there.
 
+## Slice 4 status (2026-11-08, first round)
+
+A workspace function's signature reads in every file as its defining file types it
+(ARCHITECTURE.md, "Function signatures"): a `:` method's implicit `self` is the table
+it is a member of (the build types it, never the stub blob's), or its `@param self`,
+or, defined through the addon namespace, the class its file declares on it, else its
+addon's own copy of the namespace; a
+parameter no `@param` types is harvested (`deferred_params`, `DeferredSig::params`)
+and installed through `symbol_overlay`, so other files' calls check arguments
+against it as same-file calls do; a defining file reads its own functions'
+external indices as its definitions (`overlay_own_functions`). A bare `function`
+field (a function value the scan only saw stored, `self.onUpdate = function() end`)
+is a slot like any other value. Displays now agree where both sides hold one type: a
+plain global table standing for the class of its name names it, a returned instance
+carrying fields written through it shows `Class & { … }` in its own file too,
+`@return built: X` shows `X`, a shape as deep as a table collapses as one.
+Backward inference, whose types now reach other files' callers, learned two idioms
+same-file callers rarely exercised: a guard-promoted `table?` takes the literals
+the parameter is compared with (`p == "DBM"` widens it to `table | string?`), and
+`if not p then p = d end` accepts nil as `p or d` does; a forward to a parameter
+inferred optional is a baseline `T?` hint.
+
+`crossfile-types`: the "self typed in some files" family is gone (TSM 1362 methods,
+DeadlyBossMods 352, …, every workspace 0); "parameters typed in some files" 7
+functions left (all below); function-valued paths 133 → 70. Disagreeing paths (main
+→ now): TSM 1412 → 7, DeadlyBossMods 425 → 24, Auctionator 137 → 18, NumyTest 131 →
+4, Baganator 82 → 2, NPCScan 79 → 1, TestProject 87 → 12, UtilityHub 46 → 13,
+LibQTip 40 → 1, BlizzMove 30 → 0, Coolinator 29 → 0, Glider 29 → 1, ItemUpgradeTip
+26 → 1, PranGearView 27 → 1, TalentTreeTweaks 21 → 0, Syndicator 17 → 5, none rising.
+`check`: +7 TSM, +4 Auctionator, +3 DeadlyBossMods, all true positives of calls other
+files make now checked as same-file ones are (a `---@alias X ScrollFrame|BaseExtension`
+union passed to `Frame?` ×4, a wrapper forwarding to `@param texture Texture` given a
+button, `strlower`'d / table-key params given `string|number|nil` / `any?`,
+`SetItemLink(nil)` into a body reading the link as a string, `{sortingOrder}` with a
+nil branch, `SetText` given numbers, a `number?` into `string.split`);
+wow-ui-source −1 and messages naming mixins instead of `{... N fields}`.
+`dump-types`: no hover typed on main is untyped (wow-ui-source's 15 `any & any` →
+`?`), TSM +48, DeadlyBossMods +93, Auctionator +51, TestProject +60, wow-ui-source
++718 gain a type. Analyses (main → now): TSM 449 → 526 (692 files), DeadlyBossMods
+233 → 239 (191), Auctionator 257 → 336 (343), Baganator 177 → 202 (110), Coolinator
+40 → 52 (48), Syndicator 34 → 43 (34), wow-ui-source 191 → 201, every workspace
+within twice its files; `check` times unchanged (TSM 1.5–1.6 s, DeadlyBossMods 1.6 s).
+Harvesting every function (the receiver from the harvest too) cost TSM 1271 and
+Baganator 226 > 220: hence the build-typed receiver.
+
+The stub blob is regenerated (pinned to HEAD's sources): the engine's display
+reaches `generated/InferredReturns.lua`, where mixin returns written
+`{... 28 fields}` (no type) now name the mixin (`FlowLayoutMixin`, …), a few returns
+are inferred or sharper (one carries a field its factory writes), one record list
+reads a `productType` it typed `string` as unknown, and stub_gen drops all-`any`
+returns (`any & any`) and writes the plain return types (`format_inferred_returns`,
+not the displayed `Class & { … }`).
+
+Open, by cause (70 function paths):
+- Multiply-defined paths, documented: readers see the definition the build keeps (an
+  annotated one, else the first; annotated others as its overloads, arity unchecked
+  where they disagree), each defining file's write site its own definition, so these
+  disagree by design. Flavor files: Auctionator 16 (Legacy/Modern, Classic/Mainline),
+  RepByZone 6; test doubles: DeadlyBossMods `Sorting_Test.lua`'s `DBM` methods ×6,
+  `DBMTest.CreateSharedModule` (CLI vs WoW environment); a types file beside the
+  library: TestProject `LibGraph-2.0.*` ×5. A union of the definitions merged an
+  alternative's `any` return into readers' types (hover losses), so it waits.
+- Harvest context: the defining file's harvest analysis cuts a read its top-level
+  analysis takes (a mixin instance in a namespace slot, its own method through its
+  class): Auctionator `AH.GetCurrentPage`, DeadlyBossMods `NewMod`,
+  `TableUtils.orderedTable`, `AceGUISharedMediaWidgets-1.0.GetBaseFrameWithWindow`
+  ×2, MacroToolkit `FindScript`, NumyTest `GetAndCacheEntryInfo`, Syndicator
+  `DumpClassicTooltip`. Resolving a file's own calls to its local definitions fixed
+  two and lost 9 hovers (mid-fixpoint returns), so it waits.
+- Generics stay coarse (the rule): a synthesized `T1` for a pass-through parameter in
+  the defining file (DeadlyBossMods `GetCIDFromGUID`, Syndicator `GetByGuildFullName`,
+  `GetGuild`).
+- Receivers: methods through a field holding a nested `---@class` constructor aren't
+  on the class at all (DeadlyBossMods `TimeWarper.*` ×7, readers `self: table`); a
+  file-local table standing for a class by name (`PrivateAuraUnitWatcher.AddAnchor`);
+  a template intersection against its frame (`PGVToggleEnchantButton`), a record shape
+  against a table (UtilityHub `ShowNotification`).
+- Displays: TSM `Mill/Prospect/Transform.Get` (readers' element types come from the
+  lift's structural dedup of the entries, the defining file's from the map's coarser
+  value type); LibQTip `CallbackRegistry.Fire` ×2 (`@field fun(..., ...: T)` shows its
+  vararg twice in its declaring file); TSM `ExtraTooltip.AddLine/AddDoubleLine` (read
+  through `GameTooltip|ExtraTooltip`, keyed by the workspace member, shown through the
+  first); wow-ui-source `TutorialData.GetFactionData`.
+- A writer's union of its own other writes: DeadlyBossMods `DBTBar.Cancel` (an
+  instance overwrites the method), `IsEncounterInProgress` (`or` with a bare
+  `function`), ItemUpgradeTip `Debug`, NumyConfig `IterateModules`/`NewModule`,
+  Platynator `PostInit` ×2.
+- Untyped readers: Baganator `IsDialogOpen`, DeadlyBossMods `DBM_GUI_OptionsFrame.*`
+  ×2, `LibAdvancedIconSelector-MTK.CreateIconSelectorFrame`, DeadlyBossMods
+  `TableUtils.removeEntry` (read through a generic prototype getter).
+
 ## Acceptance for every slice
 
 - `crossfile-types` over TradeSkillMaster and `/home/brian/wowlua-ls/.context/addons`

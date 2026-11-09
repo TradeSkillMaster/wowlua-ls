@@ -19,7 +19,7 @@ private.Add(1, 2)
 -- Function literal with body-derived return: the cross-file caller sees the
 -- precise inferred return (`"Hello, " .. name` → string), not coarse `any`.
 private.MakeGreeting("world")
---      ^ hover: (field) function MakeGreeting(name)\n  -> string  def: external
+--      ^ hover: (field) function MakeGreeting(name: string | number)\n  -> string  def: external
 
 -- Calling a FunctionSig: resolve_call_type extracts the return type from the
 -- inline shape (not Any), and signature help shows the correct parameter list.

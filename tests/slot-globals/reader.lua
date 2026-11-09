@@ -6,10 +6,10 @@ local config = JOURNAL_CONFIG
 local cache = JOURNAL_CACHE
 --    ^ hover: (local) cache: table<string, number>
 local row = JournalRowMixin
---    ^ hover: (local) row: {Init: fun(self)} | JournalBaseRowMixin
+--    ^ hover: (local) row: {Init: fun(self: table)} | JournalBaseRowMixin
 local scan = JournalApp.Workers.scan
 --    ^ hover: (local) scan: JournalWorker
 local search = JournalApp.Workers.search
 --    ^ hover: (local) search: JournalWorker
 local cell = JournalCellMixin
---    ^ hover: (local) cell: {Init: fun(self)} | JournalBaseCellMixin
+--    ^ hover: (local) cell: {Init: fun(self: table)} | JournalBaseCellMixin

@@ -108,6 +108,8 @@ struct BuildOnStubsContext<'a> {
     // Lazy cross-file return resolution: workspace functions whose returns were
     // inferred from the body (coarse) and should be resolved precisely on demand.
     deferred_returns: HashSet<FunctionIndex>,
+    deferred_params: HashSet<FunctionIndex>,
+    addon_ns_methods: Vec<FunctionIndex>,
     // Functions with multiple cross-file definitions disagreeing on arity (e.g.
     // flavor-split namespaced functions). `call_arity` skips arity checks for these.
     conflicting_arity_funcs: HashSet<FunctionIndex>,
@@ -176,6 +178,8 @@ impl<'a> BuildOnStubsContext<'a> {
             table_global_types: HashMap::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
+            deferred_params: HashSet::default(),
+            addon_ns_methods: Vec::new(),
             conflicting_arity_funcs: HashSet::default(),
             deferred_call_globals: HashMap::default(),
             deferred_call_fields: HashMap::default(),
@@ -1015,8 +1019,12 @@ impl<'a> BuildOnStubsContext<'a> {
                                 path: source_path.clone(), start: g.def_start, end: g.def_end,
                                 name_start: g.name_start, name_end: g.name_end,
                             });
-                            if g.body_derived_returns {
-                                self.deferred_returns.insert(func_idx);
+                            super::shared::register_deferred_sig(g, func_idx, &mut self.deferred_returns, &mut self.deferred_params);
+                            if *is_colon
+                                && super::shared::type_method_receiver(&mut self.fn_build_ctx(), func_idx, target_idx)
+                                && is_addon_ns
+                            {
+                                self.addon_ns_methods.push(func_idx);
                             }
                             // Record display name for unused-function diagnostics. A constructor's
                             // function entries are values frameworks often call (option and
@@ -1182,9 +1190,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     };
                     self.function_locations.insert(func_idx, loc.clone());
                     self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
-                    if g.body_derived_returns {
-                        self.deferred_returns.insert(func_idx);
-                    }
+                    super::shared::register_deferred_sig(g, func_idx, &mut self.deferred_returns, &mut self.deferred_params);
                 }
                 self.exprs.push(Expr::FunctionDef(func_idx));
 
@@ -1781,7 +1787,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
         }
 
-        let deferred_returns_by_path = super::shared::deferred_returns_by_path(&self.deferred_returns, &self.function_locations);
+        let deferred_sigs_by_path = super::shared::deferred_sigs_by_path(self.deferred_returns.union(&self.deferred_params), &self.function_locations);
         let deferred_call_globals_by_path = super::shared::deferred_call_globals_by_path(&self.deferred_call_globals);
         // Every file writing a field written `{}`, whichever write created the field:
         // one replaced by the `{}` (`ns.f = nil` in a file scanned first) holds those
@@ -1943,8 +1949,10 @@ impl<'a> BuildOnStubsContext<'a> {
             callback_registries: HashMap::default(),
             callback_event_methods: HashMap::default(),
             declared_class_fields: self.declared_class_fields,
-            deferred_returns_by_path,
+            deferred_sigs_by_path,
             deferred_returns: self.deferred_returns,
+            deferred_params: self.deferred_params,
+            addon_ns_methods: self.addon_ns_methods,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
             deferred_harvests: Default::default(),
             narrowing_methods: Default::default(),
