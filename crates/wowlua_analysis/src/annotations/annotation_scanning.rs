@@ -1989,6 +1989,22 @@ pub fn is_number_literal(name: &str) -> bool {
     true
 }
 
+/// The type a union annotation resolves to from what its `considered` members
+/// resolve to (`resolved`, each that does): `None` when none does, and `any` when
+/// only `nil` does beside members that don't (`Undefined?`), so the parameter,
+/// return slot, field or alias it types keeps its place, unknown, rather than a
+/// `nil` every argument and use mismatches.
+pub fn union_of_resolved(considered: usize, resolved: Vec<ValueType>) -> Option<ValueType> {
+    if !resolved.is_empty() && resolved.len() < considered && resolved.iter().all(|t| *t == ValueType::Nil) {
+        return Some(ValueType::Any);
+    }
+    match resolved.len() {
+        0 => None,
+        1 => resolved.into_iter().next(),
+        _ => Some(ValueType::make_union(resolved)),
+    }
+}
+
 pub fn resolve_annotation_type(
     at: &AnnotationType, generics: &[(String, Option<String>)],
     classes: &impl crate::analysis::layered_map::NameLookup<TableIndex>,
@@ -2030,10 +2046,7 @@ pub fn resolve_annotation_type(
         AnnotationType::Union(parts) => {
             let converted: Vec<ValueType> = parts.iter()
                 .filter_map(|p| resolve_annotation_type(p, generics, classes, aliases)).collect();
-            match converted.len() {
-                0 => None, 1 => converted.into_iter().next(),
-                _ => Some(ValueType::make_union(converted)),
-            }
+            union_of_resolved(parts.len(), converted)
         }
         AnnotationType::Array(_inner) => Some(ValueType::Table(None)),
         AnnotationType::Parameterized(base, _) => {

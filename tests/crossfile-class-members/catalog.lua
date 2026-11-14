@@ -39,8 +39,8 @@ DATA.Full = {
     ["x"] = { weight = 1 },
 }
 
--- A union of an empty table and a class stays untyped in other files: there a
--- bare `table` would swallow the class.
+-- A union of an empty table and a class reads in other files as here: the empty
+-- table crosses as a table of no fields, which doesn't swallow the class.
 local ENTRY_MT = { __index = {} }
 function Catalog.NewEntry(name)
     if name == "" then

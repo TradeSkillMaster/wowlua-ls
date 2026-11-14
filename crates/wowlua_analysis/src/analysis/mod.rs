@@ -1041,6 +1041,10 @@ pub struct Ir {
     /// The external functions `ensure_overlay` has consulted, so each signature is
     /// read once.
     pub signatures_checked: HashSet<FunctionIndex>,
+    /// In a harvest analysis, the workspace functions this file defines by their
+    /// external index, to their definitions here (`Ir::own_definition`), filled
+    /// when the analysis starts resolving; `None` in a top-level analysis.
+    pub own_definitions: Option<HashMap<FunctionIndex, FunctionIndex>>,
     /// The fields of this file's tables typed by its own writes over the type the
     /// workspace scan gave them (`type_scanned_fields_by_own_writes`), by the scanned
     /// field's coarse expr, for the table-field harvest (`harvest_table_fields`).
@@ -4741,6 +4745,7 @@ impl<'a> Analysis<'a> {
                 call_fields_checked: HashSet::default(),
                 class_fields_checked: HashSet::default(),
                 signatures_checked: HashSet::default(),
+                own_definitions: None,
                 scan_field_takeovers: HashMap::default(),
                 table_fields_checked: HashSet::default(),
                 slot_fields_checked: HashSet::default(),

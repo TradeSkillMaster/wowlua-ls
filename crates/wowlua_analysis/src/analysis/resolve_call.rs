@@ -336,6 +336,8 @@ impl<'a> Analysis<'a> {
                     union_alt_func_indices,
                 } => (func_idx, constructor_table_idx, call_func_table_idx, call_func_is_metamethod, union_alt_func_indices),
             };
+        // A function of this file's own, in a harvest analysis, is its definition here.
+        let func_idx = self.ir.own_definition(func_idx).unwrap_or(func_idx);
         // A workspace function's harvested signature, before its parameters are read.
         self.ir.ensure_overlay(func_idx);
 

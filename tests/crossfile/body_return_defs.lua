@@ -158,3 +158,15 @@ function ns.Core.DumpLines(empty)
     end
     return { lines = { { text = "row" } } }
 end
+
+-- A method returning its receiver as passed: the generic its file gives `self`
+-- (`T1`) has nothing a call in another file binds it by (the build types the
+-- receiver), so it reads as `any` there.
+ns.Chain = {}
+---@param x number
+function ns.Chain:Pair(x)
+    if x > 1 then
+        return self, x
+    end
+    return nil, 0
+end

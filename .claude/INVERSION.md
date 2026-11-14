@@ -345,6 +345,121 @@ Open, by cause (70 function paths):
   ×2, `LibAdvancedIconSelector-MTK.CreateIconSelectorFrame`, DeadlyBossMods
   `TableUtils.removeEntry` (read through a generic prototype getter).
 
+## Slice 4 status (2026-11-10, second round)
+
+The harvest reads what the defining file reads in more places (ARCHITECTURE.md,
+"Function signatures"):
+- A function returning an empty table on one path and a class instance on another
+  (DeadlyBossMods `DBM:NewMod`) crosses as `table | Class`: the empty table lifts as
+  a table of no fields, which a table doesn't absorb, where the union lifted as
+  `any`. Every DeadlyBossMods mod's `mod` local, `any` on main, is `table | DBMMod`.
+  A plain table a metatable without `__index`/`__call` makes (`orderedTable`) lifts
+  as `table`.
+- A harvest analysis's call of a function its own file defines, through the
+  function's external index (`self:Base()` in another method of a library class),
+  takes the file's definition (`Ir::own_definition`), as do a tail call's arity and
+  the holders a returned frame carries its fields through; the cut gave `any`
+  (`GetBaseFrameWithWindow`, DeadlyBossMods `Timer.TLStart`).
+- A parameter a function returns as passed is a generic of it in its file (`T1`);
+  the harvest keeps those (`DeferredSig::generics`) and the overlay declares them, so
+  a call in any file binds them by its arguments (DeadlyBossMods `GetCIDFromGUID`,
+  Syndicator `GetGuild`, `GetByGuildFullName`, `RecoverBattlePetLink`).
+- Receivers: methods defined through a field a nested `---@class` declares
+  (`---@class TimeWarper` on `test.TimeWarper = { … }`) are the class's, `self`
+  included, when the build merges them into it; a method of a call's object
+  (`ns.Button = CreateFrame(…, "Template")`, then `function ns.Button:M()`) has the
+  receiver the call gives in its file, so it is harvested as a parameter rather than
+  typed as the call's object table (PranGearView).
+- A function defined inside another (`function ns.X.f()` in an initializer) is a
+  namespace slot: the scan discovers it, the definition is a write of the field, its
+  file's harvest types it (Baganator `IsDialogOpen`).
+- Displays: a function value written into another table or compared (`Other.f =
+  ns.f`, `f == ns.Remove`), which the fixpoint leaves unresolved, shows its harvested
+  signature (only those: warming every unresolved field read harvested files nothing
+  else reads, Baganator +12 analyses); `fun(..., ...: T)` shows its vararg once.
+
+`crossfile-types`: function paths 70 → 53, 19 of the listed ones agreeing and 2 new
+(below); "parameters typed in some files" 7 → 5, all multiply-defined. Disagreeing
+paths (main → now): DeadlyBossMods 24 → 15, Syndicator 5 → 1, TestProject 12 → 11,
+UtilityHub 13 → 12, Baganator 2 → 1, LibQTip 1 → 0, NPCScan 1 → 0, PranGearView
+1 → 0, none rising. `check`: DeadlyBossMods −12 +10. Typing every mod's `mod`
+reached calls checked against parameters typed by DBM's aliases whose `---|N:
+description` members name no type (`undefined-doc-name` on those lines, unchanged):
+an undefined type marked optional read as `nil`, which every argument mismatched.
+`X?` with `X` undefined is now `any` (`annotations::union_of_resolved`, all three
+resolvers; the parameter, return slot, field or alias keeps its place), which removes
+main's 10 "expected `nil`" `type-mismatch` and keeps the 325 this round would have
+added away; `undefined-field 'groupOptions'` ×2 is gone too. The additions are 6
+`inject-field` hints (handlers assigned onto `mod`) and 4 `missing-parameter` before
+`@param optionVersion any`, which is required. No other workspace changes.
+`dump-types`: no hover typed on main is untyped but values an undefined `X?` typed
+`nil`, now `any` (DeadlyBossMods' `color`/`subType`/`colorType`/`iconType`/
+`defaultSound`/`checkType` parameters, 21 hovers and 51 in function hovers;
+`@type BlizzMoveAPI?` locals in NumyTest, TestProject and ResearchViewer, 4 each;
+`C_Engraving.GetRuneFor*Slot`'s `EngravingData?` results in Baganator, 2; a `T?` an
+`@as` can't bind in TSM, 2), and 8 DeadlyBossMods reads of such parameters after
+`p = p or 0` that read `number` and now `any`;
+DeadlyBossMods +7164,
+UtilityHub +72, TestProject +36 gain a type (TSM's changed hovers are `fun(...: any,
+...)` → `fun(...: any)`). Analyses (main → now): Baganator 202 → 212 (110 files: the
+in-function definitions add a cycle round), Coolinator 52 → 54, Auctionator 339 →
+338, TSM 526, DeadlyBossMods 239, the others unchanged; `check` times unchanged (TSM
+1.3 s, DeadlyBossMods 1.3–1.4 s). The stub blob is regenerated (pinned as in the
+first round; the base regen reproduced main's blobs byte-for-byte): `DressUpLink`
+reads `boolean?` and three FrameXML functions gain inferred returns (own calls in
+harvest analyses), `ColorMixin` loses an `any?` `font` field (`InferredFields`
+churn).
+
+Open, by cause (53 function paths):
+- Multiply-defined, by design (first round): Auctionator 14, RepByZone 5,
+  DeadlyBossMods `Sorting_Test.lua` 5, TestProject `types_LibGraph.lua` 5; the
+  parameter family's `GetGroupId`, `CreateSharedModule`, `GetDisenchantAuctionPrice`,
+  `GetEmptyResult` are among them.
+- Instance methods, by design (new): DeadlyBossMods `DBMMod.PlayerFighting`,
+  `OnMatchStart` are methods one mod defines on itself (`function mod:M()`), which
+  another mod reaches through `GetModByName` as a `DBMMod`; giving the class every
+  mod's methods would put them on all mods. Visible now that `mod` is typed.
+- Harvest context, needing component work the budget doesn't leave room for
+  (Baganator 212 of 220): Auctionator `AH.GetCurrentPage` (a cycle discovery
+  doesn't see: `Wrappers.lua` reaches `Scan.lua`'s method only through a slot's
+  resolved type, so its harvest reads `Scan.lua` in a context cutting the read
+  back); MacroToolkit `FindScript` (a file of a class with several Lua files reading
+  a field another of them writes: the class's files include the reader, so the read
+  is its own and cut; a cycle with the class's rounds costs a round over every file
+  of such classes).
+- A correction the gate counts as losses: NumyTest `GetAndCacheEntryInfo`. The build
+  drops a `@return` whose type doesn't resolve (`entryInfo`) where the per-file engine
+  keeps an `any` slot, so readers read `isNewValue: boolean` in slot 0. Keeping the
+  slot corrects 7 NumyTest hovers typed `boolean` by the wrong slot and turns stub
+  returns typed by shifted slots into `any` (`select`'s `returns<F, index>`, TSM's
+  `ExtraTooltip` reads through it, `GetTalentInfoByID`).
+- Discovery: DeadlyBossMods `DBM_GUI_OptionsFrame.{SetCollapsed,
+  ScheduleAutoUncollapse}` are defined through `local frame = _G["…"]`, a frame
+  another file creates by name (function definitions aren't routed through global
+  aliases, and a created global has no table its methods land on);
+  `LibAdvancedIconSelector-MTK.CreateIconSelectorFrame` belongs to a library named by
+  a local constant (`NewLibrary(MAJOR_VERSION)`) the scan doesn't resolve, beside a
+  `NewLocale` of the same name, which declares the class readers read; RepByZone
+  `GetEquippedTabard`: the options files read the class through `---@type
+  RepByZone` on `GetAddon`, a table without the per-expansion files' methods.
+- A writer's union of its own writes (first round): DeadlyBossMods `DBTBar.Cancel`,
+  `IsEncounterInProgress`, ItemUpgradeTip `Debug`, Platynator `PostInit` ×2,
+  NumyConfig `IterateModules`/`NewModule`. Readers read the function its definition
+  gives, whose signature crosses on its own; for them to read the union the field
+  can't be a function the build makes (its definition's navigation and signature).
+- Displays: TSM `Mill/Prospect/Transform.Get`, `ExtraTooltip.AddLine/AddDoubleLine`,
+  wow-ui-source `TutorialData.GetFactionData` (first round); UtilityHub
+  `ShowNotification` (one file reads the method through the class field's harvested
+  record, whose receiver lifts as a record); wow-ui-source
+  `PrivateAuraUnitWatcher.AddAnchor`: a file-level local named like a class the stub
+  blob makes of it (stub_gen's utility-table scan), which its file links by name;
+  not linking locals by name fixes the path but loses stub_gen's inferred returns for
+  Blizzard's own file-local mixins (`FlowLayoutMixin` → `{... 28 fields}`).
+- A parameter's backward-inferred bare `table` absorbs the list its later versions
+  hold (Baganator `BagTransfers` `matches`, `any[]` before the first round): the
+  parameter is inferred from the `table` of `FromBagsToBags`'s harvested `toMove`
+  (slice 2's bare-`table` trap).
+
 ## Acceptance for every slice
 
 - `crossfile-types` over TradeSkillMaster and `/home/brian/wowlua-ls/.context/addons`

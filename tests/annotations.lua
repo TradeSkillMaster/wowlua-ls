@@ -1823,3 +1823,36 @@ local nestedParentList = nestedMapParent["a"]
 --    ^ hover: (local) nestedParentList: number[]
 local nestedParentId = nestedMapParent["a"][1]
 --    ^ hover: (local) nestedParentId: number
+
+-- An optional undefined type types its value `any`: calls don't mismatch it as
+-- a `nil`, the annotation reports the type once.
+---@diagnostic disable-next-line: undefined-doc-name
+---@param w UndefinedCascadeType?
+local function cascadeOptional(w) return w end
+--             ^ hover: (local) function cascadeOptional(w: any?)
+cascadeOptional(1)
+
+-- A field and an alias typed by a missing type marked optional keep their place:
+-- the field stays the class's, the alias stays registered.
+---@class CascadeHolder
+---@diagnostic disable-next-line: undefined-doc-name
+---@field opt UndefinedCascadeField?
+local cascadeHolder = {}
+local cascadeOpt = cascadeHolder.opt
+--    ^ hover: (local) cascadeOpt: any
+
+---@diagnostic disable-next-line: undefined-doc-name
+---@alias CascadeHandle UndefinedCascadeHandle?
+
+---@param handle CascadeHandle
+local function useCascadeHandle(handle) return handle end
+useCascadeHandle(1)
+
+-- An alias none of whose members resolves stays unresolved: each use reports it.
+---@diagnostic disable-next-line: undefined-doc-name
+---@alias CascadeNoMembers UndefinedCascadeA | UndefinedCascadeB
+
+---@diagnostic disable-next-line: undefined-doc-name
+---@param value CascadeNoMembers
+local function useNoMembers(value) return value end
+--             ^ hover: (local) function useNoMembers(value)

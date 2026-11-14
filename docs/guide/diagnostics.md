@@ -432,6 +432,8 @@ Undefined type name in any annotation:
 function foo(x) end
 ```
 
+A missing type marked optional (`NonexistentType?`) types its value `any`, so arguments and uses aren't checked against a `nil`.
+
 ### `unknown-cast-variable` <Badge type="warning" text="Warning" />
 
 `@cast` names a variable that isn't in scope, so the cast has no effect:

@@ -17,9 +17,9 @@ local items = holder.items
 local loaded = holder.loaded
 --    ^ hover: (local) loaded: table
 
--- `table | ShelfItem` can't cross files as `table`, which would swallow the
--- class, so the field stays `any`.
+-- `table | ShelfItem` crosses files as in its file: the empty table as a table
+-- of no fields, which doesn't swallow the class.
 ---@type ShelfCache
 local cache
 local entry = cache.entry
---    ^ hover: (local) entry: any
+--    ^ hover: (local) entry: table | ShelfItem

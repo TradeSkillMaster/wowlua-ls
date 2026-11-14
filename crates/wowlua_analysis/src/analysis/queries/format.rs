@@ -1729,7 +1729,8 @@ impl AnalysisResult {
                 // makes `table_is_map` key purely off key presence.
                 // As deep as an anonymous `Table` collapses, a shape does: it is one
                 // lifted into another file, which shows it as its own file does.
-                if depth > 4 {
+                // An empty one is a table with no fields, as its file shows it.
+                if depth > 4 || (shape.fields.is_empty() && shape.value_type.is_none()) {
                     return "table".to_string();
                 }
                 if shape.fields.is_empty()

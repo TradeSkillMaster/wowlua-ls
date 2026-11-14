@@ -2954,6 +2954,37 @@ pub fn scan_file_globals_with_synth(
                     guessed_local: Some(key.clone()),
                     ..base
                 });
+            } else if !func.is_local()
+                && node.ancestors().skip(1).any(|a| a.kind() == SyntaxKind::FunctionDefinition)
+                && let Some(ident) = func.identifier()
+                && addon_ns_var.is_some()
+            {
+                // `function ns.M.f()` inside a function (an initializer defining it):
+                // its existence, as a function value written there is. The file's
+                // harvest types it (a slot).
+                let mut names = ident.names();
+                expand_field_alias(&mut names, &field_aliases, node.text_range().start().into());
+                if let [root, path @ .., name] = names.as_slice()
+                    && addon_ns_var.as_deref() == Some(root.as_str())
+                {
+                    let range = func.syntax().text_range();
+                    let (name_start, name_end) = ident.syntax().descendants_with_tokens()
+                        .filter_map(|c| match c {
+                            NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some((u32::from(t.text_range().start()), u32::from(t.text_range().end()))),
+                            _ => None,
+                        })
+                        .last()
+                        .unwrap_or((u32::from(range.start()), u32::from(range.end())));
+                    globals.push(ExternalGlobal {
+                        source_path: owned_path.clone(),
+                        def_start: u32::from(range.start()),
+                        def_end: u32::from(range.end()),
+                        name_start,
+                        name_end,
+                        in_function: true,
+                        ..ExternalGlobal::bare(ADDON_NS_NAME.to_string(), ExternalGlobalKind::TableField(path.to_vec(), name.clone(), FieldValueKind::Function))
+                    });
+                }
             }
             continue;
         }

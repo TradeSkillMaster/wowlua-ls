@@ -1252,6 +1252,11 @@ impl<'a> Analysis<'a> {
                 };
                 self.apply_annotations_with_owner(func_idx, scope_idx, func.syntax(), owner_class_owned.as_deref());
                 let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
+                // Inside a function, the definition is a write of the field, as the
+                // workspace sees it (a slot its file's harvest types).
+                if func_id.is_some() {
+                    self.record_target_value(ident, func_def_expr, false);
+                }
 
                 // Mark root symbol as referenced (e.g. `Container` in `function Container:Foo()`)
                 if let Some(root_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {

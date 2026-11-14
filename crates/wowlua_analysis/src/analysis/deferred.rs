@@ -207,8 +207,14 @@ pub struct DeferredSig {
     /// overloads), with their types lifted into ext space; likewise.
     pub overloads: Vec<ResolvedOverload>,
     /// The type the defining file's analysis gives each parameter no `@param`
-    /// types, by position (`None`: annotated, the receiver, or no more than `any`).
+    /// types, by position (`None`: annotated, a receiver the build typed, or no more
+    /// than `any`; a call object's method's receiver is harvested).
     pub params: Vec<Option<ValueType>>,
+    /// The generics the defining file's analysis gives the function beyond its
+    /// `@generic`s that a harvested parameter carries: a parameter it returns as
+    /// passed (`return 0, guid`) is one, so a call types that return by its argument
+    /// in every file.
+    pub generics: Vec<String>,
 }
 
 /// A unit of deferred harvest: one file analyzed on its own (its deferred returns,
@@ -793,12 +799,40 @@ impl Ir {
             ver.resolved_type = Some(ty.clone());
             self.symbol_overlay.insert(sym_idx, sym);
         }
-        if returns {
+        if returns || !sig.generics.is_empty() {
             let mut precise = coarse.clone();
-            precise.return_annotations = sig.returns;
-            precise.overloads = sig.overloads;
+            if returns {
+                precise.return_annotations = sig.returns;
+                precise.overloads = sig.overloads;
+            }
+            for name in sig.generics {
+                precise.generic_constraints_raw.push((name.clone(), None));
+                precise.generics.push((name, None));
+            }
             self.overlay.insert(func_idx, precise);
         }
+    }
+
+    /// In a harvest analysis, this file's definition of the workspace function
+    /// `func_idx` when the file defines it: a harvest cuts the file's reads of
+    /// itself, so a call it makes to its own function through the function's
+    /// external index (`self:Start()` in another method) takes the definition here,
+    /// as a call of a local function does, rather than the coarse signature. Filled
+    /// when the analysis starts resolving (`Ir::own_definitions`).
+    pub fn own_definition(&self, func_idx: FunctionIndex) -> Option<FunctionIndex> {
+        self.own_definitions.as_ref()?.get(&func_idx).copied()
+    }
+
+    /// The workspace functions this file defines whose signatures are harvested, by
+    /// their external index, to their definitions here.
+    pub(crate) fn own_function_definitions(&self) -> HashMap<FunctionIndex, FunctionIndex> {
+        let Some(funcs) = self.file_path.as_ref().and_then(|path| self.ext.deferred_sigs_by_path.get(path)) else {
+            return HashMap::default();
+        };
+        let by_start = self.functions_by_start();
+        funcs.iter()
+            .filter_map(|&f| Some((f, *by_start.get(&self.ext.function_locations.get(&f)?.start)?)))
+            .collect()
     }
 
     /// This file's functions by the start of their definitions, the key
@@ -1230,10 +1264,9 @@ impl Analysis<'_> {
             return;
         }
         let ext = Arc::clone(&self.ir.ext);
-        let Some(funcs) = self.ir.file_path.as_ref().and_then(|path| ext.deferred_sigs_by_path.get(path)) else { return };
-        let by_start = self.ir.functions_by_start();
-        for &fidx in funcs {
-            let Some(&local_idx) = ext.function_locations.get(&fidx).and_then(|loc| by_start.get(&loc.start)) else { continue };
+        let mut own: Vec<(FunctionIndex, FunctionIndex)> = self.ir.own_function_definitions().into_iter().collect();
+        own.sort_unstable();
+        for (fidx, local_idx) in own {
             if !self.ir.signatures_checked.insert(fidx) {
                 continue;
             }
@@ -2760,12 +2793,13 @@ fn harvest_sigs(
         for &fidx in func_indices {
             let Some(loc) = ext.function_locations.get(&fidx) else { continue };
             let sig = match by_start.get(&loc.start) {
-                Some(&local_idx) if !ext.deferred_returns.contains(&fidx) => DeferredSig {
-                    params: harvest_params(ext, fidx, &ir.functions[local_idx.val()], result, path, globals),
-                    ..DeferredSig::default()
-                },
+                Some(&local_idx) if !ext.deferred_returns.contains(&fidx) => {
+                    let (params, generics) = harvest_params_and_generics(ext, fidx, &ir.functions[local_idx.val()], result, path, globals);
+                    DeferredSig { params, generics, ..DeferredSig::default() }
+                }
                 Some(&local_idx) => {
                     let local = &ir.functions[local_idx.val()];
+                    let (params, generics) = harvest_params_and_generics(ext, fidx, local, result, path, globals);
                     // Derive both arity and per-slot types from the engine's
                     // inferred returns, using the *same* summary the definition
                     // site displays (`inferred_return_types`): when the engine
@@ -2783,7 +2817,7 @@ fn harvest_sigs(
                         .into_iter()
                         .enumerate()
                         .map(|(slot, t)| {
-                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, result, path, globals);
+                            let lifted = lift_signature_type(&t, ir, ext, Some(result), Some(path), globals, &generics);
                             // An `any` member of an intersection (`Frame & any`, a template the
                             // call couldn't type) is the defining file's type as much as the rest.
                             if matches!(&lifted, ValueType::Any) || matches!(&lifted, ValueType::Union(m) if m.contains(&ValueType::Any)) {
@@ -2799,17 +2833,16 @@ fn harvest_sigs(
                     let overloads = local
                         .overloads
                         .iter()
-                        .map(|o| lift_overload_to_ext(o, ir, ext, globals))
+                        .map(|o| lift_overload_to_ext(o, ir, ext, globals, &generics))
                         .collect();
-                    let params = harvest_params(ext, fidx, local, result, path, globals);
-                    DeferredSig { returns, overloads, params }
+                    DeferredSig { returns, overloads, params, generics }
                 }
                 // No matching function in the re-analyzed file (shouldn't happen, but
                 // be safe): keep the coarse values so we don't re-analyze repeatedly.
                 None => DeferredSig {
                     returns: ext.func(fidx).return_annotations.clone(),
                     overloads: ext.func(fidx).overloads.clone(),
-                    params: Vec::new(),
+                    ..DeferredSig::default()
                 },
             };
             harvested.insert(fidx, sig);
@@ -2821,8 +2854,9 @@ fn harvest_sigs(
 /// The types `local`, the defining file's function for the deferred `fidx`, has for
 /// the parameters no `@param` types, lifted into ext space by position: what readers
 /// check arguments against and show. `None` for a parameter the build typed (an
-/// annotated one, a `:` method's implicit `self`) and a type saying no more than
-/// `any` (generics stay coarse through the lift).
+/// annotated one, a `:` method's implicit `self` but a call object's) and a type
+/// saying no more than `any`. Of the type variables, the lift keeps `generics` (the
+/// function's own, [`DeferredSig::generics`]); any other decays to `any`.
 fn harvest_params(
     ext: &Arc<PreResolvedGlobals>,
     fidx: FunctionIndex,
@@ -2830,6 +2864,7 @@ fn harvest_params(
     result: &crate::analysis::AnalysisResult,
     path: &Path,
     globals: &GlobalTables,
+    generics: &[String],
 ) -> Vec<Option<ValueType>> {
     if !ext.deferred_params.contains(&fidx) {
         return Vec::new();
@@ -2841,9 +2876,49 @@ fn harvest_params(
             return None;
         }
         let ty = ir.param_decl_type(local, i)?;
-        let lifted = lift_local_type_to_ext_with(ty, ir, ext, result, path, globals);
+        let lifted = lift_signature_type(ty, ir, ext, Some(result), Some(path), globals, generics);
         (!lifted.contains_any()).then_some(lifted)
     }).collect()
+}
+
+/// [`harvest_params`] for `local`, and the generics its file's analysis gave it
+/// beyond its `@generic`s (the parameters it returns as passed) that a harvested
+/// parameter carries: a call binds no other (one for a `:` method's implicit
+/// `self`, which the build types), so it decays to `any` where it appears.
+fn harvest_params_and_generics(
+    ext: &Arc<PreResolvedGlobals>,
+    fidx: FunctionIndex,
+    local: &crate::types::Function,
+    result: &crate::analysis::AnalysisResult,
+    path: &Path,
+    globals: &GlobalTables,
+) -> (Vec<Option<ValueType>>, Vec<String>) {
+    let coarse = ext.func(fidx);
+    let inferred: Vec<String> = local.generics.iter()
+        .map(|(name, _)| name)
+        .filter(|name| !coarse.generics.iter().any(|(c, _)| c == *name))
+        .cloned()
+        .collect();
+    let params = harvest_params(ext, fidx, local, result, path, globals, &inferred);
+    let generics = inferred.into_iter()
+        .filter(|name| params.iter().flatten().any(|ty| mentions_type_variable(ty, name)))
+        .collect();
+    (params, generics)
+}
+
+/// Whether the type variable `name` appears anywhere in `ty`.
+fn mentions_type_variable(ty: &ValueType, name: &str) -> bool {
+    match ty {
+        ValueType::TypeVariable(n) => n == name,
+        ValueType::Union(members) | ValueType::Intersection(members) => members.iter().any(|m| mentions_type_variable(m, name)),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => mentions_type_variable(inner, name),
+        ValueType::FunctionSig(shape) => shape.params.iter().any(|p| mentions_type_variable(&p.ty, name))
+            || shape.returns.iter().any(|r| mentions_type_variable(r, name)),
+        ValueType::TableShape(shape) => shape.fields.iter().any(|(_, t)| mentions_type_variable(t, name))
+            || shape.value_type.as_deref().is_some_and(|t| mentions_type_variable(t, name))
+            || shape.key_type.as_deref().is_some_and(|t| mentions_type_variable(t, name)),
+        _ => false,
+    }
 }
 
 /// Whether the build left parameter `pos` of the workspace function `coarse` untyped
@@ -3611,20 +3686,21 @@ fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType
 }
 
 /// Lift a per-file `ResolvedOverload` into external-index space: each param type
-/// and return type is converted via `lift_local_type_to_ext`. Flags and labels
+/// and return type is converted via [`lift_signature_type`]. Flags and labels
 /// pass through unchanged.
-fn lift_overload_to_ext(o: &ResolvedOverload, ir: &Ir, ext: &PreResolvedGlobals, globals: &GlobalTables) -> ResolvedOverload {
+fn lift_overload_to_ext(o: &ResolvedOverload, ir: &Ir, ext: &PreResolvedGlobals, globals: &GlobalTables, type_vars: &[String]) -> ResolvedOverload {
+    let lift = |t: &ValueType| lift_signature_type(t, ir, ext, None, None, globals, type_vars);
     ResolvedOverload {
         params: o
             .params
             .iter()
             .map(|p| crate::types::ResolvedOverloadParam {
                 name: p.name.clone(),
-                typ: p.typ.as_ref().map(|t| lift_local_type_to_ext(t, ir, ext, globals)),
+                typ: p.typ.as_ref().map(lift),
                 optional: p.optional,
             })
             .collect(),
-        returns: o.returns.iter().map(|t| lift_local_type_to_ext(t, ir, ext, globals)).collect(),
+        returns: o.returns.iter().map(lift).collect(),
         // AnnotationType is name-based (pre-resolution), so it carries no local
         // table indices — clone through unchanged; names re-resolve against ext.
         returns_raw: o.returns_raw.clone(),
@@ -3832,9 +3908,13 @@ fn collect_value_holders(
     }
     if let Expr::FunctionCall { func, ret_index, .. } = ir.expr(e)
         && let Some(ValueType::Function(Some(callee))) = result.resolve_expr_type(*func)
-        && !callee.is_external()
     {
-        collect_returned_holders(result, callee, *ret_index, holders, visited);
+        // A call to one of the file's own functions through its external index
+        // (`Ir::own_definition`) is a call of its definition here.
+        let callee = ir.own_definition(callee).unwrap_or(callee);
+        if !callee.is_external() {
+            collect_returned_holders(result, callee, *ret_index, holders, visited);
+        }
     }
 }
 
@@ -4051,11 +4131,14 @@ struct LiftGuard<'a> {
     funcs_on_path: Vec<FunctionIndex>,
     /// Members left of [`LIFT_MEMBER_BUDGET`].
     budget: usize,
+    /// The generics of the function whose signature is lifted ([`DeferredSig::generics`]),
+    /// which keep their names; any other type variable means nothing elsewhere.
+    type_vars: &'a [String],
 }
 
 impl<'a> LiftGuard<'a> {
     fn new(globals: &'a GlobalTables, path: Option<&'a Path>) -> Self {
-        Self { globals, path, tables_on_path: Vec::new(), funcs_on_path: Vec::new(), budget: LIFT_MEMBER_BUDGET }
+        Self { globals, path, tables_on_path: Vec::new(), funcs_on_path: Vec::new(), budget: LIFT_MEMBER_BUDGET, type_vars: &[] }
     }
 
     /// Take `n` members from the budget; takes nothing and returns `false` when
@@ -4068,22 +4151,17 @@ impl<'a> LiftGuard<'a> {
 }
 
 /// Convert a `ValueType` produced by per-file analysis into external-index space
-/// so it can be stored on `PreResolvedGlobals` and read by other files.
-fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals, globals: &GlobalTables) -> ValueType {
-    lift_local_type_to_ext_depth(ty, ir, ext, 0, None, &mut LiftGuard::new(globals, None))
-}
-
-/// Like [`lift_local_type_to_ext`] but with the source file's analysis result in
-/// hand, so an anonymous *record* value (named fields, e.g. `{ x = 1 }`) carries
-/// each field's resolved type inline as a `TableShape` instead of decaying to
-/// `any`. Record field types aren't materialized on the arena `TableInfo` (only
+/// so it can be stored on `PreResolvedGlobals` and read by other files, with the
+/// source file's analysis result in hand, so an anonymous *record* value (named
+/// fields, e.g. `{ x = 1 }`) carries each field's resolved type inline as a
+/// `TableShape` instead of decaying to `any`. Record field types aren't materialized on the arena `TableInfo` (only
 /// array/map `value_type`/`key_type` are), so they must be read from the analysis's
 /// resolved-expr cache via `resolve_field_type` — hence the extra `result`. Used by
 /// every harvest path that holds a result: body-derived returns, injected instance
 /// fields (`wrap_overlay_shape`), created-global call types, and generic type-args.
-/// The plain [`lift_local_type_to_ext`] is for callers without one (e.g. lifting an
-/// overload's already-resolved param/return types), where records stay coarse.
-/// `path` is the analyzed file, where a carried instance field is defined.
+/// [`lift_signature_type`] lifts without one too (an overload's already-resolved
+/// param/return types), where records stay coarse. `path` is the analyzed file,
+/// where a carried instance field is defined.
 fn lift_local_type_to_ext_with(
     ty: &ValueType,
     ir: &Ir,
@@ -4095,7 +4173,23 @@ fn lift_local_type_to_ext_with(
     lift_local_type_to_ext_depth(ty, ir, ext, 0, Some(res), &mut LiftGuard::new(globals, Some(path)))
 }
 
-/// Depth-, cycle- and budget-guarded core of [`lift_local_type_to_ext`].
+/// [`lift_local_type_to_ext_with`] for a type in the signature of a function whose
+/// generics are `type_vars` ([`DeferredSig::generics`]), which keep their names.
+fn lift_signature_type(
+    ty: &ValueType,
+    ir: &Ir,
+    ext: &PreResolvedGlobals,
+    res: Option<&crate::analysis::AnalysisResult>,
+    path: Option<&Path>,
+    globals: &GlobalTables,
+    type_vars: &[String],
+) -> ValueType {
+    let mut guard = LiftGuard::new(globals, path);
+    guard.type_vars = type_vars;
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, res, &mut guard)
+}
+
+/// Depth-, cycle- and budget-guarded core of [`lift_local_type_to_ext_with`].
 ///
 /// Named (class) tables map by `class_name` through `ext.classes`, a `setmetatable`
 /// instance keeping its own fields ([`lift_instance`]); tables that
@@ -4105,11 +4199,12 @@ fn lift_local_type_to_ext_with(
 /// carries its element/key types (from the arena `TableInfo`), and a record carries
 /// its named fields' types (from `res.resolve_field_type`, so only when `res` is
 /// threaded — see [`lift_local_type_to_ext_with`]). A plain table with neither and
-/// no metatable (`{}`, a map whose entries differ) is a bare `table`, as its file
-/// shows it. Only genuinely unrepresentable types (any other anonymous table with
-/// neither, an unbound type variable, …) decay to `Any`. Past the depth cap, on a cycle, or
-/// over budget, an anonymous table decays to bare `table` and a local function to
-/// bare `function`.
+/// no `__index` or `__call` (`{}`, a map whose entries differ, a weak table) is a
+/// bare `table`, as its file shows it, but beside a class in a union, where it is an
+/// empty shape. Only genuinely unrepresentable types (any other anonymous table with
+/// neither, an unbound type variable, …) decay to `Any`. Past the depth cap, on a
+/// cycle, or over budget, an anonymous table decays to bare `table` and a local
+/// function to bare `function`.
 fn lift_local_type_to_ext_depth(
     ty: &ValueType,
     ir: &Ir,
@@ -4198,16 +4293,26 @@ fn lift_local_type_to_ext_depth(
                     .collect();
                 guard.tables_on_path.pop();
                 ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))
-            } else if info.is_shapeless() && info.metatable.is_none() {
+            } else if info.is_shapeless() {
                 ValueType::Table(None)
             } else {
                 ValueType::Any
             }
         }
         ValueType::Union(members) => {
-            let lifted: Vec<ValueType> = members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect();
+            let mut lifted: Vec<ValueType> = members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect();
             if absorbs_tables(&lifted) {
-                return ValueType::Any;
+                // A local table with no fields (`return {}` beside `return obj`) is a
+                // member of its own in its file; it crosses as an empty shape, which
+                // a table doesn't absorb.
+                for (member, l) in members.iter().zip(lifted.iter_mut()) {
+                    if *l == ValueType::Table(None) && matches!(member, ValueType::Table(Some(idx)) if !idx.is_external()) {
+                        *l = ValueType::TableShape(Box::new(crate::types::TableShape::new(Vec::new())));
+                    }
+                }
+                if absorbs_tables(&lifted) {
+                    return ValueType::Any;
+                }
             }
             ValueType::make_union(lifted)
         }
@@ -4239,7 +4344,9 @@ fn lift_local_type_to_ext_depth(
             guard.funcs_on_path.pop();
             shape.map_or(ValueType::Function(None), |s| ValueType::FunctionSig(Box::new(s)))
         }
-        // Unbound type variables have no meaning in the caller's context.
+        // Unbound type variables have no meaning in the caller's context, but for
+        // the generics of the signature lifted.
+        ValueType::TypeVariable(name) if guard.type_vars.contains(name) => ty.clone(),
         ValueType::TypeVariable(_) => ValueType::Any,
         // Primitives, Any, Nil, Table(None), Function(None), FunctionSig, etc.
         other => other.clone(),

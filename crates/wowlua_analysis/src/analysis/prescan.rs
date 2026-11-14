@@ -1964,15 +1964,13 @@ impl<'a> Analysis<'a> {
         }
         if let AnnotationType::Union(parts) = at {
             let drop_projections = crate::annotations::union_drops_projections(parts, generics);
-            let converted: Vec<ValueType> = parts.iter()
+            let considered: Vec<&AnnotationType> = parts.iter()
                 .filter(|p| !drop_projections || !crate::annotations::is_generic_projection(p, generics))
+                .collect();
+            let converted: Vec<ValueType> = considered.iter()
                 .filter_map(|p| self.resolve_annotation_type_mut_gen(p, generics))
                 .collect();
-            return match converted.len() {
-                0 => None,
-                1 => converted.into_iter().next(),
-                _ => Some(ValueType::make_union(converted)),
-            };
+            return crate::annotations::union_of_resolved(considered.len(), converted);
         }
         if let AnnotationType::NonNil(inner) = at {
             return self.resolve_annotation_type_mut_gen(inner, generics);

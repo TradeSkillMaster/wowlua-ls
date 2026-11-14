@@ -799,6 +799,15 @@ impl<'a> BuildOnStubsContext<'a> {
                         if sub_idx != class_idx {
                             let path = format!("{leaf_parent_name}.{field_name}");
                             merge_walked_fields(sub_idx, class_idx, &path, &mut self.tables, &self.exprs, &mut self.sub_tables, 0);
+                            // The methods defined through the field (`function T.Field:M()`)
+                            // are the class's when the write declares one (`---@class C`
+                            // on `T.Field = { … }`): their receiver is the class too. The
+                            // cold build keeps the walked table as the field (it merges no
+                            // walked table into a class), so its methods and receivers stay
+                            // that table's.
+                            if self.tables[class_idx.ext_offset()].class_name.is_some() {
+                                self.retype_moved_receivers(sub_idx, class_idx);
+                            }
                             // Update sub_tables so deeper paths resolve against the class table.
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), class_idx);
                         }
@@ -914,6 +923,26 @@ impl<'a> BuildOnStubsContext<'a> {
         }
     }
 
+    /// Retype the implicit `self` of the methods `from`'s fields hold, typed as
+    /// `from` (`shared::type_method_receiver`), as `to`, the table they moved into.
+    fn retype_moved_receivers(&mut self, from: TableIndex, to: TableIndex) {
+        let funcs: Vec<FunctionIndex> = self.tables[from.ext_offset()].fields.values()
+            .filter(|fi| fi.expr.is_external())
+            .filter_map(|fi| match &self.exprs[fi.expr.ext_offset()] {
+                Expr::FunctionDef(f) if f.is_external() => Some(*f),
+                _ => None,
+            })
+            .collect();
+        for func in funcs {
+            let Some(&self_sym) = self.functions[func.ext_offset()].args.first() else { continue };
+            if let Some(ver) = self.symbols[self_sym.ext_offset()].versions.first_mut()
+                && ver.resolved_type == Some(ValueType::Table(Some(from)))
+            {
+                ver.resolved_type = Some(ValueType::Table(Some(to)));
+            }
+        }
+    }
+
     /// Build the methods of `ws_globals`, in `pass.order`: those of exported local
     /// tables (`export_method`) when `exported`, which land on the tables the field
     /// writes exporting them create, the others before those writes.
@@ -1020,7 +1049,11 @@ impl<'a> BuildOnStubsContext<'a> {
                                 name_start: g.name_start, name_end: g.name_end,
                             });
                             super::shared::register_deferred_sig(g, func_idx, &mut self.deferred_returns, &mut self.deferred_params);
-                            if *is_colon
+                            // A method of a call's object has the receiver the call gives in
+                            // its file (see the cold build): its file's harvest types it.
+                            if *is_colon && through_call {
+                                self.deferred_params.insert(func_idx);
+                            } else if *is_colon
                                 && super::shared::type_method_receiver(&mut self.fn_build_ctx(), func_idx, target_idx)
                                 && is_addon_ns
                             {

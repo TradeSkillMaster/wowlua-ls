@@ -10,4 +10,4 @@ local resetGet = DeepMethodReset.API.v1.Get()
 -- A constructor entry the method is defined on and the call replacing it, as the
 -- defining file reads the field (only the workspace build harvests it).
 local slotFmt = DeepMethodSlot.Fmt
---    ^ hover: (local) slotFmt: { Extra: fun(self: any): number } | DeepMethodFmt
+--    ^ hover: (local) slotFmt: { Extra: fun(self: table | DeepMethodFmt): number } | DeepMethodFmt

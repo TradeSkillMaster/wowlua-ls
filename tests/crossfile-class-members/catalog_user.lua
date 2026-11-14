@@ -17,7 +17,7 @@ local defaults = Catalog.Defaults
 local data = Catalog.Get(true)
 --    ^ hover: (local) data: table<string, { weight: number }> | table
 local entry = Catalog.NewEntry("x")
---    ^ hover: (local) entry: any
+--    ^ hover: (local) entry: table | CatalogEntry
 local slots = Catalog.SLOTS
 --                    ^ hover: (field) SLOTS: table<CatalogSlot, CatalogKey>
 local left = Catalog.SLOTS.left

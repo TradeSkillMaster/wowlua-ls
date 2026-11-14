@@ -2550,7 +2550,10 @@ fn ctor_entry_slots_agree_across_files() {
 // through another file's class (`tests/slot-signatures`).
 #[test]
 fn slot_signatures_crossfile() {
-    for lua_file in ["tests/slot-signatures/reader.lua", "tests/slot-signatures/helpers.lua"] {
+    // Stub build only: its frames come from the stubs, and the cold build keeps the
+    // table methods walked into when a later write declares a class of the field
+    // (`nested.lua`'s `SigWarper`), so their receiver is that table there.
+    for lua_file in ["tests/slot-signatures/reader.lua", "tests/slot-signatures/helpers.lua", "tests/slot-signatures/reader2.lua"] {
         run_annotation_tests(&TestConfig {
             lua_file,
             with_stubs: true,

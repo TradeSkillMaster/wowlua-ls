@@ -2791,7 +2791,12 @@ impl BuildContext {
                                 name_start: g.name_start, name_end: g.name_end,
                             });
                             shared::register_deferred_sig(g, func_idx, &mut self.deferred_returns, &mut self.deferred_params);
-                            if *is_colon && !self.stub_blob
+                            // A method of a call's object (`R.f = CreateFrame(…)`, `function
+                            // R.f:M()`) has the receiver the call gives in its file, which
+                            // the build can't type: its file's harvest does.
+                            if *is_colon && !self.stub_blob && through_call {
+                                self.deferred_params.insert(func_idx);
+                            } else if *is_colon && !self.stub_blob
                                 && shared::type_method_receiver(&mut self.fn_build_ctx(), func_idx, target_idx)
                                 && is_addon_ns
                             {
@@ -4948,14 +4953,12 @@ impl PreResolvedGlobals {
             AnnotationType::NonNil(inner) => return Self::resolve_annotation_gen(inner, generics, ctx),
             AnnotationType::Union(parts) => {
                 let drop_projections = crate::annotations::union_drops_projections(parts, generics);
-                let converted: Vec<ValueType> = parts.iter()
+                let considered: Vec<&AnnotationType> = parts.iter()
                     .filter(|p| !drop_projections || !crate::annotations::is_generic_projection(p, generics))
+                    .collect();
+                let converted: Vec<ValueType> = considered.iter()
                     .filter_map(|p| Self::resolve_annotation_gen(p, generics, ctx)).collect();
-                return match converted.len() {
-                    0 => None,
-                    1 => converted.into_iter().next(),
-                    _ => Some(ValueType::make_union(converted)),
-                };
+                return crate::annotations::union_of_resolved(considered.len(), converted);
             }
             AnnotationType::Intersection(parts) => {
                 let converted: Vec<ValueType> = parts.iter()

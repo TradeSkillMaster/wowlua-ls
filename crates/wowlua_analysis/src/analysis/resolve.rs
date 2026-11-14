@@ -93,6 +93,9 @@ impl<'a> Analysis<'a> {
     }
 
     pub fn resolve_types(&mut self) {
+        if super::deferred::harvesting() {
+            self.ir.own_definitions = Some(self.ir.own_function_definitions());
+        }
         self.fill_class_others();
         self.fill_slot_others();
         // Pre-size the expression cache and cycle-detection bitmap as dense Vecs.
@@ -510,22 +513,47 @@ impl<'a> Analysis<'a> {
     fn warm_unresolved_field_reads(&mut self) {
         let ext = &self.ir.ext;
         if ext.deferred_class_field_paths.is_empty() && ext.deferred_call_fields.is_empty() && ext.deferred_table_fields.is_empty()
-            && ext.deferred_slot_fields.is_empty()
+            && ext.deferred_slot_fields.is_empty() && ext.deferred_returns.is_empty() && ext.deferred_params.is_empty()
         {
             return;
         }
-        let reads: Vec<(ExprId, String)> = self.ir.exprs.iter().enumerate()
+        let reads: Vec<(ExprId, ExprId, String)> = self.ir.exprs.iter().enumerate()
             .filter(|(i, _)| self.resolved_expr_cache.get(*i).is_none_or(Option::is_none))
-            .filter_map(|(_, expr)| match expr {
-                Expr::FieldAccess { table, field, field_range: Some(_) } => Some((*table, field.clone())),
+            .filter_map(|(i, expr)| match expr {
+                Expr::FieldAccess { table, field, field_range: Some(_) } => Some((ExprId(i), *table, field.clone())),
                 _ => None,
             })
             .collect();
-        for (receiver, field) in reads {
+        // A workspace function a value written to another table (`Other.f = ns.f`) or
+        // compared (`f == ns.Remove`) holds shows its harvested signature, as where it
+        // is called. Only those: warming every such read harvests files nothing else
+        // reads.
+        let shown: HashSet<ExprId> = if super::deferred::harvesting() {
+            HashSet::default()
+        } else {
+            self.ir.target_values.values().copied()
+                .chain(self.ir.binary_op_sites.iter().flat_map(|site| match self.ir.expr(site.expr_id) {
+                    Expr::BinaryOp { op: Operator::Equals | Operator::NotEquals, lhs, rhs } => vec![*lhs, *rhs],
+                    _ => Vec::new(),
+                }))
+                .collect()
+        };
+        let mut functions: Vec<FunctionIndex> = Vec::new();
+        for (read, receiver, field) in reads {
             let Some(receiver_type) = self.known_receiver_type(receiver, 0) else { continue };
             for idx in self.field_receiver_tables(&receiver_type.into_strip_opaque()) {
-                self.fetch_cross_file_field(idx, &field);
+                let Some(fetched) = self.fetch_cross_file_field(idx, &field) else { continue };
+                let func = match (&fetched.annotation, self.ir.expr(fetched.primary)) {
+                    (Some(ValueType::Function(Some(func))), _) | (None, Expr::FunctionDef(func)) => *func,
+                    _ => continue,
+                };
+                if func.is_external() && shown.contains(&read) {
+                    functions.push(func);
+                }
             }
+        }
+        for func in functions {
+            self.ir.ensure_overlay(func);
         }
     }
 
@@ -1483,6 +1511,7 @@ impl<'a> Analysis<'a> {
                 // both have max_slot == 0 and callee_arity == 1, so neither expands.
                 // Only a callee with already-established arity > 1 (from annotations
                 // or multi-expression returns) triggers expansion.
+                let callee_func_idx = self.ir.own_definition(callee_func_idx).unwrap_or(callee_func_idx);
                 let callee_func = self.func(callee_func_idx);
                 let callee_arity = if !callee_func.return_annotations.is_empty() {
                     callee_func.return_annotations.len()

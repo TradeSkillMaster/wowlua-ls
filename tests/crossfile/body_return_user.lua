@@ -102,3 +102,8 @@ local function TooltipLines(tooltip, dumped)
     return info.lines
     --          ^ hover: (field) lines: BodyReturnLine[]
 end
+
+-- A receiver's generic no call binds stays `any`.
+local pair, count = ns.Chain:Pair(2)
+--    ^ hover: (local) pair: any  def: local
+--          ^ hover: (local) count: number  def: local

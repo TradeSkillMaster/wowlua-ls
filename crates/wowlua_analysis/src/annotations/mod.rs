@@ -2487,7 +2487,7 @@ pub use annotation_scanning::{
 pub use annotation_scanning::{
     is_number_literal,
     is_select_varargs,
-    reduce_to_fun_alias, resolve_annotation_type,
+    reduce_to_fun_alias, resolve_annotation_type, union_of_resolved,
     extract_fun_sig,
 };
 pub use scan_globals::scan_file_globals;

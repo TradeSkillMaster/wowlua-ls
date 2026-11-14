@@ -87,7 +87,8 @@ pub fn format_annotation_type(at: &AnnotationType) -> String {
                 let suffix = if p.optional { "?" } else { "" };
                 format!("{}{}: {}", p.name, suffix, format_annotation_type(&p.typ))
             }).collect();
-            if *is_vararg { args.push("...".to_string()); }
+            // A typed vararg (`...: T`) is among the params already.
+            if *is_vararg && !params.iter().any(|p| p.name == "...") { args.push("...".to_string()); }
             let ret_str = if returns.is_empty() {
                 String::new()
             } else {
