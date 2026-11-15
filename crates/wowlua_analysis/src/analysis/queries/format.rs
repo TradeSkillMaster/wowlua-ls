@@ -1084,6 +1084,7 @@ impl AnalysisResult {
             if let Some(vt) = self.resolve_expr_type(eid)
                 && !types.contains(&vt) { types.push(vt); }
         }
+        let types = self.ir.with_own_call_object(fi.expr, types);
         if types.is_empty() { None } else { Some(ValueType::make_union(self.ir.collapse_subset_tables(types))) }
     }
 
@@ -1705,7 +1706,12 @@ impl AnalysisResult {
                 }
             }
             ValueType::Intersection(types) => {
-                let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
+                // The table holding what files define or write through a call's
+                // object (`keep_call_field_methods`) shows as the object.
+                let call_object = |t: &&ValueType| matches!(t, ValueType::Table(Some(idx)) if self.ir.is_call_object_members(*idx));
+                let shown: Vec<&ValueType> = types.iter().filter(|t| !call_object(t)).collect();
+                let shown = if shown.is_empty() { types.iter().collect() } else { shown };
+                let parts: Vec<String> = shown.into_iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
                 parts.join(" & ")
             }
             ValueType::TableShape(shape) => {

@@ -48,8 +48,8 @@ function ns.BuildStatus()
     ns.Status = frame
 end
 
--- A field cleared in a function keeps its call's type, written in one or at
--- file level.
+-- A field cleared in a function reads its call's type or nil, written in one or
+-- at file level.
 ns.TopRow = CreateFrame("Frame", nil, UIParent, "InFuncRowTemplate")
 function ns.Teardown()
     ns.Row = nil
@@ -98,7 +98,7 @@ function ns.Factory:MakeRow() return CreateFrame("Frame", nil, UIParent, "InFunc
 -- This file reads them the same way.
 function ns.Use()
     local row = ns.Row
-    --    ^ hover: (local) row: Frame & InFuncRowTemplate
+    --    ^ hover: (local) row: Frame & InFuncRowTemplate?
     ns.Cache:Lookup()
     ns.MixedRow:Lookup()
 end

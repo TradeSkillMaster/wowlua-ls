@@ -78,7 +78,7 @@ hold; a later slice never starts on a tree where an earlier one's acceptance reg
 5. **Retirement.** For every kind the harvest covers: remove the `FieldValueKind` to
    type materialization in both build contexts, delete the pattern scanners that only
    existed to type those slots (`class_var_guesses`, `function_locals` typing,
-   `settle_instance_tables`, call-field and constructor typing passes), collapse the
+   call-field and constructor typing passes), collapse the
    build contexts where the removed passes were their difference. The cold `build`
    remains for the stub blob, whose sources are declaration files typed by annotations.
 
@@ -459,6 +459,165 @@ Open, by cause (53 function paths):
   hold (Baganator `BagTransfers` `matches`, `any[]` before the first round): the
   parameter is inferred from the `table` of `FromBagsToBags`'s harvested `toMove`
   (slice 2's bare-`table` trap).
+
+## Slice 5 status (2026-11-13, first round)
+
+The workspace build no longer types the slots the harvest covers (ARCHITECTURE.md,
+"Retired scan typing"):
+- A field written a call is the scan's existence placeholder (`any`, no annotation, no
+  `table` guess for a call the build can't follow); the call's type is its file's: the
+  slot harvest, the class harvest, or the call-field harvest for a field neither
+  reaches (a namespace field at file level, the namespace's own `@class`, a member
+  written onto a call's object, nested tables under a class field). `call_return_type`,
+  its string-argument and field-name class guesses, `resolve_nested_ctor_calls` and the
+  global `X = Call()` / `X = ref` typing are gone from the workspace build; a reference
+  to a table still is that table (structure, not a type), and an XML `KeyValue`
+  `type="global"` still declares its field the global's type.
+- The workspace build without the stub database is the same build over an empty base
+  (`PreResolvedGlobals::build` is `build_on_stubs(&empty())`): the cold `BuildContext`
+  only builds the stub blob, whose declarations keep its typing (no harvest exists
+  there). Fixtures with `with_stubs: false` run one build path twice.
+- The harvest took over what the scan types papered over: a class whose files read
+  fields others of them write is a cycle of its own (rounds, its files reading its
+  previous round, `ReadPart::Field`); a call object's members ride on the harvested
+  type (`with_call_object`), in the writer's own union too; a slot's harvest goes
+  before a call field's at top level (the call's type is one write of the slot); the
+  gates accept a union one member of which says more than `any`; a file's own
+  workspace function lifts as that function; lifted records carry definition
+  locations; a constructor's `nil` entry stays a declaration when the writes replace
+  the scan's table.
+
+`crossfile-types` (this round): 85 → 76 disagreeing paths (DeadlyBossMods 15 → 13,
+NumyTest 4 → 1, TestProject 11 → 8, Glider 1 → 0), none rising; the later rounds end at
+79 (see the fourth round). Of the paths this slice was handed, `TalentViewerTWW.treeId`
+(as `any`, see below), `IsEncounterInProgress`, `NumyConfig_Module.{IterateModules,
+NewModule}` and `Glider.SpeedDisplay.Speed` agree. `check`: no
+additions; removed are 7 `type-mismatch` from `treeId`'s `table` guess, a
+`categoryID` `undefined-field` and a `table?` `type-mismatch` (false positives), two
+secret warnings on `UnitName("player")`, which the engine knows isn't secret where the
+scan read the declared `secret<string>`, an `assign-type-mismatch` through
+`IterateModules`, and one `inject-field` hint (`TestReporter.cachedReport`: the class
+looks contracted only through build annotations the scan no longer makes). `dump-types`:
+104 hovers gain a type; 51 typed hovers go untyped: `treeId` 14 (`table` → `any`, the
+retired guess), MacroToolkit 25 (members written through `db` on its AceDB object:
+carrying them lets their untyped writes absorb the defaults' types, not carrying them
+loses them), `IterateModules` iteration 6 (readers now take the writer's union, see
+below), DeadlyBossMods locale write sites 5, a method definition through a call field
+1. Analyses (main → now): TSM 526 → 536, DeadlyBossMods 239 → 227, Baganator 212 → 212
+(110 files), NPCScan 74 → 153 (78), Coolinator 54 → 71, NumyTest 84 → 101, every
+workspace within twice its files; `check` times unchanged (TSM 1.7 s, DeadlyBossMods
+2.0 s).
+
+Open, by cause:
+- Not retired yet (done in later rounds): `class_var_guesses` / `apply_instance_guesses`
+  (method ownership of a call-initialized local, still guessed from its string
+  argument), `function_locals`' call kinds (the call is no longer typed from them, only
+  discovered), the `MaybeCallable` and field-named-class guesses of the existence pass.
+  The self-field and constructor scanners' literal/parameter types stay (exact, not
+  guessed), as does `settle_instance_tables`, which isn't scan typing: it applies a
+  field's `---@type` to the tables written through it (author annotations win).
+- A writer's union with a definition (`DBTBar.Cancel`, `Debug`, `PostInit` ×2): the
+  build makes the method, so readers read the definition (slice 4).
+- `GetAndCacheEntryInfo` (an unresolved `@return` slot), `tempSelectedPreset`,
+  `UtilityHub.Database`, `GameOptions.subcategories`, `MythicPlusPull.DB`,
+  `Constants.AllBankIndexes`, `justifyH`, `AuctionatorSaleItemMixin.itemInfo`:
+  unchanged from slices 2 and 4, none a scan type.
+- `IterateModules` now agrees as the writer's union of the inherited Ace method and
+  its own write, over which `for … in` reads nothing: the writer should read its write
+  over an inherited copy.
+- Write sites still showing the placeholder: a reference written at a field of an
+  exported local's constructor (DeadlyBossMods `L.AUTO_TIMER_TEXTS.*`).
+
+## Slice 5 status (2026-11-14, second round)
+
+The first round's seven behavior changes were approved; the hovers it lost are typed again:
+- MacroToolkit's members written through `db` (25): a `@class` field's harvest carries the
+  call object's members after the call's type (`with_class_call_object`), and the record
+  `MT.conditions` lifted from its constructor reads a run-time key as any entry or `nil`
+  (`TableShape::closed`).
+- The `IterateModules` iterations (6): a write replacing a field a class imported from a
+  stub parent gives the class its own field (`Ir::is_inherited_copy`), so the writer and
+  every reader read the written method.
+- DeadlyBossMods' locale write sites (5): a deep write onto a field the build only says
+  exists types it in its file (`Ir::is_scan_any`).
+- PranGearView's `UpdateTooltip` definition (1): the definition's name lookup searches the
+  receiver's intersection past its first table.
+- Two variants the round's fixture (`value-fields-crossfile/round_toolkit*.lua`) found:
+  an entry of another file's constructor typed only by its harvest now types a run-time-key
+  read (`Addon.kinds[k]`), and the table's hover lists it typed.
+
+Retired: the existence pass's `MaybeCallable` guess (`function & table`) and its
+field-named-class / namespace-sub-table guesses (both `any` now), and the class a string
+argument names for a call through a function body's call local (`BodyCalls::call_kind`
+records the call with no callee). `settle_instance_tables` stays: it isn't scan typing but
+`---@type` authority on the tables written through a declared field (`ns.state.running =
+true` reads the declared `boolean`), which the plan keeps.
+
+Blob: regenerated with wow-ui-source `live`/`forever` pinned at provenance and HEAD's
+vendor/generated files copied in (the pinned base regen reproduced HEAD byte-for-byte). The
+files blob is unchanged (no `Inferred*` movement); `precomputed.bin.zst` differs only in four
+raw `stub_globals` entries (function-body call-local calls recorded as calls).
+
+Gate against main: `check` adds nothing and removes 7 more `type-mismatch` (`got function &
+table`); `crossfile-types` 85 → 79, rising nowhere; `dump-types` typed →
+untyped: the approved `treeId` 14 plus the retired guesses, `function & table` → `any` 192
+(DeadlyBossMods 83, PranGearView 75, TestProject 23, Glider 6, Syndicator 5) and a field
+typed the class its name matches → `any` 15 (`defaultPosition.x: x`, `scale: scale`).
+Analyses: as round 1 (TSM 531, DeadlyBossMods 227, Baganator 212, NPCScan 153), every
+workspace within twice its files.
+
+## Slice 5 status (2026-11-15, third round)
+
+`class_var_guesses` is retired as a guess: the scan still reads `local w = F("Name")` as
+class `Name` (the string given directly or through a local bound once to it), but the
+build keeps that reading only when the callee's declaration names a class by the
+argument (`@defclass`, or a backtick generic it returns), else moves what was written
+through `w` to the fields it is assigned to (`apply_instance_guesses`). A string argument
+no longer makes a class of its own: `NewLocale("LibAdvancedIconSelector-MTK", …)` made
+the class MacroToolkit's icon library was typed as, holding locale keys; the library's
+own table (`LibStub:NewLibrary(MAJOR_VERSION, …)`) is that class now, with its methods,
+so `MT.AIS = MT.LS("LibAdvancedIconSelector-MTK")` reads it in every file (no unbound `T`
+in its writer) and the `CreateIconSelectorFrame` `undefined-field` false positive is
+gone. UtilityHub gains 113 typed hovers the same way.
+
+Gate against main: as the second round (no `check` additions; `crossfile-types` 85 → 79,
+rising nowhere; typed → untyped only the approved `treeId` and retired guesses), plus the
+gains above. `MacroToolkit.commandinfo` disagrees where `CreateIconSelectorFrame` did:
+other files now read it `table<string, number>` while its writer, as on main, reads its
+constructor of class constants as `table<string, any>`.
+
+## Slice 5 status (2026-11-15, fourth round)
+
+Members written through an AceDB object at their write sites read typed again
+(PranGearView's `db.profile.*.customColor` and `color{High,Medium,Low}` writes, 32
+hovers `string` on main, `any` before this round). A member written through a call's
+object lives on the object's members table, which the build left at its existence
+`any`; the write landed instead on the AceDB defaults' copy of the member, because the
+deferred deep write walked its receiver from the root's first value only. It now also
+reaches every table the path holds from any value of the root, each member of a union or
+intersection along it (`write_path_tables` in `resolve_deep_field_injections`), so the
+members table holds the file's writes (`string`, a `val:gsub(...)` beside a typed write
+included). A write site whose field nothing in its file types — the build's `any`, or
+the members table of a call's object — shows what it writes, carrying those members
+(`written_over_placeholder`, hover and `crossfile-types` alike).
+
+`crossfile-types`: 85 → 79 disagreeing paths (DeadlyBossMods 15 → 13, Glider 1 → 0,
+NumyTest 4 → 1, TestProject 11 → 11), rising nowhere. TestProject's count holds with one
+path swapped: `LibAdvancedIconSelector-MTK.CreateIconSelectorFrame` agrees (third round),
+and `MacroToolkit.commandinfo` disagrees because other files now read the harvested
+`table<string, number>` while its writer, as on main, reads its constructor of class
+constants as `table<string, any>`. `MacroToolkit.db.{profile.scale, profile.width,
+global.ebackups}` disagree exactly as on main: members written through the AceDB object
+outside its defaults, which a file writes a value (`scale = value`, `ebackups = {}`) rather
+than a call; the file writing one reads its own write (`number`, `table`), other files the
+members table's `any`, since the call-field harvest only takes calls, and the
+`db.profile.width` / `db.global.ebackups` write sites (mainframe.lua:66, restoreframe.lua:248)
+are ones the field-chain lookup doesn't reach, showing the build's `any`.
+
+Gate against main: `check` adds nothing (19 false positives removed); typed → untyped is
+169, all approved: `treeId` 14, `function & table` → `any` 140 (the second round's 192
+less the members whose writes now type them) and a field named like a class → `any` 15;
+265 hovers gain a type. Analyses and `check` times as the third round.
 
 ## Acceptance for every slice
 

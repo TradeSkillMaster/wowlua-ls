@@ -227,7 +227,8 @@ fn intersection_tables(ir: &Ir, t: &ValueType, out: &mut Vec<TableIndex>) -> boo
     match t {
         ValueType::Intersection(members) => members.iter().all(|m| intersection_tables(ir, m, out)),
         ValueType::OpaqueAlias(_, inner) => intersection_tables(ir, inner, out),
-        ValueType::Table(Some(idx)) if ir.table(*idx).key_type.is_none() && !ir.table(*idx).placeholder => {
+        // A call object's members beside its type (`deferred::with_call_object`).
+        ValueType::Table(Some(idx)) if ir.table(*idx).key_type.is_none() => {
             out.push(*idx);
             true
         }
@@ -281,10 +282,13 @@ pub fn receiver_tables(ir: &Ir, t: &ValueType, receiver: ExprId, is_call: impl F
         // commonly gets fields this file can't see: per-instance XML
         // `KeyValue`s, members its template's `OnLoad` installs, writes in
         // other files.
-        ValueType::Intersection(_) => {
+        // The object a call field holds with what files define through it
+        // (`deferred::with_call_object`) is that call's instance, checked as one.
+        ValueType::Intersection(members) => {
             let declared = matches!(*ir.expr(super::unwrap_to_inner_expr(ir, receiver)),
                 Expr::SymbolRef(sym, _) if ir.declares_intersection(sym, t));
-            if !declared || !intersection_tables(ir, t, &mut tables) { return None; }
+            let call_object = members.iter().any(|m| matches!(m, ValueType::Table(Some(idx)) if ir.is_call_object_members(*idx)));
+            if !(declared || call_object) || !intersection_tables(ir, t, &mut tables) { return None; }
         }
         // For unions, recurse into intersection/opaque-alias members so mixin
         // patterns like `(Frame & Template) | AceEvent-3.0` check all tables.

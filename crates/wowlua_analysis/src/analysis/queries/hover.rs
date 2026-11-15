@@ -29,10 +29,21 @@ impl AnalysisResult {
         // a same-named global doesn't shadow the field result.
         if let Some((table_idx, field_name, expr_id, access_kind, receiver_tables)) = self.resolve_field_chain_at(tree, offset) {
             let is_g_env = self.ir.is_global_env(table_idx);
-            // Try to resolve the field's type for function detection
-            let resolved_type = self.resolve_expr_type(expr_id);
+            // Try to resolve the field's type for function detection: a slot's
+            // harvested function is the function its files write there.
+            let resolved_type = self.resolve_expr_type(expr_id).filter(|ty| !matches!(ty, ValueType::Any)).or_else(|| {
+                self.get_field(table_idx, &field_name)
+                    .and_then(|fi| fi.annotation.clone())
+                    .filter(|ty| matches!(ty, ValueType::Function(Some(_))))
+            }).or_else(|| self.resolve_expr_type(expr_id));
             let is_func = matches!(&resolved_type, Some(ValueType::Function(Some(_))));
-            let table_name = self.table(table_idx).class_name.clone();
+            // A method on what files define through a call's object is the object's
+            // class's (`keep_call_field_methods`).
+            let table_name = self.table(table_idx).class_name.clone().or_else(|| {
+                self.ir.is_call_object_members(table_idx).then(|| receiver_tables.iter()
+                    .find_map(|&t| self.table(t).class_name.clone()))
+                    .flatten()
+            });
             let sep = match access_kind {
                 FieldAccessKind::Colon => ":",
                 FieldAccessKind::Dot => ".",
@@ -127,6 +138,11 @@ impl AnalysisResult {
                         } else {
                             (self.format_type_accessible(ann, &[enclosing_class]), Some(ann.clone()), true)
                         }
+                    } else if let Some(written) = SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased()
+                        .and_then(|token| self.written_over_placeholder(u32::from(token.text_range().start()), field_info))
+                    {
+                        let s = self.format_type_accessible(&written, &[enclosing_class]);
+                        (s, Some(written), false)
                     } else {
                         let (exprs, skip_primary) = self.field_union_exprs(field_info);
                         let mut types: Vec<ValueType> = Vec::new();

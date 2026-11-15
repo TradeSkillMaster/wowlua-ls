@@ -9,7 +9,7 @@ use super::SharedMap;
 use super::{
     PreResolvedGlobals,
     record_field_location, walk_deep_path, ClassFieldPaths,
-    resolve_funcall_chain, resolve_funcall_function, bound_call_return, resolve_field_ref_chain_from, GlobalLookupCtx,
+    resolve_funcall_function, resolve_field_ref_chain_from, GlobalLookupCtx,
     populate_table_fields, merge_table_fields, merge_ctor_fields, CtorFieldsCtx,
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance, mark_scripted_frames_open,
@@ -89,8 +89,8 @@ struct BuildOnStubsContext<'a> {
     /// write to one (a literal, a resolved call, a reference) replaces it; an
     /// untyped write keeps it.
     ctor_entries: HashSet<(TableIndex, String)>,
-    /// Call-valued constructor entries populated as placeholders; see
-    /// `resolve_nested_ctor_calls`.
+    /// Call-valued constructor entries the shared table population logs, which
+    /// only the stub blob's build types (their files' harvests type a workspace's).
     nested_ctor_calls: Vec<super::NestedCtorCall>,
     /// `(table, field)` call-assigned fields methods were defined or fields written
     /// through; see `call_field_writes`.
@@ -130,6 +130,9 @@ struct BuildOnStubsContext<'a> {
 
     // Config
     implicit_protected_prefix: bool,
+    /// The `@class`es declared on the addon namespace, whose fields no class harvest
+    /// reaches from the namespace's views (`Ir::class_tables` leaves them out).
+    addon_ns_classes: HashSet<String>,
 }
 
 impl<'a> BuildOnStubsContext<'a> {
@@ -187,6 +190,7 @@ impl<'a> BuildOnStubsContext<'a> {
             existence_fields: HashSet::default(),
             method_stub_overrides: Vec::new(),
             implicit_protected_prefix,
+            addon_ns_classes: HashSet::default(),
         }
     }
 
@@ -330,38 +334,6 @@ impl<'a> BuildOnStubsContext<'a> {
         std::iter::once(call_offset).chain(g.extra_call_offsets.iter().copied())
             .map(|call_offset| DeferredCallField { path: path.clone(), call_offset, target: target.clone() })
             .collect()
-    }
-
-    /// The type of the call a field is assigned (`X.f = Call(args)`): the callee's
-    /// return, its generics bound from `args`, else the class its first string
-    /// argument or the field names.
-    fn call_return_type(
-        &self,
-        callee_chain: &[String],
-        first_string_arg: Option<&str>,
-        arg_refs: &crate::annotations::CallArgRefs,
-        field_name: &str,
-    ) -> Option<ValueType> {
-        self.call_type(callee_chain, arg_refs)
-            .or_else(|| first_string_arg.and_then(|name| self.classes.get(name)).map(|&idx| ValueType::Table(Some(idx))))
-            .or_else(|| self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx))))
-    }
-
-    /// The type of a call of `callee` with the arguments `arg_refs` names: its
-    /// return with its generics bound from them, else its declared return.
-    fn call_type(&self, callee: &[String], arg_refs: &crate::annotations::CallArgRefs) -> Option<ValueType> {
-        let ctx = self.global_lookup_ctx();
-        bound_call_return(callee, arg_refs, &ctx, |names| self.name_ref_type(names))
-            .or_else(|| resolve_funcall_chain(callee, &ctx).and_then(strip_unbound_type_vars))
-    }
-
-    /// The type of the global or field path `names` (a call argument), or the
-    /// class a lone name is — a `@class` local's, renamed by the scan.
-    fn name_ref_type(&self, names: &[String]) -> Option<ValueType> {
-        self.field_ref_type(names).or_else(|| match names {
-            [name] => self.classes.get(name).map(|&idx| ValueType::Table(Some(idx))),
-            _ => None,
-        })
     }
 
     /// Bundle the IR arenas and class/alias registries into a [`FnBuildCtx`] for
@@ -750,9 +722,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let value_type = if !g.returns.is_empty() {
-                    let vt = self.resolve_write_annotation(&g.returns[0]);
-                    self.log_nested_ctor_calls(&g.returns[0], vt.as_ref(), value_kind);
-                    vt
+                    self.resolve_write_annotation(&g.returns[0])
                 } else {
                     match value_kind {
                         FieldValueKind::String(_) => Some(ValueType::String(None)),
@@ -845,7 +815,7 @@ impl<'a> BuildOnStubsContext<'a> {
         // The methods of exported local tables, onto the tables the writes above
         // export them as (see `ExternalGlobal::export_method`).
         self.build_methods(ws_globals, ws_classes, class_field_paths, &mut pass, true);
-        // Second pass: resolve Unknown / MaybeCallable fields
+        // Second pass: the fields only known to exist (`Unknown` / `MaybeCallable`)
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if !matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) || !g.returns.is_empty() { continue; }
@@ -868,32 +838,10 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.note_field_write(leaf_idx, field_name, g);
                     continue;
                 }
-                let value_type = if let Some(&idx) = self.classes.get(field_name) {
-                    ValueType::Table(Some(idx))
-                } else if let Some(&sub_idx) = self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
-                    ValueType::Table(Some(sub_idx))
-                } else if matches!(value_kind, FieldValueKind::MaybeCallable) {
-                    // RHS was a forwarded field/param that may hold a callable —
-                    // register callable-or-unknown so a later call through the field
-                    // isn't flagged `cannot-call`, while reads stay as permissive as
-                    // a bare table.
-                    ValueType::callable_or_unknown()
-                } else {
-                    // Register existence-only as `any` (the honest "unknown") so the
-                    // field is at least visible without asserting a shape. NOT a bare
-                    // `table`: that concrete type leaks into reads — a non-table value
-                    // (a number from a chained call, a string) passed to a typed
-                    // parameter then false-positives as `type-mismatch` (`got table`),
-                    // and calling the field false-positives as `cannot-call`. The skip
-                    // guard above already lets a concretely-typed definition win, so
-                    // this placeholder only fires when no better type exists.
-                    ValueType::Any
-                };
-                if !matches!(value_type, ValueType::Table(Some(_))) {
-                    self.existence_fields.insert((leaf_idx, field_name.clone()));
-                }
+                // Existence only: what files write there types it (`any` until then).
+                self.existence_fields.insert((leaf_idx, field_name.clone()));
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
-                self.exprs.push(Expr::Literal(value_type.clone()));
+                self.exprs.push(Expr::Literal(ValueType::Any));
                 self.tables[local_idx].fields.insert(field_name.clone(),
                     super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
@@ -1371,9 +1319,11 @@ impl<'a> BuildOnStubsContext<'a> {
         }
         self.resolve_assigned_types(&mut pending);
 
-        // Resolve workspace FunctionCall table fields
+        // Fields written a call: the call's type is its file's, read through the
+        // call-field harvest, a slot's or the class's. The build only says the field
+        // exists, holds what is defined or written through it, or is declared.
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall { callee: callee_chain, first_string_arg, arg_refs, .. }) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall { callee: callee_chain, .. }) = &g.kind {
                 if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _leaf_parent_name)) = walk_deep_path(
@@ -1396,23 +1346,26 @@ impl<'a> BuildOnStubsContext<'a> {
                 if !file_table
                     && let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name)
                 {
-                    let call_type = if g.returns.is_empty() {
-                        self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name)
-                    } else {
-                        self.resolve_write_annotation(&g.returns[0])
-                    };
+                    let declared = g.returns.first().and_then(|at| self.resolve_write_annotation(at));
                     let workspace_build = true;
-                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables, workspace_build);
+                    keep_call_field_methods(table_idx, field_name, method_table, declared.as_ref(), &mut self.tables, workspace_build);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
-                    if let Some(fi) = self.tables[local_idx].fields.get(field_name) {
-                        self.defer_call_field(fi.expr, &ValueType::Table(Some(method_table)), g, field_name);
+                    if let Some(expr) = self.tables[local_idx].fields.get(field_name).map(|fi| fi.expr) {
+                        match &declared {
+                            Some(vt) => self.defer_call_field(expr, vt, g, field_name),
+                            None => {
+                                let calls = Self::calls_of(g, field_name);
+                                if !calls.is_empty() {
+                                    self.deferred_call_fields.entry(expr).or_default().extend(calls);
+                                }
+                            }
+                        }
                     }
                     continue;
                 }
-                // An existence-only write's `any` yields to a call typed here.
+                // An existence-only write's `any` stands for this call as well.
                 let existence = self.existence_fields.contains(&ctor_entry);
-                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
-                // Even when skipping, record the source location for go-to-definition.
+                // A typed field keeps its type; this write joins its call harvest.
                 if !is_ctor_entry && !existence && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1431,83 +1384,48 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                     continue;
                 }
-                let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), arg_refs, field_name);
-                // A workspace function whose return its body decides: the call's type
-                // in its file replaces the placeholder its field gets here.
-                let body_derived = resolved.is_none()
-                    && resolve_funcall_function(callee_chain, &self.global_lookup_ctx())
-                        .is_some_and(|func| self.deferred_returns.contains(&func));
-                // A call the scan can't type leaves a constructor entry in place (in a
-                // function body, as the existence pass does an untyped value, one typed
-                // beyond a bare `table`), and an existence-only write's `any`.
+                // A workspace function whose return its body decides.
+                let body_derived = resolve_funcall_function(callee_chain, &self.global_lookup_ctx())
+                    .is_some_and(|func| self.deferred_returns.contains(&func));
+                // A constructor's entry stays in place (in a function body, as the
+                // existence pass does an untyped value, one typed beyond a bare
+                // `table`), and an existence-only write's `any`.
                 let kept_entry = is_ctor_entry
                     && (!g.in_function || self.tables[local_idx].fields.get(field_name)
                         .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))));
-                if resolved.is_none() && (kept_entry || (existence && !body_derived)) {
+                if kept_entry || (existence && !body_derived) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
                 }
-                let untyped = resolved.is_none();
-                let vt = resolved.or_else(|| {
-                    // Last resort: the named call resolved to nothing — an unresolvable
-                    // callee (a chained/wrapped receiver, a file-local factory the
-                    // cross-file scan can't follow, a generic whose return was filtered
-                    // out) with no string-arg / field-name class match.
-                    if g.in_function {
-                        Some(ValueType::Any)
-                    } else if g.name == crate::annotations::ADDON_NS_NAME {
-                        // Honest `any`, NOT a bogus `table`: the call can return anything,
-                        // and a concrete `table` leaks into reads — calling the field
-                        // false-positives `cannot-call`, and passing it to a typed param
-                        // false-positives `type-mismatch (got table)`. Matches the
-                        // self-field scanner's empirically-validated `any`-over-`table`
-                        // policy. Left unannotated (below) so a per-file/deferred
-                        // re-resolution can still refine it where a real type exists.
-                        Some(ValueType::Any)
-                    } else {
-                        // Non-namespace root: keep the bare `Table(None)` placeholder.
-                        // Unlike `any`, the deferred resolver (resolve.rs) refines a
-                        // `Table(None)` field from a same-file assignment the coarse scan
-                        // couldn't follow (e.g. `select(3, UnitClass(...))` -> number, a
-                        // defclass static field) — `tests/self-field-argnested`,
-                        // `tests/crossfile/defclass_static_field`.
-                        Some(ValueType::Table(None))
-                    }
-                });
-                if let Some(vt) = vt {
-                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
-                    self.exprs.push(Expr::Literal(vt.clone()));
-                    // Mark fields with a concrete resolved type (not bare Table(None))
-                    // as annotated so they survive per-file @class overlay imports.
-                    let annotation = match &vt {
-                        ValueType::Table(Some(_)) => Some(vt.clone()),
-                        _ => None,
-                    };
-                    self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
-                    self.ctor_entries.remove(&ctor_entry);
-                    if g.in_function && untyped && !body_derived {
-                        self.existence_fields.insert(ctor_entry);
-                    } else {
-                        self.existence_fields.remove(&ctor_entry);
-                    }
-                    record_field_location(&mut self.field_locations, table_idx, field_name, g);
-                    // A call typed only in its own file: other files take its type from
-                    // there (the call-field harvest), and a namespace field's file from
-                    // its own writes (`type_scanned_fields_by_own_writes`).
-                    if body_derived || (untyped && !g.in_function && g.name == crate::annotations::ADDON_NS_NAME) {
-                        let calls = Self::calls_of(g, field_name);
-                        if !calls.is_empty() {
-                            self.deferred_call_fields.insert(expr_idx, calls);
-                        }
-                    } else {
-                        self.defer_call_field(expr_idx, &vt, g, field_name);
+                let expr_idx = ExprId(EXT_BASE + self.exprs.len());
+                self.exprs.push(Expr::Literal(ValueType::Any));
+                self.tables[local_idx].fields.insert(field_name.clone(),
+                    super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
+                self.ctor_entries.remove(&ctor_entry);
+                if g.in_function && !body_derived {
+                    self.existence_fields.insert(ctor_entry);
+                } else {
+                    self.existence_fields.remove(&ctor_entry);
+                }
+                record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                // Other files take the call's type from its file, but for a field of
+                // a `@class` the class harvest types (not the addon namespace's, whose
+                // fields its views don't reach as the class's).
+                let class_field = self.tables[local_idx].class_name.as_ref().is_some_and(|class| !self.addon_ns_classes.contains(class));
+                if body_derived || !class_field {
+                    let calls = Self::calls_of(g, field_name);
+                    if !calls.is_empty() {
+                        self.deferred_call_fields.insert(expr_idx, calls);
                     }
                 }
             }
         }
 
-        // Resolve workspace FieldRef table fields
+        // A field written a reference to a table holds that table: the reference
+        // is the table, not a type of it. Any other value is its file's (a slot's,
+        // the class's harvest), and ends a call harvest of the field — but for an
+        // XML `KeyValue` naming a global (`type="global"`), which declares the field
+        // that global's type, and has no analysis to harvest.
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
                 if !g.returns.is_empty() { continue; }
@@ -1529,20 +1447,23 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.note_field_write(table_idx, field_name, g);
                     continue;
                 }
+                self.note_field_write(table_idx, field_name, g);
 
-                // Single-element ref: direct global reference (e.g. `Debug.Stack = debugstack`).
-                // Look up the global in scope0 symbols and use its type directly.
+                // Only a reference to a table is typed here (the table it names), or
+                // one an XML `KeyValue` declares; any other value a reference names
+                // (`Debug.Stack = debugstack`) is its file's, through the slot or class
+                // harvest. A single-element ref names a global (`X.LS = LibStub`).
+                let declared = g.source_path.as_ref().is_some_and(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")));
+                let held = |vt: &ValueType| declared || matches!(vt, ValueType::Table(Some(_)));
                 if ref_chain.len() == 1 {
-                    if let Some(vt) = self.scope0_global_type(&ref_chain[0]).cloned() {
+                    if let Some(vt) = self.scope0_global_type(&ref_chain[0]).cloned().filter(held) {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
-                        // A field aliasing a resolved global (`X.LS = LibStub`) is a real
-                        // reference, not a speculative placeholder. When it resolves to a
-                        // class/table, annotate it so the prescan overlay-import keeps it
-                        // cross-file — Filter 1 there drops annotation-less table-typed
-                        // fields, which would false-positive a cross-file read as
-                        // `undefined-field`. (Scalar/function refs already survive; only
-                        // the table case is dropped, so only it needs the annotation.)
+                        // A field aliasing a global table (`X.LS = LibStub`) is a real
+                        // reference, not a speculative placeholder: annotated, so the
+                        // prescan overlay-import keeps it cross-file — Filter 1 there
+                        // drops annotation-less table-typed fields, which would
+                        // false-positive a cross-file read as `undefined-field`.
                         let annotation = matches!(vt, ValueType::Table(_)).then_some(vt);
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
@@ -1592,7 +1513,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             break;
                         }
                     }
-                    if let Some(vt) = resolved {
+                    if let Some(vt) = resolved.filter(held) {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
@@ -1629,9 +1550,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let value_type = if !g.returns.is_empty() {
-                    let vt = self.resolve_write_annotation(&g.returns[0]);
-                    self.log_nested_ctor_calls(&g.returns[0], vt.as_ref(), value_kind);
-                    vt
+                    self.resolve_write_annotation(&g.returns[0])
                 } else {
                     match value_kind {
                         FieldValueKind::String(_) => Some(ValueType::String(None)),
@@ -1725,15 +1644,13 @@ impl<'a> BuildOnStubsContext<'a> {
         super::shared::annotated_table_global_type(self.table_global_types.get(name)?, own, &self.tables)
     }
 
-    /// Type each pending `(value, symbol)` global assigned a call or a reference
-    /// (`X = CreateFont(...)`, `X = Enum.Foo.Bar`, `X = OtherGlobal`) and drop it
-    /// once typed. Repeats until no progress so `X = Y` resolves whichever of the
-    /// two was scanned first. A reference to a global whose type is only harvested
-    /// from a call (`X = Y` with `Y = CreateFrame(...)`) harvests from the same call.
+    /// Give each pending `(value, symbol)` global assigned a reference to a global
+    /// harvested from a call (`X = Y` with `Y = CreateFrame(...)`) that call's
+    /// harvest, and drop it once it has one. Repeats until no progress so `X = Y`
+    /// shares whichever was scanned first. The globals' types are their files'
+    /// (`deferred_call_globals`, slots).
     fn resolve_assigned_types(&mut self, pending: &mut Vec<(crate::annotations::FieldValueKind, SymbolIndex)>) {
         use crate::annotations::FieldValueKind;
-        // Typing an entry or sharing a harvest with it both unblock others; each
-        // symbol is typed or given a harvest at most once, so this terminates.
         let mut progressed = true;
         while progressed {
             progressed = false;
@@ -1742,9 +1659,12 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.symbols[sym_idx.ext_offset()].versions.last().is_some_and(|v| v.resolved_type.is_some()) {
                     return false;
                 }
-                if let Some(vt) = self.assigned_value_type(vk) {
+                // A reference to a table is that table.
+                if let FieldValueKind::FieldRef(names) = vk
+                    && let Some(table @ ValueType::Table(Some(_))) = self.field_ref_type(names)
+                {
                     if let Some(ver) = self.symbols[sym_idx.ext_offset()].versions.last_mut() {
-                        ver.resolved_type = Some(vt);
+                        ver.resolved_type = Some(table);
                     }
                     progressed = true;
                     return false;
@@ -1758,24 +1678,11 @@ impl<'a> BuildOnStubsContext<'a> {
                 {
                     self.deferred_call_globals.insert(sym_idx, dcg);
                     progressed = true;
+                    return false;
                 }
                 true
             });
         }
-    }
-
-    /// Coarse type of a global assigned `vk`: a call's declared return, or the
-    /// type of the referenced global / table field. A reference may be rooted at a
-    /// built-in stub table (`Enum.BagIndex.Backpack`).
-    fn assigned_value_type(&self, vk: &crate::annotations::FieldValueKind) -> Option<ValueType> {
-        use crate::annotations::FieldValueKind;
-        match vk {
-            FieldValueKind::FunctionCall { callee, .. } => {
-                resolve_funcall_chain(callee, &self.global_lookup_ctx()).and_then(strip_unbound_type_vars)
-            }
-            FieldValueKind::FieldRef(names) => self.field_ref_type(names),
-            _ => None,
-        }.filter(|vt| !vt.contains_type_variable())
     }
 
     /// The type of the global or field path `names`, rooted at a workspace table
@@ -1821,6 +1728,12 @@ impl<'a> BuildOnStubsContext<'a> {
         }
 
         let deferred_sigs_by_path = super::shared::deferred_sigs_by_path(self.deferred_returns.union(&self.deferred_params), &self.function_locations);
+        let stub_functions = self.stubs_base.functions.len();
+        let workspace_functions: Vec<FunctionIndex> = self.function_locations.iter()
+            .map(|(&f, _)| f)
+            .filter(|f| f.ext_offset() >= stub_functions)
+            .collect();
+        let workspace_functions_by_path = super::shared::deferred_sigs_by_path(&workspace_functions, &self.function_locations);
         let deferred_call_globals_by_path = super::shared::deferred_call_globals_by_path(&self.deferred_call_globals);
         // Every file writing a field written `{}`, whichever write created the field:
         // one replaced by the `{}` (`ns.f = nil` in a file scanned first) holds those
@@ -1983,6 +1896,7 @@ impl<'a> BuildOnStubsContext<'a> {
             callback_event_methods: HashMap::default(),
             declared_class_fields: self.declared_class_fields,
             deferred_sigs_by_path,
+            workspace_functions_by_path,
             deferred_returns: self.deferred_returns,
             deferred_params: self.deferred_params,
             addon_ns_methods: self.addon_ns_methods,
@@ -2023,12 +1937,17 @@ impl PreResolvedGlobals {
         // A built-in class no workspace file declares: a call returning one creates
         // an instance of it, not the class.
         let ws_class_names: HashSet<&str> = ws_classes.iter().map(|c| c.name.as_str()).collect();
-        let ws_globals = &*crate::annotations::apply_instance_guesses(ws_globals, |name| {
-            stubs_base.classes.contains_key(name) && !ws_class_names.contains(name)
+        // A call names its local's class when its callee's declaration says so.
+        let mut class_naming = stubs_base.class_naming_functions();
+        class_naming.extend(crate::annotations::class_naming_functions(ws_globals, ws_classes));
+        let ws_globals = &*crate::annotations::apply_instance_guesses(ws_globals, |name, callee| {
+            (stubs_base.classes.contains_key(name) && !ws_class_names.contains(name))
+                || !callee.is_some_and(|callee| class_naming.contains(callee))
         });
         let ws_classes = &*crate::annotations::apply_enum_calls(ws_classes, &returns_enum_paths);
         let ws_globals = &*crate::annotations::apply_enum_call_globals(ws_globals, &returns_enum_paths);
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
+        ctx.addon_ns_classes = addon_ns_class_files.values().cloned().collect();
         let mut class_field_paths = ClassFieldPaths::new(ws_globals, ws_classes);
         let extended_aliases = ctx.register_classes_and_aliases(ws_classes, ws_aliases);
         ctx.retype_stub_params_for_extended_aliases(&extended_aliases);
@@ -2043,9 +1962,6 @@ impl PreResolvedGlobals {
         ctx.settle_instance_tables();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals, &class_field_paths);
-        // Every callee is registered by now (workspace functions land in
-        // `build_global_entries`).
-        ctx.resolve_nested_ctor_calls();
         ctx.settle_instance_tables();
         // Take the stub-override list out before `finish` consumes the context; its
         // alternate go-to-definition sites are recorded onto `pg` below.
@@ -2132,51 +2048,7 @@ fn push_distinct_location(locs: &mut Vec<ExternalLocation>, loc: &ExternalLocati
     }
 }
 
-/// Reduce a `resolve_funcall_chain` return type for cross-file field typing when
-/// the callee is generic. A generic method like `AceDB:New` returns
-/// `Defaults & AceDBObject-3.0`, where `Defaults` is an unbound type variable the
-/// coarse cross-file scan can't bind (there's no per-file argument analysis here).
-/// Rather than discard the whole type — which drops the useful concrete
-/// `AceDBObject-3.0` and leaves the field an unannotated `Table(None)` placeholder
-/// that the cross-file `@class` overlay import then deletes (→ `undefined-field`)
-/// — strip the type-variable members from an *intersection* and keep the concrete
-/// remainder. Any other type-variable-bearing shape (a bare `T`, a `T | U` union
-/// where dropping a member would be unsound) stays unrecoverable → `None`,
-/// preserving the previous `contains_type_variable()` filter behavior.
-fn strip_unbound_type_vars(vt: ValueType) -> Option<ValueType> {
-    if let ValueType::Intersection(members) = &vt {
-        let concrete: Vec<ValueType> = members.iter()
-            .filter(|m| !m.contains_type_variable())
-            .cloned()
-            .collect();
-        return match concrete.len() {
-            0 => None,
-            1 => concrete.into_iter().next(),
-            _ => Some(ValueType::Intersection(concrete)),
-        };
-    }
-    if vt.contains_type_variable() {
-        return None;
-    }
-    Some(vt)
-}
-
 impl BuildOnStubsContext<'_> {
-    /// Type the call-valued constructor entries logged during the build
-    /// (`ns.T = { A = MakeThing() }`, populated as `any`) from the callee's return,
-    /// now that every global is registered. An entry a later typed write replaced
-    /// keeps that write; a callee the scan can't follow keeps the placeholder (the
-    /// per-file constructor twin still refines it in the writing file).
-    fn resolve_nested_ctor_calls(&mut self) {
-        for call in std::mem::take(&mut self.nested_ctor_calls) {
-            if !call.is_pending(&self.tables) {
-                continue;
-            }
-            let Some(vt) = self.call_type(&call.callee, &call.arg_refs) else { continue };
-            call.resolve_to(vt, &mut self.tables, &mut self.exprs);
-        }
-    }
-
     /// See [`settle_instance_tables`]; the stub tables were settled when the stub
     /// database was built.
     fn settle_instance_tables(&mut self) {
@@ -2188,43 +2060,4 @@ impl BuildOnStubsContext<'_> {
         shadows_instance_member(&self.tables, &self.declared_class_fields, table_idx, field)
     }
 
-    /// Log the call-valued entries of a constructor the scan carried as a
-    /// `TableLiteral` annotation (`raw`; a call entry is `any` there) against the
-    /// anonymous sub-table `resolve_annotation_gen` materialized for it (`vt`),
-    /// recursing into nested constructors. Any other annotation — a `---@type
-    /// SomeClass` on the constructor — resolves to a shared table whose fields
-    /// aren't this constructor's, so nothing is logged. A declared entry never
-    /// carries a `FunctionCall` kind. Resolved by `resolve_nested_ctor_calls`.
-    fn log_nested_ctor_calls(&mut self, raw: &AnnotationType, vt: Option<&ValueType>, kind: &crate::annotations::FieldValueKind) {
-        use crate::annotations::FieldValueKind;
-        let (AnnotationType::TableLiteral(_), Some(ValueType::Table(Some(table_idx))), FieldValueKind::Table(kinds)) =
-            (raw, vt, kind)
-        else {
-            return;
-        };
-        let local_idx = table_idx.ext_offset();
-        if self.tables[local_idx].class_name.is_some() {
-            return;
-        }
-        for (name, kind) in kinds {
-            let Some(fi) = self.tables[local_idx].fields.get(name) else { continue };
-            match kind {
-                FieldValueKind::FunctionCall { callee, arg_refs, .. } if matches!(fi.annotation, Some(ValueType::Any)) => {
-                    let call = super::NestedCtorCall {
-                        table: local_idx,
-                        field: name.clone(),
-                        callee: callee.clone(),
-                        arg_refs: arg_refs.clone(),
-                        placeholder: fi.expr,
-                    };
-                    self.nested_ctor_calls.push(call);
-                }
-                FieldValueKind::Table(_) => {
-                    let (Some(inner_raw), inner) = (fi.annotation_type_raw.clone(), fi.annotation.clone()) else { continue };
-                    self.log_nested_ctor_calls(&inner_raw, inner.as_ref(), kind);
-                }
-                _ => {}
-            }
-        }
-    }
 }

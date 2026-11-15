@@ -330,6 +330,11 @@ pub struct TableShape {
     /// `value_type` for why this is `#[serde(skip)]`.
     #[serde(skip)]
     pub key_type: Option<Box<ValueType>>,
+    /// A record lifted from a table its file reads a key naming none of its fields
+    /// as any field's value or `nil` — one nothing writes elements into under
+    /// run-time keys — read so in other files too. Runtime-only, like `value_type`.
+    #[serde(skip)]
+    pub closed: bool,
 }
 
 // Locations are navigation metadata, not part of the type's structural identity.
@@ -356,7 +361,7 @@ impl TableShape {
     ) -> Self {
         fields.sort_by(|a, b| a.0.cmp(&b.0));
         field_defs.sort_by(|a, b| a.0.cmp(&b.0));
-        TableShape { fields, field_defs, value_type: None, key_type: None }
+        TableShape { fields, field_defs, value_type: None, key_type: None, closed: false }
     }
 
     /// Build a container shape carrying an array/map element type (and optionally
@@ -1670,6 +1675,9 @@ pub struct TableInfo {
     /// the constructor's array-field types first.
     #[serde(skip)]
     pub constructor_bracket_count: usize,
+    /// How many fields the table constructor gave the table, before any write.
+    #[serde(skip)]
+    pub constructor_field_count: usize,
     /// True when `value_type` was set from a type annotation (`@type T[]`, `table<K,V>`).
     /// Bracket assignments should not override annotation-derived value types.
     #[serde(skip)]
@@ -1681,10 +1689,12 @@ pub struct TableInfo {
     /// assignments or workspace scanning.
     #[serde(skip)]
     pub has_source_fields: bool,
-    /// True when this table is a workspace-scan placeholder created because a
-    /// function call return type could not be resolved (e.g. variadic generics).
-    /// Used by `is_table_subtype_impl` to accept any table value for such fields,
-    /// avoiding false `field-type-mismatch` diagnostics.
+    /// True for the table the workspace build makes for a field written a call it
+    /// doesn't type, holding what files define or write through the call's object
+    /// (`keep_call_field_methods`): the harvested call type carries it
+    /// (`deferred::with_call_object`, `Ir::is_call_object_members`). Since the call
+    /// may return any table, `is_table_subtype_impl` accepts any table value for
+    /// it, avoiding false `field-type-mismatch` diagnostics.
     #[serde(skip)]
     pub placeholder: bool,
     /// True for a `Derived = CreateFromMixins(Base, …)` class. Such a mixin is a

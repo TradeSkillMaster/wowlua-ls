@@ -424,10 +424,20 @@ impl AnalysisResult {
         let class = self.table(ctor).class_name.as_ref()
             .filter(|_| !self.ir.ctor_merged_class.contains_key(&ctor))
             .and_then(|name| self.ir.ext.classes.get(name).copied());
+        // The workspace's copy of an entry it only says exists (a call, a reference)
+        // shows what the constructor writes there.
+        let says_something = |fi: &&FieldInfo| !crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext);
         let owner_field = slot
             .or(declared)
-            .or_else(|| owners.iter().take(owners.len() - 1).find_map(|&t| self.get_field(t, field)))
-            .or_else(|| class.and_then(|c| self.get_field(c, field)));
+            .or_else(|| owners.iter().take(owners.len() - 1).find_map(|&t| self.get_field(t, field)).filter(says_something))
+            .or_else(|| class.and_then(|c| self.get_field(c, field)).filter(says_something));
+        // A slot's copy of an entry that says no more than `any` there shows what
+        // the constructor writes, which the slot's readers take.
+        let owner_field = owner_field.filter(|fi| {
+            !self.ir.is_slot_primary(fi.expr)
+                || !matches!(self.resolve_field_type(fi), Some(ValueType::Any))
+                || self.get_field(ctor, field).and_then(|own| self.resolve_field_type(own)).is_none_or(|ty| matches!(ty, ValueType::Any))
+        });
         let display = match (declared_maps.get(&ctor), owner_field, self.get_field(ctor, field)) {
             (Some(element), ..) => collapse_shapes(&self.format_type_depth(element, 1)),
             (None, None, None) => "<none>".to_string(),
@@ -582,21 +592,27 @@ impl AnalysisResult {
     fn field_display(&self, tree: &SyntaxTree, offset: u32) -> String {
         let _secrecy = self.secrecy_display_at(offset);
         let chain = self.resolve_field_chain_at(tree, offset);
-        let shown = match chain.as_ref().and_then(|(table_idx, field_name, ..)| self.get_field(*table_idx, field_name)) {
-            // Widened, as a global's: a field's writes hold the literals written. The
-            // type the scan gave a field is no author's: the field's writes type it.
-            Some(fi) if (fi.annotation.is_none() && fi.annotation_text.is_none()) || fi.scan_inferred() => match self.resolve_field_type(fi) {
-                Some(vt) => self.format_type_depth(&vt.widen_literals(), 1),
-                None => "?".to_string(),
-            },
-            Some(fi) => self.format_field_type(fi, 0),
-            None => match chain.and_then(|(.., expr_id, _, _)| self.resolve_expr_type(expr_id))
-                .or_else(|| self.field_access_type_at(offset))
-                .or_else(|| SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased().and_then(|t| self.shape_field_type_at(t)))
-            {
-                Some(vt) => self.format_type_depth(&vt, 1),
-                None => "?".to_string(),
-            },
+        let field = chain.as_ref().and_then(|(table_idx, field_name, ..)| self.get_field(*table_idx, field_name));
+        // A write of a field the build only says exists shows what it writes.
+        let shown = if let Some(written) = field.and_then(|fi| self.written_over_placeholder(offset, fi)) {
+            self.format_type_depth(&written.widen_literals(), 1)
+        } else {
+            match field {
+                // Widened, as a global's: a field's writes hold the literals written. The
+                // type the scan gave a field is no author's: the field's writes type it.
+                Some(fi) if (fi.annotation.is_none() && fi.annotation_text.is_none()) || fi.scan_inferred() => match self.resolve_field_type(fi) {
+                    Some(vt) => self.format_type_depth(&vt.widen_literals(), 1),
+                    None => "?".to_string(),
+                },
+                Some(fi) => self.format_field_type(fi, 0),
+                None => match chain.and_then(|(.., expr_id, _, _)| self.resolve_expr_type(expr_id))
+                    .or_else(|| self.field_access_type_at(offset))
+                    .or_else(|| SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased().and_then(|t| self.shape_field_type_at(t)))
+                {
+                    Some(vt) => self.format_type_depth(&vt, 1),
+                    None => "?".to_string(),
+                },
+            }
         };
         collapse_shapes(&shown)
     }

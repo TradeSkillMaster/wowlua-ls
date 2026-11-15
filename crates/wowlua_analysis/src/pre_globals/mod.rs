@@ -443,6 +443,10 @@ pub struct PreResolvedGlobals {
     /// defined in that file, so each harvest only visits its own.
     #[serde(skip)]
     pub deferred_sigs_by_path: HashMap<PathBuf, Vec<FunctionIndex>>,
+    /// Reverse index: path → the workspace functions defined in that file, so a
+    /// harvest lifts a value holding one of them as that function.
+    #[serde(skip)]
+    pub workspace_functions_by_path: HashMap<PathBuf, Vec<FunctionIndex>>,
     /// Workspace function indices that have *multiple* cross-file definitions
     /// disagreeing on arity — e.g. a namespaced function (`ns.A.B`) or class
     /// method defined with different parameter counts in mutually-exclusive
@@ -3439,10 +3443,13 @@ impl BuildContext {
                     } else {
                         // Assume-table *heuristic* for an unresolvable named call (not a
                         // known table — can fire for a scalar-returning call). Kept as an
-                        // overridable `Table(None)` placeholder, NOT `any`: per-file/
-                        // deferred re-resolution refines it to the precise type, which
-                        // `any` (authoritative) would block. See the matching branch in
-                        // `build_on_stubs.rs` for the full rationale.
+                        // overridable `Table(None)` placeholder, NOT `any`: the deferred
+                        // resolver (resolve.rs) refines a `Table(None)` field from a
+                        // same-file assignment the scan couldn't follow (e.g.
+                        // `select(3, UnitClass(...))` -> number, a defclass static field),
+                        // which `any` (authoritative) would block. The workspace build
+                        // (`build_on_stubs`) no longer guesses: its placeholder is `any`,
+                        // typed by the harvests.
                         Some(ValueType::Table(None))
                     }
                 });
@@ -3660,6 +3667,7 @@ impl BuildContext {
             callback_event_methods: HashMap::default(),
             declared_class_fields: self.declared_class_fields,
             deferred_sigs_by_path,
+            workspace_functions_by_path: HashMap::default(),
             deferred_returns: self.deferred_returns,
             deferred_params: self.deferred_params,
             addon_ns_methods: self.addon_ns_methods,
@@ -3756,6 +3764,40 @@ impl PreResolvedGlobals {
     #[inline] pub fn try_table(&self, idx: TableIndex) -> Option<&TableInfo> {
         if !idx.is_external() { return None; }
         self.tables.get(idx.ext_offset())
+    }
+
+    /// The names this database's functions are called by whose declarations name a
+    /// class by an argument (`annotations::signature_names_class`) or define one
+    /// (`@defclass`): its global functions, its methods, and its callable tables'
+    /// calls.
+    pub fn class_naming_functions(&self) -> HashSet<String> {
+        let names_class = |f: &Function| {
+            let generics: Vec<&str> = f.generics.iter().map(|(n, _)| n.as_str()).collect();
+            f.defclass.is_some()
+                || crate::annotations::signature_names_class(&generics, &f.param_annotations, &f.return_annotations_raw)
+        };
+        let mut names: HashSet<String> = HashSet::default();
+        for (id, &sym) in &self.scope0_symbols {
+            let SymbolIdentifier::Name(name) = id else { continue };
+            let func = match self.sym(sym).versions.last().and_then(|v| v.resolved_type.as_ref()) {
+                Some(ValueType::Function(Some(f))) => Some(*f),
+                Some(ValueType::Table(Some(t))) => self.try_table(*t).and_then(|t| t.call_func),
+                _ => None,
+            };
+            if func.is_some_and(|f| names_class(self.func(f))) {
+                names.insert(name.clone());
+            }
+        }
+        for table in self.tables.iter() {
+            for (name, fi) in &table.fields {
+                if let Some(Expr::FunctionDef(f)) = self.try_expr(fi.expr)
+                    && names_class(self.func(*f))
+                {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        names
     }
 
     /// The paths of the workspace's cross-file tables (`ext_table_paths`), which a
@@ -4089,6 +4131,7 @@ impl PreResolvedGlobals {
             deferred_params: HashSet::default(),
             addon_ns_methods: Vec::new(),
             deferred_sigs_by_path: HashMap::default(),
+            workspace_functions_by_path: HashMap::default(),
             conflicting_arity_funcs: HashSet::default(),
             deferred_harvests: Default::default(),
             narrowing_methods: Default::default(),
@@ -4133,7 +4176,9 @@ impl PreResolvedGlobals {
         addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
-        Self::build_cold(globals, external_classes, external_aliases, implicit_protected_prefix, addon_ns_class_files, callable_classes, false)
+        // A workspace without the stub database is built as one with it: its types
+        // are its files' (the harvests), which only that build registers.
+        Self::build_on_stubs(&Self::empty(), globals, external_classes, external_aliases, implicit_protected_prefix, addon_ns_class_files, callable_classes)
     }
 
     /// [`Self::build`] for the stub blob, whose own duplicate aliases stay
@@ -5697,6 +5742,17 @@ mod tests {
         assert_eq!(parent_names(result, "CheckButton"), ["Button", "Frame", "Region", "ScriptRegion"]);
     }
 
+    /// The stub blob's build and a workspace's (over an empty stub base) of the
+    /// same declarations, for what both must agree on.
+    fn both_builds(globals: &[crate::annotations::ExternalGlobal], classes: &[ClassDecl]) -> [PreResolvedGlobals; 2] {
+        [
+            PreResolvedGlobals::build_stub_blob(globals, classes, &[]),
+            PreResolvedGlobals::build_on_stubs(
+                &PreResolvedGlobals::empty(), globals, classes, &[], false, &HashMap::default(), &HashSet::default(),
+            ),
+        ]
+    }
+
     #[test]
     fn duplicate_class_decl_ancestors_reach_descendants() {
         let classes = vec![
@@ -5707,15 +5763,9 @@ mod tests {
             make_class("CheckButton", &["Button"], &[]),
             make_class("Frame", &[], &[]),
         ];
-        let result = PreResolvedGlobals::build(
-            &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
-        );
-        assert_duplicate_decl_ancestors_reach_descendants(&result);
-
-        let result = PreResolvedGlobals::build_on_stubs(
-            &PreResolvedGlobals::empty(), &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
-        );
-        assert_duplicate_decl_ancestors_reach_descendants(&result);
+        for result in both_builds(&[], &classes) {
+            assert_duplicate_decl_ancestors_reach_descendants(&result);
+        }
     }
 
     #[test]
@@ -5732,11 +5782,10 @@ mod tests {
             make_class("TooltipTemplate", &["Tooltip", "SharedTemplate"], &[]),
             make_class("Tooltip", &["Tooltip", "TooltipTemplate"], &[]),
         ];
-        let result = PreResolvedGlobals::build(
-            &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
-        );
-        assert_eq!(parent_names(&result, "Tooltip"), ["Frame", "Region", "TooltipTemplate", "SharedTemplate", "ArtTemplate"]);
-        assert_eq!(parent_names(&result, "TooltipTemplate"), ["Tooltip", "Frame", "Region", "SharedTemplate", "ArtTemplate"]);
+        for result in both_builds(&[], &classes) {
+            assert_eq!(parent_names(&result, "Tooltip"), ["Frame", "Region", "TooltipTemplate", "SharedTemplate", "ArtTemplate"]);
+            assert_eq!(parent_names(&result, "TooltipTemplate"), ["Tooltip", "Frame", "Region", "SharedTemplate", "ArtTemplate"]);
+        }
     }
 
     #[test]
@@ -5753,14 +5802,13 @@ mod tests {
             make_class("F", &["table<string, boolean>"], &[("x", "string")]),
         ];
         for _ in 0..2 {
-            let result = PreResolvedGlobals::build(
-                &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
-            );
-            assert_eq!(parent_names(&result, "D"), ["C", "A", "B", "E", "F"]);
-            let d = result.classes["D"].ext_offset();
-            let x = lookup_field_with_parents(&result.tables, d, "x").expect("D inherits x");
-            assert_eq!(x.annotation, Some(ValueType::Number));
-            assert_eq!(result.tables[d].key_type, Some(ValueType::Number));
+            for result in both_builds(&[], &classes) {
+                assert_eq!(parent_names(&result, "D"), ["C", "A", "B", "E", "F"]);
+                let d = result.classes["D"].ext_offset();
+                let x = lookup_field_with_parents(&result.tables, d, "x").expect("D inherits x");
+                assert_eq!(x.annotation, Some(ValueType::Number));
+                assert_eq!(result.tables[d].key_type, Some(ValueType::Number));
+            }
             classes.reverse();
         }
     }
@@ -5912,27 +5960,25 @@ mod tests {
         child.type_params = vec!["T".to_string()];
 
         let classes = vec![parent, child];
-        let result = PreResolvedGlobals::build(
-            &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
-        );
+        for result in both_builds(&[], &classes) {
+            let parent_idx = result.classes["Parent"];
+            let child_idx = result.classes["Child"];
+            let child_local = child_idx.ext_offset();
 
-        let parent_idx = result.classes["Parent"];
-        let child_idx = result.classes["Child"];
-        let child_local = child_idx.ext_offset();
-
-        assert!(
-            result.tables[child_local].parent_classes.contains(&parent_idx),
-            "Child should link Parent through the parameterized `Parent<T>` parent, got {:?}",
-            result.tables[child_local].parent_classes,
-        );
-        // Direct-parent type-arg binding recorded: Parent's `T` ← Child's `T`
-        // (a TypeVariable, since the arg forwards the child's own param).
-        let bindings = &result.tables[child_local].parent_type_bindings;
-        assert!(
-            bindings.iter().any(|(pi, args)| *pi == parent_idx
-                && matches!(args.as_slice(), [ValueType::TypeVariable(t)] if t == "T")),
-            "Child should record a parent_type_binding for Parent<T>, got {:?}", bindings,
-        );
+            assert!(
+                result.tables[child_local].parent_classes.contains(&parent_idx),
+                "Child should link Parent through the parameterized `Parent<T>` parent, got {:?}",
+                result.tables[child_local].parent_classes,
+            );
+            // Direct-parent type-arg binding recorded: Parent's `T` ← Child's `T`
+            // (a TypeVariable, since the arg forwards the child's own param).
+            let bindings = &result.tables[child_local].parent_type_bindings;
+            assert!(
+                bindings.iter().any(|(pi, args)| *pi == parent_idx
+                    && matches!(args.as_slice(), [ValueType::TypeVariable(t)] if t == "T")),
+                "Child should record a parent_type_binding for Parent<T>, got {:?}", bindings,
+            );
+        }
     }
 
     #[test]
@@ -5992,7 +6038,7 @@ function Frame:SetScript(scriptType, handler) end
             for g in &mut file_globals { g.is_override = is_override; }
             globals.extend(file_globals);
         }
-        let pg = PreResolvedGlobals::build(&globals, &classes, &[], false, &HashMap::default(), &HashSet::default());
+        let pg = PreResolvedGlobals::build_stub_blob(&globals, &classes, &[]);
 
         let set_script = |class: &str| {
             let field = &pg.table(pg.classes[class]).fields["SetScript"];
@@ -6039,14 +6085,14 @@ function Plain:IsShown() end
         let root = crate::syntax::SyntaxNode::new_root(&tree);
         let classes = crate::annotations::scan_all_annotations(root).classes;
         let globals = crate::annotations::scan_file_globals(root, Some(Path::new("test.lua")));
-        let pg = PreResolvedGlobals::build(&globals, &classes, &[], false, &HashMap::default(), &HashSet::default());
-
-        let get_object_type = &pg.table(pg.classes["Region"]).fields["GetObjectType"];
-        let Expr::FunctionDef(func_idx) = pg.expr(get_object_type.expr) else { panic!("not a method") };
-        assert_eq!(pg.narrowing_method("GetObjectType"), Some(Some(*func_idx)));
-        // Two classes narrow by an `IsRound` of their own: which one a call means is unknown.
-        assert_eq!(pg.narrowing_method("IsRound"), Some(None));
-        assert_eq!(pg.narrowing_method("IsShown"), None);
+        for pg in both_builds(&globals, &classes) {
+            let get_object_type = &pg.table(pg.classes["Region"]).fields["GetObjectType"];
+            let Expr::FunctionDef(func_idx) = pg.expr(get_object_type.expr) else { panic!("not a method") };
+            assert_eq!(pg.narrowing_method("GetObjectType"), Some(Some(*func_idx)));
+            // Two classes narrow by an `IsRound` of their own: which one a call means is unknown.
+            assert_eq!(pg.narrowing_method("IsRound"), Some(None));
+            assert_eq!(pg.narrowing_method("IsShown"), None);
+        }
     }
 
     #[test]

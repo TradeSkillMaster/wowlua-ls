@@ -2295,13 +2295,14 @@ impl<'a> Analysis<'a> {
                     fi.extra_exprs.push(expr_id);
                 } else if inline_annotation.is_none()
                     && cur_table.is_external()
-                    && self.ir.ext.table(cur_table).fields.get(field_name).is_some_and(|f| self.ir.writes_type_field(f))
-                    && self.ir.named_function(expr_id, 0).is_none()
+                    && self.ir.ext.table(cur_table).fields.get(field_name)
+                        .is_some_and(|f| self.ir.write_types_slot(f, expr_id) || self.ir.is_scan_any(f))
                 {
                     // A slot other files type by what their files write: this
                     // file's writes type it here past the scan's value
                     // (`Ir::is_slot_primary`), as on a namespace field's copy. A
-                    // function's signature crosses files on its own.
+                    // function's signature crosses files on its own. So do they a
+                    // field the build only says exists.
                     if let Some(fi) = self.ir.get_overlay_field_mut(cur_table, field_name) {
                         fi.extra_exprs.push(expr_id);
                     } else {
@@ -2372,6 +2373,12 @@ impl<'a> Analysis<'a> {
                         }
                     })
                 };
+                // The copy prescan made of an external parent's field the class
+                // doesn't declare: the write replaces it, as a write to a field
+                // an in-file parent holds (never copied) gives the class its own.
+                if self.ir.is_inherited_copy(table_idx, field_name) {
+                    self.ir.tables[table_idx.val()].fields.remove(field_name);
+                }
                 if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
                     field_info.extra_exprs.push(expr_id);
                     field_info.visibility = existing_vis;
@@ -2462,8 +2469,7 @@ impl<'a> Analysis<'a> {
                         .field_write(table_idx, field_name, overlay_fi.flavor_guard, annotated_flavor_guard, expr);
                 } else if inline_annotation.is_none()
                     && let Some(slot_fi) = self.ir.ext.table(table_idx).fields.get(field_name)
-                        .filter(|f| self.ir.writes_type_field(f))
-                        .filter(|_| self.ir.named_function(expr_id, 0).is_none())
+                        .filter(|f| self.ir.write_types_slot(f, expr_id))
                 {
                     // A slot other files type by what their files write: this file's
                     // writes type it here past the scan's value, with the other files'

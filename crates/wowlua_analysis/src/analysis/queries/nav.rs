@@ -400,6 +400,27 @@ impl AnalysisResult {
         self.resolve_field_chain_for_token(token)
     }
 
+    /// What the assignment whose target's last name starts at `start` writes, when
+    /// the field `fi` found there is one the workspace build only says exists
+    /// (`Ir::is_scan_any`) or holds the members of a call's object it doesn't type
+    /// (`deferred::call_object_methods`), and no write of this file types it: the
+    /// write site shows its own write, carrying those members as reads do.
+    pub(super) fn written_over_placeholder(&self, start: u32, fi: &FieldInfo) -> Option<ValueType> {
+        if !fi.extra_exprs.is_empty() {
+            return None;
+        }
+        let methods = crate::analysis::deferred::call_object_methods(&self.ir, fi);
+        if methods.is_none() && !self.ir.is_scan_any(fi) {
+            return None;
+        }
+        let value = *self.ir.target_values.get(&start)?;
+        let written = self.resolve_expr_type(value).filter(|ty| !matches!(ty, ValueType::Any))?;
+        Some(match methods {
+            Some(methods) => crate::analysis::deferred::with_call_object(written, methods),
+            None => written,
+        })
+    }
+
     /// The type the analysis gives the field access whose name token starts at
     /// `start`, for a read [`Self::resolve_field_chain_at`] finds no member for.
     pub(super) fn field_access_type_at(&self, start: u32) -> Option<ValueType> {
@@ -535,9 +556,13 @@ impl AnalysisResult {
         let scope_idx = self.scope_at_offset(text_size)?;
         // Check if grandparent has a FunctionCall: for `func().a.b`, cursor is on "b" and
         // names = ["a", "b"] in the inner Identifier, with "a" as root but not a symbol.
+        // Every table the root's type holds (an intersection's members), for a field
+        // only one past the first holds.
+        let mut root_tables: Vec<TableIndex> = Vec::new();
         let mut table_idx = if let Some(symbol_idx) = self.get_symbol_at(&SymbolIdentifier::Name(root_name.clone()), scope_idx, u32::from(text_size)) {
             let ver = self.sym(symbol_idx).versions.last()?;
             let resolved = ver.resolved_type.as_ref()?;
+            root_tables = Self::extract_all_table_indices(resolved);
             Self::extract_table_idx(resolved)?
         } else if let Some(grandparent) = parent.parent() {
             // Root name is not a symbol; check if grandparent has a FunctionCall
@@ -560,13 +585,16 @@ impl AnalysisResult {
         };
 
         // Walk intermediate fields
+        let mut receiver_field: Option<(TableIndex, String)> = None;
         for name_token in &names[1..our_index] {
             let name = name_token.text().to_string();
             // Check for transparent @accessor — skip without changing table
             if self.ir.has_accessor(table_idx, &name) {
                 continue;
             }
-            table_idx = self.resolve_field_or_g_env(table_idx, &name)?;
+            let next = self.resolve_field_or_g_env(table_idx, &name)?;
+            receiver_field = Some((table_idx, name));
+            table_idx = next;
         }
 
         // Look up the target field, checking parent classes if not found directly
@@ -579,6 +607,18 @@ impl AnalysisResult {
             if let Some(fi) = self.get_field(parent_idx, &field_name) {
                 return Some((parent_idx, field_name, fi.expr, access, Vec::new()));
             }
+        }
+        // A member of the receiver's intersection past the first: what files define
+        // through a call's object (`with_call_object`).
+        let receiver_tables = match receiver_field {
+            None => root_tables,
+            Some((owner, name)) => self.get_field(owner, &name)
+                .and_then(|fi| self.resolve_field_type(fi))
+                .map(|ty| Self::extract_all_table_indices(&ty))
+                .unwrap_or_default(),
+        };
+        if let Some((idx, expr)) = self.find_field_in_tables(&receiver_tables, &field_name) {
+            return Some((idx, field_name, expr, access, receiver_tables));
         }
         self.resolve_g_env_field(table_idx, &field_name, access)
             .map(|(ti, fn_, ei, ak)| (ti, fn_, ei, ak, Vec::new()))

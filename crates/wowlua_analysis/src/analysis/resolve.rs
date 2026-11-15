@@ -2953,6 +2953,17 @@ impl<'a> Analysis<'a> {
             }
             if !resolved { continue; }
             if inj.bracket_key && self.ir.is_element_write(current_table, &inj.field_name) { continue; }
+            // Every table the receiver path reaches from the root's value (each
+            // member of a union or intersection along it: a call's object beside its
+            // type) whose member the build only says exists takes the write too, so
+            // reads finding the member there see this file's writes.
+            for table in self.write_path_tables(&inj.root_name, inj.scope_idx, &inj.intermediates) {
+                if !targets.contains(&table)
+                    && self.ir.get_field_direct(table, &inj.field_name).is_some_and(|fi| self.ir.is_scan_any(fi))
+                {
+                    self.ir.add_scan_any_field_write(table, &inj.field_name, inj.expr_id);
+                }
+            }
 
             // A member the value already has gets no second one: the write only
             // types one the workspace scan gave `any`, as a direct write does.
@@ -3006,6 +3017,34 @@ impl<'a> Analysis<'a> {
         if !homed_fields.is_empty() {
             self.invalidate_field_reads(&homed_fields, &retyped_calls);
         }
+    }
+
+    /// The tables the path `root.intermediates` reaches from every value the root
+    /// holds, through every table each step's value holds.
+    fn write_path_tables(&mut self, root: &str, scope: ScopeIndex, intermediates: &[String]) -> Vec<TableIndex> {
+        let Some(sym) = self.ir.get_symbol(&SymbolIdentifier::Name(root.to_string()), scope) else { return Vec::new() };
+        let root_types: Vec<ValueType> = self.sym(sym).versions.iter().filter_map(|v| v.resolved_type.clone()).collect();
+        let mut tables: Vec<TableIndex> = Vec::new();
+        for ty in &root_types {
+            for idx in self.field_receiver_tables(ty) {
+                if !tables.contains(&idx) {
+                    tables.push(idx);
+                }
+            }
+        }
+        for name in intermediates {
+            let mut next: Vec<TableIndex> = Vec::new();
+            for table in tables {
+                let Some(ty) = self.resolve_field_of(ValueType::Table(Some(table)), name) else { continue };
+                for idx in self.field_receiver_tables(&ty) {
+                    if !next.contains(&idx) {
+                        next.push(idx);
+                    }
+                }
+            }
+            tables = next;
+        }
+        tables
     }
 
     /// The table for a member written through a field none of whose tables takes
@@ -3652,13 +3691,29 @@ impl<'a> Analysis<'a> {
             let is_external = table_idx.is_external();
             let base_src = if !is_external {
                 self.ir.table(table_idx).fields.get(&m.field_name)
-                    .map(|fi| (fi.annotation.clone(), fi.expr))
+                    .map(|fi| (fi.annotation.clone(), fi.expr, fi.extra_exprs.clone(), fi.scan_inferred()))
             } else {
                 self.ir.get_overlay_field_mut(table_idx, &m.field_name)
-                    .map(|fi| (fi.annotation.clone(), fi.expr))
+                    .map(|fi| (fi.annotation.clone(), fi.expr, fi.extra_exprs.clone(), fi.scan_inferred()))
             };
-            let Some((base_ann, base_expr)) = base_src else { continue };
-            let Some(base) = base_ann.or_else(|| self.resolve_expr(base_expr)) else { continue };
+            let Some((base_ann, base_expr, extras, scan_inferred)) = base_src else { continue };
+            // The workspace's `any` for a field this file writes says nothing beside
+            // its writes, which the call narrows (`f.x = CreateFrame(...)`, then
+            // `Mixin(f.x, M)`).
+            let own: Vec<ExprId> = extras.iter().copied().filter(|e| !e.is_external()).collect();
+            let scan_any = !own.is_empty()
+                && match &base_ann {
+                    None => base_expr.is_external() && matches!(self.ir.ext.expr(base_expr), Expr::Literal(ValueType::Any)),
+                    Some(ValueType::Any) => scan_inferred,
+                    Some(_) => false,
+                };
+            let base = if scan_any {
+                let tys: Vec<ValueType> = own.iter().filter_map(|&e| self.resolve_expr(e)).collect();
+                (!tys.is_empty()).then(|| ValueType::make_union(tys))
+            } else {
+                base_ann.or_else(|| self.resolve_expr(base_expr))
+            };
+            let Some(base) = base else { continue };
 
             // Flatten the base into intersection members and append each resolved
             // mixin (deduped). Only table / intersection mixins contribute.
@@ -4735,6 +4790,15 @@ impl<'a> Analysis<'a> {
         {
             fetched = fetch(&self.ir);
         }
+        // A slot is what every write gives it; a call field's harvest of its calls
+        // types one the slot's doesn't, and stands for the slot in a harvest
+        // analysis, which reads no more of the slot's writers.
+        if !crate::analysis::deferred::harvesting()
+            && fetched.as_ref().is_some_and(|f| f.deferred_slot && f.deferred_call)
+            && self.ir.ensure_slot_overlay(idx, field)
+        {
+            fetched = fetch(&self.ir);
+        }
         if fetched.as_ref().is_some_and(|f| f.deferred_call) && self.ir.ensure_call_field_overlay(idx, field) {
             fetched = fetch(&self.ir);
         }
@@ -4879,6 +4943,11 @@ impl<'a> Analysis<'a> {
                         // (from pre_len onward) to bare `function`.
                         let mut tail: Vec<ValueType> = field_types.split_off(pre_len);
                         self.decay_placeholder_functions(&mut tail);
+                        field_types.extend(tail);
+                    }
+                    if has_extras && primary.is_external() {
+                        let tail: Vec<ValueType> = field_types.split_off(pre_len);
+                        let tail = self.ir.with_own_call_object(primary, tail);
                         field_types.extend(tail);
                     }
                 }
@@ -5132,16 +5201,21 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
-                    let field_data: Vec<(ExprId, Option<ValueType>)> = {
+                    let names: Vec<String> = {
                         let t = self.table(*idx);
-                        if t.key_type.is_none() && !t.fields.is_empty() {
-                            t.fields.values()
-                                .map(|fi| (fi.expr, fi.annotation.clone()))
-                                .collect()
-                        } else {
-                            Vec::new()
-                        }
+                        if t.key_type.is_none() { t.fields.keys().cloned().collect() } else { Vec::new() }
                     };
+                    let mut field_data: Vec<(ExprId, Option<ValueType>)> = Vec::with_capacity(names.len());
+                    for name in &names {
+                        // An entry other files' writes type reads as they type it, as
+                        // a read of it by name does.
+                        if idx.is_external() {
+                            self.fetch_cross_file_field(*idx, name);
+                        }
+                        if let Some(fi) = self.get_field(*idx, name) {
+                            field_data.push((fi.expr, fi.annotation.clone()));
+                        }
+                    }
                     if !field_data.is_empty() {
                         let mut inferred: Vec<ValueType> = Vec::new();
                         for (expr, ann) in field_data {
@@ -5210,9 +5284,41 @@ impl<'a> Analysis<'a> {
             // Plain `table` (no type params) is the most generic dictionary —
             // bracket access yields any.
             ValueType::Table(None) => Some(ValueType::Any),
-            ValueType::TableShape(shape) => self.shape_bracket_read(shape, literal_key.as_deref(), None),
+            ValueType::TableShape(shape) => match self.shape_bracket_read(shape, literal_key.as_deref(), None) {
+                None if shape.closed => self.shape_record_read(shape, key),
+                read => read,
+            },
             _ => None,
         }
+    }
+
+    /// A closed record shape (`TableShape::closed`) read through a key naming none
+    /// of its fields, as the table it was lifted from reads (the record case of
+    /// `Table` above): the fields the key's string literals name, else any field's
+    /// type or nil.
+    fn shape_record_read(&mut self, shape: &crate::types::TableShape, key: ExprId) -> Option<ValueType> {
+        let key_literals = self.resolve_expr(key)
+            .map(|kt| Self::extract_string_literals(&kt))
+            .unwrap_or_default();
+        let mut types: Vec<ValueType> = Vec::new();
+        for vt in key_literals.iter().filter_map(|lit| shape.field(lit)) {
+            if !types.iter().any(|existing| self.types_equivalent(existing, vt)) {
+                types.push(vt.clone());
+            }
+        }
+        if !types.is_empty() {
+            return Some(ValueType::make_union(types));
+        }
+        for (_, vt) in &shape.fields {
+            if !vt.contains_type_variable() && !types.iter().any(|existing| self.types_equivalent(existing, vt)) {
+                types.push(vt.clone());
+            }
+        }
+        if types.is_empty() {
+            return None;
+        }
+        types.push(ValueType::Nil);
+        Some(ValueType::make_union(types))
     }
 
     /// What `t[key]` reads from a table carried across files inline

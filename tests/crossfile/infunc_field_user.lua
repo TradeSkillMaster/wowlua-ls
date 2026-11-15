@@ -23,12 +23,12 @@ addonTable.InFuncWidget:Ping()
 local mx = addonTable.MinX
 local mxx = addonTable.MaxX
 
--- forwarded-value fields are callable-or-unknown (`function & table`) unless the
--- defining file types the value: calling them must NOT false-positive as
--- `cannot-call` (the exhaustive harness fails on any unexpected diagnostic, so
--- the absence of `cannot-call` on these calls is itself the assertion).
+-- forwarded-value fields read as the defining file types the value (an untyped
+-- parameter: `any`): calling them must NOT false-positive as `cannot-call` (the
+-- exhaustive harness fails on any unexpected diagnostic, so the absence of
+-- `cannot-call` on these calls is itself the assertion).
 addonTable.OnClick("click")          -- forwarded from a parameter
---         ^ hover: (field) OnClick: function & table
+--         ^ hover: (field) OnClick: any
 local gv = addonTable.GetValue()     -- forwarded from another field
 --                    ^ hover: (field) GetValue: fun(): string
 addonTable.Sub.Run()                 -- forwarded onto a deep path

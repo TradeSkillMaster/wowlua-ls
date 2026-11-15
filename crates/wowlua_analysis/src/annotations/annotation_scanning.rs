@@ -489,6 +489,12 @@ pub struct ExternalGlobal {
     /// moved by the scan itself. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub guessed_local: Option<String>,
+    /// For an entry `guessed_local` marks, and a field assigned such a local: the
+    /// name of the function the call initializing the local calls (`Init` of
+    /// `App:Init("Name")`), whose declaration decides whether the call names a
+    /// class (`apply_instance_guesses`). Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub guessed_callee: Option<String>,
     /// A field written inside a function body (`function M.f() ns.x = F() end`):
     /// a call the build can't type registers its existence, `any`, rather than the
     /// placeholder (or the constructor entry) a file-level write keeps. Runtime
@@ -610,6 +616,7 @@ impl ExternalGlobal {
             extra_call_offsets: Vec::new(),
             assigned_call_local: None,
             guessed_local: None,
+            guessed_callee: None,
             in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
@@ -1694,6 +1701,7 @@ pub fn scan_method_funcall_self_fields(
             extra_call_offsets,
             assigned_call_local: None,
             guessed_local: None,
+            guessed_callee: None,
             in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,

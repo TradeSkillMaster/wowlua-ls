@@ -54,6 +54,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.extra_call_offsets.len() == y.extra_call_offsets.len()
         && x.assigned_call_local == y.assigned_call_local
         && x.guessed_local == y.guessed_local
+        && x.guessed_callee == y.guessed_callee
         && x.in_function == y.in_function
         // Constructor entries, ignoring their positional key ranges.
         && x.ctor_fields.len() == y.ctor_fields.len()

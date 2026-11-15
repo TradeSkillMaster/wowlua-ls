@@ -6657,8 +6657,9 @@ fn assigned_global_harvest_rejects_a_shifted_call() {
         |text| shift_call_onto(text, r#"CreateFrame("Frame", nil, UIParent"#, r#"CreateFrame("Frame"):GetName()"#),
     );
     assert!(before.contains("string"), "baseline: got {before:?}");
-    assert!(after.contains("string") && !after.contains("AssignedRowTemplate"),
-        "after the shift: got {after:?}");
+    // Untyped until a rebuild records where the call moved: the workspace build
+    // types no call.
+    assert!(!after.contains("AssignedRowTemplate"), "after the shift: got {after:?}");
 }
 
 #[test]
@@ -6730,6 +6731,7 @@ fn value_fields_crossfile() {
         "gearview_user.lua", "store_user.lua", "frames.lua", "frames_user.lua",
         "locale_user.lua", "locale_reader.lua", "node_info_user.lua", "node_log.lua", "lazy_panel.lua",
         "deferred_child.lua", "untyped_writes.lua", "class_local_resets.lua", "class_local_frame_child.lua",
+        "round_toolkit.lua", "round_toolkit_user.lua", "round_iconlib.lua", "round_classnaming_user.lua",
     ] {
         run_annotation_tests(&TestConfig {
             lua_file: &format!("tests/value-fields-crossfile/{lua_file}"),

@@ -304,16 +304,10 @@ impl BodyCalls<'_> {
         let (mut callee, first_string_arg) = scan_funcall_callee(call, self.names);
         if !funcall_has_chained_receiver(call) && let Some(ident) = call.identifier() {
             match self.locals.root_binding(ident.syntax()) {
-                Some(binding) => {
-                    let class = match binding {
-                        FunctionBinding::Call(i) if !self.locals.call_locals[i].rebound => guessed_class(&self.locals.call_locals[i].call),
-                        _ => None,
-                    };
-                    match (class, callee.first_mut()) {
-                        (Some(class), Some(root)) => *root = class,
-                        _ => return FieldValueKind::Unknown,
-                    }
-                }
+                // Through a local a call initializes (`f:CreateTexture()`): a call,
+                // which its file types.
+                Some(FunctionBinding::Call(i)) if !self.locals.call_locals[i].rebound => callee.clear(),
+                Some(_) => return FieldValueKind::Unknown,
                 None if self.names.local_callee(call) => callee.clear(),
                 None => {}
             }
@@ -346,11 +340,18 @@ struct WrittenValue {
 /// so the local genuinely becomes the named class). An instance transform
 /// (`getter():asType("Name")`) has a hop that yields a runtime instance rather
 /// than a named class, so its outer string is just a parameter.
-fn guessed_class(call: &FunctionCall<'_>) -> Option<String> {
+/// A first argument naming a local the file binds once to a string (`strings`,
+/// `NewLibrary(MAJOR, 1)` after `local MAJOR = "Lib"`) names it too, as the
+/// per-file engine reads a backtick argument through that local.
+fn guessed_class(call: &FunctionCall<'_>, strings: &HashMap<String, String>) -> Option<String> {
     if funcall_has_chained_receiver(call) && !chain_is_string_keyed_navigation(call) {
         return None;
     }
-    extract_string_arg_from_call_chain(call).or_else(|| extract_first_string_arg(call))
+    extract_string_arg_from_call_chain(call).or_else(|| extract_first_string_arg(call)).or_else(|| {
+        let arg = call.arguments()?.expressions().into_iter().next()?;
+        let [name]: [String; 1] = named_value(&arg)?.names().try_into().ok()?;
+        strings.get(&name).cloned()
+    })
 }
 
 /// The identifier `expr` is when it names a value — not an element of one (`t[k]`)
@@ -1297,6 +1298,7 @@ impl CtorEntryScan<'_> {
             extra_call_offsets: Vec::new(),
             assigned_call_local: None,
             guessed_local: None,
+            guessed_callee: None,
             in_function: false,
             ctor_fields: Vec::new(),
             declares_class: false,
@@ -1494,6 +1496,7 @@ fn build_func_external(
         extra_call_offsets: Vec::new(),
         assigned_call_local: None,
         guessed_local: None,
+        guessed_callee: None,
         in_function: false,
         ctor_fields: Vec::new(),
         declares_class: false,
@@ -1808,6 +1811,9 @@ pub fn scan_file_globals_with_synth(
     // The `class_vars` locals only guessed from a call's string argument
     // (`local X = DefineClass("Name")`, below).
     let mut class_var_guesses: HashSet<String> = HashSet::default();
+    let string_locals = super::scan_defclass::file_string_locals(&block);
+    // The function each of them calls (`ExternalGlobal::guessed_callee`).
+    let mut guess_callees: HashMap<String, String> = HashMap::default();
     // Where the call initializing each unannotated local declared and assigned once
     // starts: a field or global the local is assigned to is harvested from it
     // (`assigned_call_offset`).
@@ -1907,10 +1913,13 @@ pub fn scan_file_globals_with_synth(
                     // Defclass-style calls: `local X = Y:Init("ClassName")` or `local X = DefineClass("ClassName")`.
                     if exprs.len() == 1
                         && let Expression::FunctionCall(call) = &exprs[0]
-                        && let Some(cn) = guessed_class(call)
+                        && let Some(cn) = guessed_class(call, &string_locals)
                     {
                         class_vars.insert(names[0].clone(), cn);
                         class_var_guesses.insert(names[0].clone());
+                        if let Some(callee) = call.identifier().and_then(|ident| ident.names().pop()) {
+                            guess_callees.insert(names[0].clone(), callee);
+                        }
                     }
                 }
                 // Record the local's value type for cross-file `ns.Field = local`
@@ -2511,6 +2520,7 @@ pub fn scan_file_globals_with_synth(
                                 extra_call_offsets: Vec::new(),
                                 assigned_call_local,
                                 guessed_local: None,
+                                guessed_callee: None,
                                 in_function: false,
                                 ctor_fields,
                                 declares_class,
@@ -2778,6 +2788,7 @@ pub fn scan_file_globals_with_synth(
                                 extra_call_offsets: Vec::new(),
                                 assigned_call_local,
                                 guessed_local: None,
+                                guessed_callee: None,
                                 in_function: false,
                                 ctor_fields: Vec::new(),
                                 declares_class: false,
@@ -3096,6 +3107,7 @@ pub fn scan_file_globals_with_synth(
                     extra_call_offsets: Vec::new(),
                     assigned_call_local: None,
                     guessed_local: None,
+                    guessed_callee: None,
                     in_function: false,
                     ctor_fields,
                     declares_class: false,
@@ -3334,6 +3346,7 @@ pub fn scan_file_globals_with_synth(
                 extra_call_offsets: Vec::new(),
                 assigned_call_local,
                 guessed_local,
+                guessed_callee: None,
                 in_function,
                 ctor_fields: Vec::new(),
                 declares_class: false,
@@ -3356,8 +3369,16 @@ pub fn scan_file_globals_with_synth(
     scan_nested_typed_local_methods(&block, &HashMap::default(), false, owned_path.as_deref(), &mut globals);
 
     // A call local never leaves its file, so what was written through it moves here.
-    if let std::borrow::Cow::Owned(moved) = move_written_members(&globals, |g| g.guessed_local.as_deref().is_some_and(is_call_local_key), &|_| false) {
+    if let std::borrow::Cow::Owned(moved) = move_written_members(&globals, |g| g.guessed_local.as_deref().is_some_and(is_call_local_key), &|_, _| false) {
         globals = moved;
+    }
+    // What was written through a guessed local, or assigned it, with the function
+    // its call calls, whose declaration the build checks the guess against.
+    for g in &mut globals {
+        let local = g.guessed_local.as_ref().or(g.assigned_call_local.as_ref());
+        if let Some(callee) = local.and_then(|local| guess_callees.get(local)) {
+            g.guessed_callee = Some(callee.clone());
+        }
     }
 
     let addon_ns_class = addon_ns_var.as_ref()
@@ -3553,20 +3574,84 @@ const MAX_INSTANCE_MOVE_DEPTH: usize = 8;
 /// A local of a file, as `(source_path, name)`.
 type FileLocal<'g> = (Option<&'g Path>, &'g str);
 
-/// Undo the scan's guess that a local is the class its call names (`local w =
-/// F("Name", ...)`) where the call returns an instance of it instead —
-/// `instance_class("Name")`, as `CreateFrame("Frame")` does, unlike
-/// `DefineClass("Name")` or `LibStub("Lib")`. A field assigned the local (`t.f =
-/// w`, `assigned_call_local`), which the scan types its guessed class, is typed
-/// from the call; what the file writes through the local (`ExternalGlobal::
-/// guessed_local`) goes to those fields instead of the class, as if written `t.f.x
-/// = v`, so a field holds it as the object its call returns. The scan can't tell
-/// the two apart: it runs before the stubs declaring the built-in classes load.
+/// The generic a backtick-typed parameter (`` `T` ``) binds, when `generics`
+/// declares it.
+fn backtick_generic<'a>(param: &'a AnnotationType, generics: &[&str]) -> Option<&'a str> {
+    match param {
+        AnnotationType::Backtick(inner) => match inner.as_ref() {
+            AnnotationType::Simple(name) if generics.contains(&name.as_str()) => Some(name),
+            _ => None,
+        },
+        AnnotationType::Union(members) => members.iter().find_map(|m| backtick_generic(m, generics)),
+        AnnotationType::NonNil(inner) => backtick_generic(inner, generics),
+        _ => None,
+    }
+}
+
+/// Whether a signature names a class by an argument: a backtick-typed parameter
+/// binding a generic it returns (`` @param name `T` `` with `@return T`), which
+/// the per-file engine types the call as the class the argument names. Only a
+/// return that is the generic itself counts (`T`, `T?`, `T & U`), not one built
+/// from it (`T[]`, `Pool<T>`, `fun(): T`): such a call returns no instance of it.
+pub fn signature_names_class<'a>(generics: &[&str], params: impl IntoIterator<Item = &'a AnnotationType>, returns: &[AnnotationType]) -> bool {
+    params.into_iter().filter_map(|p| backtick_generic(p, generics)).any(|t| returns.iter().any(|r| returns_generic(r, t)))
+}
+
+/// Whether the return `ret` is the generic `t` itself: bare, or a member of a
+/// union, an intersection or a non-nil assertion.
+fn returns_generic(ret: &AnnotationType, t: &str) -> bool {
+    match ret {
+        AnnotationType::Simple(name) => name == t,
+        AnnotationType::Union(members) | AnnotationType::Intersection(members) => members.iter().any(|m| returns_generic(m, t)),
+        AnnotationType::NonNil(inner) => returns_generic(inner, t),
+        _ => false,
+    }
+}
+
+/// The names the workspace's functions are called by whose declarations name a
+/// class by an argument ([`signature_names_class`]) or define one (`@defclass`),
+/// and of its callable classes whose call does.
+pub fn class_naming_functions(globals: &[ExternalGlobal], classes: &[super::ClassDecl]) -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::default();
+    for g in globals {
+        let name = match &g.kind {
+            ExternalGlobalKind::Function => g.name.rsplit(['.', ':']).next().unwrap_or(&g.name),
+            ExternalGlobalKind::Method(_, name, _) => name.as_str(),
+            _ => continue,
+        };
+        let generics: Vec<&str> = g.generics.iter().map(|(n, _)| n.as_str()).collect();
+        if g.defclass.is_some()
+            || signature_names_class(&generics, g.params.iter().map(|p| &p.typ), &g.returns)
+            || g.overloads.iter().any(|o| signature_names_class(&generics, o.params.iter().map(|p| &p.typ), &o.returns))
+        {
+            names.insert(name.to_string());
+        }
+    }
+    for class in classes {
+        let generics: Vec<&str> = class.generics.iter().map(|(n, _)| n.as_str()).collect();
+        if class.overloads.iter().any(|o| signature_names_class(&generics, o.params.iter().map(|p| &p.typ), &o.returns)) {
+            names.insert(class.name.clone());
+        }
+    }
+    names
+}
+
+/// Undo the scan's reading of a local as the class its call names (`local w =
+/// F("Name", ...)`) where `undone(class, callee)` says the call doesn't make the
+/// local that class: its callee's declaration doesn't name a class by the
+/// argument (`UnitName("player")`), or the call returns an instance of it
+/// (`CreateFrame("Frame")`, unlike `DefineClass("Name")` or `LibStub("Lib")`). A
+/// field assigned the local (`t.f = w`, `assigned_call_local`), which the scan
+/// types the named class, is typed from the call; what the file writes through
+/// the local (`ExternalGlobal::guessed_local`) goes to those fields instead of the
+/// class, as if written `t.f.x = v`, so a field holds it as the object its call
+/// returns. The scan can't tell these apart: it runs before the declarations of
+/// the functions it calls are known.
 pub fn apply_instance_guesses<'g>(
     globals: &'g [ExternalGlobal],
-    instance_class: impl Fn(&str) -> bool,
+    undone: impl Fn(&str, Option<&str>) -> bool,
 ) -> std::borrow::Cow<'g, [ExternalGlobal]> {
-    move_written_members(globals, |g| g.guessed_local.is_some() && instance_class(&g.name), &instance_class)
+    move_written_members(globals, |g| g.guessed_local.is_some() && undone(&g.name, g.guessed_callee.as_deref()), &undone)
 }
 
 /// Move what was written through a local (`ExternalGlobal::guessed_local`), the
@@ -3575,7 +3660,7 @@ pub fn apply_instance_guesses<'g>(
 fn move_written_members<'g>(
     globals: &'g [ExternalGlobal],
     moves: impl Fn(&ExternalGlobal) -> bool,
-    instance_class: &dyn Fn(&str) -> bool,
+    undone: &dyn Fn(&str, Option<&str>) -> bool,
 ) -> std::borrow::Cow<'g, [ExternalGlobal]> {
     let mut members: HashMap<FileLocal<'g>, Vec<&'g ExternalGlobal>> = HashMap::default();
     for g in globals {
@@ -3585,16 +3670,16 @@ fn move_written_members<'g>(
             members.entry((g.source_path.as_deref(), local.as_str())).or_default().push(g);
         }
     }
-    if members.is_empty() && !globals.iter().any(|g| instance_export(g, instance_class)) {
+    if members.is_empty() && !globals.iter().any(|g| instance_export(g, undone)) {
         return std::borrow::Cow::Borrowed(globals);
     }
-    let mut moved = MovedMembers { members, instance_class, expanding: Vec::new(), targets: HashMap::default() };
+    let mut moved = MovedMembers { members, undone, expanding: Vec::new(), targets: HashMap::default() };
     let mut out = Vec::with_capacity(globals.len());
     for g in globals {
         if moves(g) {
             continue;
         }
-        out.push(typed_from_call(g, instance_class));
+        out.push(typed_from_call(g, undone));
         if let Some(local) = &g.assigned_call_local {
             moved.push_at(g, (g.source_path.as_deref(), local.as_str()), &mut out);
         }
@@ -3602,19 +3687,19 @@ fn move_written_members<'g>(
     std::borrow::Cow::Owned(out)
 }
 
-/// Whether `g` is a field assigned a local whose class the scan guessed
+/// Whether `g` is a field assigned a local whose class the scan read off its call
 /// (`returns`, only ever alongside `assigned_call_local` for such a local) and
-/// `instance_class` finds the call returns an instance of.
-fn instance_export(g: &ExternalGlobal, instance_class: &dyn Fn(&str) -> bool) -> bool {
+/// `undone` undoes that reading for.
+fn instance_export(g: &ExternalGlobal, undone: &dyn Fn(&str, Option<&str>) -> bool) -> bool {
     g.assigned_call_local.is_some()
         && matches!(g.kind, ExternalGlobalKind::TableField(..))
-        && matches!(g.returns.as_slice(), [AnnotationType::Simple(class)] if instance_class(class))
+        && matches!(g.returns.as_slice(), [AnnotationType::Simple(class)] if undone(class, g.guessed_callee.as_deref()))
 }
 
-/// `g`, typed from its call rather than the class guessed for its local when that
-/// class is an instance's ([`instance_export`]).
-fn typed_from_call(g: &ExternalGlobal, instance_class: &dyn Fn(&str) -> bool) -> ExternalGlobal {
-    let returns = if instance_export(g, instance_class) { Vec::new() } else { g.returns.clone() };
+/// `g`, typed from its call rather than the class read off it for its local when
+/// that reading is undone ([`instance_export`]).
+fn typed_from_call(g: &ExternalGlobal, undone: &dyn Fn(&str, Option<&str>) -> bool) -> ExternalGlobal {
+    let returns = if instance_export(g, undone) { Vec::new() } else { g.returns.clone() };
     ExternalGlobal { returns, ..g.clone() }
 }
 
@@ -3622,7 +3707,7 @@ fn typed_from_call(g: &ExternalGlobal, instance_class: &dyn Fn(&str) -> bool) ->
 /// to the fields it is assigned to.
 struct MovedMembers<'g, 'f> {
     members: HashMap<FileLocal<'g>, Vec<&'g ExternalGlobal>>,
-    instance_class: &'f dyn Fn(&str) -> bool,
+    undone: &'f dyn Fn(&str, Option<&str>) -> bool,
     /// The locals whose members are being moved, outermost first, with the field
     /// path they go to: one of them assigned again inside (`child.owner = frame`)
     /// is that same object, a reference to that field rather than another to copy.
@@ -3678,7 +3763,7 @@ impl<'g> MovedMembers<'g, '_> {
                 out.push(ExternalGlobal { returns: Vec::new(), assigned_call_offset: None, assigned_call_local: None, ..write });
                 continue;
             }
-            out.push(typed_from_call(&write, self.instance_class));
+            out.push(typed_from_call(&write, self.undone));
             self.push_at(&write, next, out);
         }
         self.expanding.pop();
@@ -3765,6 +3850,7 @@ pub fn scan_created_globals(
                 extra_call_offsets: Vec::new(),
                 assigned_call_local: None,
                 guessed_local: None,
+                guessed_callee: None,
                 in_function: false,
                 ctor_fields: Vec::new(),
                 declares_class: false,
@@ -3832,6 +3918,24 @@ pub(crate) fn call_assigns_field(call: &FunctionCall<'_>, field: &str) -> bool {
     assigned_target(call).is_some_and(|names| names.len() >= 2 && names.last().is_some_and(|n| n == field))
         || call.syntax().parent().and_then(crate::ast::Field::cast).and_then(|entry| named_ctor_entry(&entry))
             .is_some_and(|(name, value, _)| name == field && value.syntax().text_range() == call.syntax().text_range())
+}
+
+/// Whether `call` is the right operand of an `and` in the `and`/`or` chain
+/// [`statement_valued_by`] walks: the value assigned is not the call's alone (`t.f =
+/// a and Call()` may be `a`'s falsy value).
+pub(crate) fn call_and_operand(call: &FunctionCall<'_>) -> bool {
+    let mut node = call.syntax();
+    while let Some(p) = node.parent()
+        && let Some(bin) = BinaryExpression::cast(p)
+        && matches!(bin.kind(), Operator::And | Operator::Or)
+        && bin.get_terms().get(1).is_some_and(|rhs| rhs.syntax().text_range() == node.text_range())
+    {
+        if matches!(bin.kind(), Operator::And) {
+            return true;
+        }
+        node = p;
+    }
+    false
 }
 
 /// Whether `call` initializes `local name = ...`.
@@ -4030,7 +4134,7 @@ end
         }
         src.push_str("ns.Main = frame\n");
         let globals = scan(&src);
-        let moved = apply_instance_guesses(&globals, |class| class == "Frame");
+        let moved = apply_instance_guesses(&globals, |class, _| class == "Frame");
         assert!(moved.len() < 2 * globals.len(), "{} entries from {}", moved.len(), globals.len());
         let owner = moved.iter().find_map(|g| match &g.kind {
             ExternalGlobalKind::TableField(path, field, kind) if field == "owner" && path == &["Main", "child3"] => Some(kind),

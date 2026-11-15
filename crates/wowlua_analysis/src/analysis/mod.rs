@@ -2426,6 +2426,25 @@ impl Ir {
         fi.annotation.is_none() && fi.annotation_text.is_none() && self.is_slot_primary(fi.expr)
     }
 
+    /// Whether the external field `fi` is one the workspace build only says exists
+    /// (its `any`), which writes type in their own file.
+    pub fn is_scan_any(&self, fi: &FieldInfo) -> bool {
+        fi.annotation.is_none()
+            && fi.annotation_text.is_none()
+            && fi.expr.is_external()
+            && matches!(self.ext.expr(fi.expr), Expr::Literal(ValueType::Any))
+    }
+
+    /// Whether this file's write `rhs` of the slot field `fi` (see
+    /// [`Self::writes_type_field`]) types it here: unless it writes a named function
+    /// over the function the workspace build holds there, whose signature crosses
+    /// files on its own.
+    pub fn write_types_slot(&self, fi: &FieldInfo, rhs: ExprId) -> bool {
+        self.writes_type_field(fi)
+            && (self.named_function(rhs, 0).is_none()
+                || !matches!(self.ext.expr(fi.expr), Expr::Literal(ValueType::Function(Some(_)) | ValueType::FunctionSig(_))))
+    }
+
     /// Whether `primary` is the table the workspace build holds at a field others
     /// fill (`App.Settings` written `CopyTable(...)` here, its entries elsewhere),
     /// carried in this file beside the file's own writes there (see
@@ -2690,6 +2709,13 @@ impl Ir {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Whether `idx` is the table holding what files define or write through the
+    /// object of a call the workspace build doesn't type (`TableInfo::placeholder`,
+    /// `keep_call_field_methods`).
+    pub fn is_call_object_members(&self, idx: TableIndex) -> bool {
+        idx.is_external() && self.table(idx).placeholder
     }
 
     /// A scan-fabricated bare `table` placeholder that is never an authoritative
@@ -3236,6 +3262,34 @@ impl Ir {
             || self.get_field_via_metatable(table_idx, field_name, &mut HashSet::default()).is_some()
     }
 
+    /// Whether the local table `idx` is a constructor's record nothing writes into
+    /// once built: its fields the constructor's entries, no element written under a
+    /// run-time key. A key naming none of its fields reads any field's value or
+    /// `nil` (`TableShape::closed`).
+    pub fn is_closed_record(&self, idx: TableIndex) -> bool {
+        let table = self.table(idx);
+        table.constructor_field_count > 0
+            && table.fields.len() == table.constructor_field_count
+            && table.key_type.is_none()
+            && table.value_type.is_none()
+            && table.array_fields.is_empty()
+            && !self.bracket_key_fields.contains_key(&idx)
+            && !self.unknown_element_tables.contains(&idx)
+            && table.fields.values().all(|fi| fi.extra_exprs.is_empty())
+    }
+
+    /// Whether the field `field_name` of this file's class table `table_idx` is
+    /// the unannotated copy prescan made of an external parent's field, which no
+    /// write of this file has replaced.
+    pub fn is_inherited_copy(&self, table_idx: TableIndex, field_name: &str) -> bool {
+        let table = self.table(table_idx);
+        let Some(fi) = table.fields.get(field_name) else { return false };
+        fi.expr.is_external()
+            && fi.extra_exprs.is_empty()
+            && fi.annotation.is_none()
+            && table.parent_classes.iter().any(|&p| self.get_field(p, field_name).is_some_and(|pf| pf.expr == fi.expr))
+    }
+
     /// Collapse a field-type union by dropping any table member whose field set
     /// is subsumed by another table member's. A field assigned `ns.Mod = Mod`
     /// gets two table values for the same logical table: the coarse cross-file
@@ -3551,10 +3605,10 @@ impl Ir {
 
     /// Add `write` to the field `field_name` of `table` (its own or a parent's)
     /// when the workspace scan typed it `any`, so this file's write types it
-    /// (`AnyFieldWrites`), or it is a slot this file's writes type
-    /// ([`Self::writes_type_field`]; not by a function, as on a path write): to the
-    /// field itself when its table is this file's, else to the per-file overlay
-    /// copy of it.
+    /// (`AnyFieldWrites`), the build only says it exists ([`Self::is_scan_any`]), or
+    /// it is a slot this file's writes type ([`Self::writes_type_field`]; not by a
+    /// function, as on a path write): to the field itself when its table is this
+    /// file's, else to the per-file overlay copy of it.
     pub(super) fn add_scan_any_field_write(&mut self, table: TableIndex, field_name: &str, write: ExprId) {
         let Some(owner) = std::iter::once(table).chain(self.table(table).parent_classes.iter().copied())
             .find(|&t| self.overlay_fields.get(&t).is_some_and(|fields| fields.contains_key(field_name))
@@ -3563,6 +3617,7 @@ impl Ir {
         let Some(mut fi) = self.get_field_direct(owner, field_name)
             .filter(|fi| {
                 (fi.scan_inferred() && matches!(fi.annotation, Some(ValueType::Any)))
+                    || self.is_scan_any(fi)
                     || (self.writes_type_field(fi) && self.named_function(write, 0).is_none())
             })
             .cloned()

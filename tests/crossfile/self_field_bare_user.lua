@@ -16,10 +16,10 @@ function Child:Use()
     local c = self.count
     --               ^ hover: (field) count: number  def: external
     local o = self.options
-    --               ^ hover: (field) options: {\nname: string,\nscale: any\n}  def: external
-    -- method call RHS falls back to any (pre-analysis scan can't resolve)
+    --               ^ hover: (field) options: { name: string, scale: BareDB }  def: external
+    -- a method call entry is what its file's analysis gives it
     local s = self.options.scale
-    --                      ^ hover: (field) scale: any  def: external
+    --                      ^ hover: (field) scale: BareDB {  def: external
     local n = self.options.name
     --                      ^ hover: (field) name: string  def: external
 end

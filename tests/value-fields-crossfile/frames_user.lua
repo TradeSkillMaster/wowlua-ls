@@ -1,7 +1,7 @@
 ---@diagnostic disable: unused-local
 local frame = PanelHost.frame
---    ^ hover: (local) frame: Frame {
+--    ^ hover: (local) frame: Frame & BackdropTemplate | Frame & UIPanelDialogTemplate
 local pair = PanelHost.pair
 --    ^ hover: (local) pair: BackdropTemplate {
 local alt = PanelHost.alt
---    ^ hover: (local) alt: Frame {
+--    ^ hover: (local) alt: Frame & UIPanelDialogTemplate | Frame & BackdropTemplate

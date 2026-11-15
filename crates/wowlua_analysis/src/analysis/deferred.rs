@@ -247,6 +247,8 @@ enum ReadPart {
     Slot(SlotKey),
     /// A workspace class's fields its only Lua file harvests (`FileHarvest::classes`).
     ClassOf(String),
+    /// One field of a class unit.
+    Field(String),
     /// All of it: a class unit's fields.
     Whole,
 }
@@ -262,6 +264,9 @@ impl ReadPart {
             ReadPart::FieldArgs(key) => fa.and_then(|h| h.field_args.get(key)) == fb.and_then(|h| h.field_args.get(key)),
             ReadPart::Slot(key) => fa.and_then(|h| h.slots.get(key)) == fb.and_then(|h| h.slots.get(key)),
             ReadPart::ClassOf(class) => fa.and_then(|h| h.classes.get(class)) == fb.and_then(|h| h.classes.get(class)),
+            ReadPart::Field(field) => {
+                a.and_then(Harvest::class).and_then(|c| c.get(field)) == b.and_then(Harvest::class).and_then(|c| c.get(field))
+            }
             ReadPart::Whole => a == b,
         }
     }
@@ -981,6 +986,11 @@ impl Ir {
         // them can alter this field's type — record all as dependencies for
         // edit-invalidation.
         self.deferred_dep_files.extend(def_paths);
+        // What files define or write through a call's object the class field holds.
+        let ty = match call_object_methods(self, &coarse) {
+            Some(methods) => with_class_call_object(ty, methods),
+            None => ty,
+        };
         let mut precise = coarse;
         self.harvest_refined_fields.insert((owner_idx, precise.expr));
         precise.annotation = Some(ty);
@@ -1089,18 +1099,24 @@ impl Ir {
         let expr = fi.expr;
         let placeholder = field_is_coarse_placeholder(fi, &self.ext);
         let coarse = fi.annotation.clone();
+        let methods = call_object_methods(self, fi);
         if !self.ext.deferred_call_fields.contains_key(&expr) || !self.call_fields_checked.insert((slot, expr)) {
             return false;
         }
-        if coarse.is_none() && !placeholder {
+        if coarse.is_none() && !placeholder && methods.is_none() {
             return false;
         }
         for call in self.ext.deferred_call_fields.get(&expr).into_iter().flatten() {
             self.deferred_dep_files.insert(call.path.clone());
         }
-        // A placeholder the scan left for a call it couldn't type takes the call's type.
+        // A placeholder the scan left for a call it couldn't type takes the call's type;
+        // a call's object methods are defined or fields written through
+        // (`keep_call_field_methods`) holds them beside it.
         let Some(ty) = resolve_deferred_call_field_type(&self.ext, expr).and_then(|ty| match &coarse {
-            _ if placeholder => (!contains_untyped(&ty)).then_some(ty),
+            _ if placeholder || methods.is_some() => (!says_no_more_than_any(&ty)).then(|| match methods {
+                Some(t) => with_call_object(ty, t),
+                None => ty,
+            }),
             Some(coarse) => crate::analysis::refined_class_view(&ty, coarse, self),
             None => None,
         }) else {
@@ -1199,7 +1215,22 @@ impl Ir {
             let mut precise = self.table(slot).fields[field_name].clone();
             precise.annotation = Some(ty);
             self.overlay_fields.entry(slot).or_default().insert(field_name.to_string(), precise);
-        } else if let Some(fi) = self.tables[slot.val()].fields.get_mut(field_name) {
+            return;
+        }
+        // A view of the addon namespace (`local _, ns = ...`) holds copies of the
+        // namespace's fields, which the query side reads through the namespace itself
+        // (`select(2, ...)`): its field is refined too.
+        if self.addon_ns_views.contains(&slot)
+            && let Some(ns) = self.addon_table_idx().filter(|ns| ns.is_external())
+            && let Some(copy) = self.tables[slot.val()].fields.get(field_name)
+            && let Some(own) = self.ext.table(ns).fields.get(field_name).filter(|own| own.expr == copy.expr)
+            && !self.overlay_fields.get(&ns).is_some_and(|m| m.contains_key(field_name))
+        {
+            let mut precise = own.clone();
+            precise.annotation = Some(ty.clone());
+            self.overlay_fields.entry(ns).or_default().insert(field_name.to_string(), precise);
+        }
+        if let Some(fi) = self.tables[slot.val()].fields.get_mut(field_name) {
             fi.annotation = Some(ty);
         }
     }
@@ -1526,7 +1557,7 @@ fn other_writes_type(
     }
     let ty = ValueType::make_union(tys);
     // An empty table says nothing besides the writer's own writes, as to readers.
-    (!contains_untyped(&ty) && ty != ValueType::Table(None)).then_some(ty)
+    (!says_no_more_than_any(&ty) && ty != ValueType::Table(None)).then_some(ty)
 }
 
 impl Ir {
@@ -1776,6 +1807,64 @@ pub(crate) fn with_instance_table(ty: ValueType, instance: TableIndex) -> ValueT
     if nil { ValueType::make_union(vec![ty, ValueType::Nil]) } else { ty }
 }
 
+/// The table holding what files define or write through a call's object that the
+/// build couldn't type (`keep_call_field_methods`), when `fi` holds one.
+pub(crate) fn call_object_methods(ir: &Ir, fi: &crate::types::FieldInfo) -> Option<TableIndex> {
+    let held = fi.annotation.clone().or_else(|| match ir.expr(fi.expr) {
+        Expr::Literal(ty) => Some(ty.clone()),
+        _ => None,
+    });
+    match held.map(|ty| ty.strip_nil()) {
+        Some(ValueType::Table(Some(t))) if ir.is_call_object_members(t) => Some(t),
+        _ => None,
+    }
+}
+
+impl Ir {
+    /// The types of a field's writes `types` whose primary `primary` is the table
+    /// holding what files define through a call's object ([`call_object_methods`]):
+    /// this file's writes of the field are that object, which holds them.
+    pub(crate) fn with_own_call_object(&self, primary: ExprId, types: Vec<ValueType>) -> Vec<ValueType> {
+        let methods = match self.expr(primary) {
+            Expr::Literal(ValueType::Table(Some(t))) if self.is_call_object_members(*t) => *t,
+            _ => return types,
+        };
+        let object = ValueType::Table(Some(methods));
+        let written: Vec<ValueType> = types.iter().filter(|ty| **ty != object).cloned().collect();
+        if written.is_empty() {
+            return types;
+        }
+        vec![with_call_object(ValueType::make_union(written), methods)]
+    }
+}
+
+/// `ty`, a call's type, as the object holding the members `methods` holds
+/// ([`call_object_methods`]): a plain table is that table, anything else carries it.
+pub(crate) fn with_call_object(ty: ValueType, methods: TableIndex) -> ValueType {
+    if ty.strip_nil() == ValueType::Table(None) {
+        let object = ValueType::Table(Some(methods));
+        return if ty.contains_nil() { ValueType::make_union(vec![object, ValueType::Nil]) } else { object };
+    }
+    with_instance_table(ty, methods)
+}
+
+/// [`with_call_object`] for a `@class` field's harvested type: the members follow
+/// the call's type, whose own members (an AceDB object's typed default sections) a
+/// read finds before what files write through the object.
+fn with_class_call_object(ty: ValueType, methods: TableIndex) -> ValueType {
+    let nil = ty.contains_nil();
+    let object = ValueType::Table(Some(methods));
+    let ty = match ty.strip_nil() {
+        ValueType::Table(None) => object,
+        ValueType::Intersection(mut members) => {
+            members.push(object);
+            ValueType::Intersection(members)
+        }
+        other => ValueType::Intersection(vec![other, object]),
+    };
+    if nil { ValueType::make_union(vec![ty, ValueType::Nil]) } else { ty }
+}
+
 /// Whether `ty` is a function, whose signature crosses files on its own.
 pub(crate) fn is_function_value(ty: &ValueType) -> bool {
     match ty {
@@ -1848,7 +1937,7 @@ pub fn resolve_deferred_class_field_type(
     class_name: &str,
     field_name: &str,
 ) -> Option<ValueType> {
-    read_class(ext, class_name, |fields| fields.get(field_name)?.ty.clone())
+    read_class(ext, class_name, field_name, |fields| fields.get(field_name)?.ty.clone())
 }
 
 /// [`resolve_deferred_class_field_type`], as `reader` reads it: one of several files
@@ -1859,7 +1948,7 @@ fn resolve_deferred_class_field_type_in(
     field_name: &str,
     reader: Option<&Path>,
 ) -> Option<ValueType> {
-    read_class(ext, class_name, |fields| {
+    read_class(ext, class_name, field_name, |fields| {
         let field = fields.get(field_name)?;
         match &field.written {
             Some(written) if reader.is_some_and(|r| field.writers.iter().any(|(path, _)| path == r)) => Some(written.clone()),
@@ -1883,7 +1972,7 @@ pub fn resolve_deferred_class_field_others(
     if harvesting() || single_lua_file(ext, class_name) == Some(writer) {
         return None;
     }
-    read_class(ext, class_name, |fields| {
+    read_class(ext, class_name, field_name, |fields| {
         let field = fields.get(field_name)?;
         if !field.writers.iter().any(|(path, _)| path == writer) {
             return None;
@@ -1910,7 +1999,7 @@ pub fn resolve_deferred_class_field_carried(
     if harvesting() || single_lua_file(ext, class_name) == Some(writer) {
         return None;
     }
-    read_class(ext, class_name, |fields| {
+    read_class(ext, class_name, field_name, |fields| {
         let field = fields.get(field_name)?;
         (field.carried && field.writer.as_deref() == Some(writer)).then(|| field.ty.clone()).flatten()
     })
@@ -1931,12 +2020,18 @@ fn reach(unit: &Unit, files: &[PathBuf]) -> Reach {
     ANALYSES.with(|frames| {
         let frames = frames.borrow();
         let Some(frame) = frames.last() else { return Reach::Outside };
+        // A class of the cycle, the analyzed file one of its own, reads as the round
+        // before gave it: a field one of its files writes from what another writes.
+        let member = frame.round.as_ref().filter(|round| round.members.contains(unit));
+        if let Some(round) = member.filter(|_| matches!(unit, Unit::Class(_))) {
+            return Reach::Member(Arc::clone(round));
+        }
         if files.iter().any(|f| frame.own.contains(f)) {
             return Reach::Own;
         }
-        match &frame.round {
-            Some(round) if round.members.contains(unit) => Reach::Member(Arc::clone(round)),
-            _ => Reach::Outside,
+        match member {
+            Some(round) => Reach::Member(Arc::clone(round)),
+            None => Reach::Outside,
         }
     })
 }
@@ -2214,7 +2309,10 @@ fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
     files.dedup();
     let frame = Arc::new(ComponentFrame { files: files.iter().cloned().collect(), known: reachable(ext, &files) });
     let Some(guard) = InProgressGuard::enter(&files) else { return };
-    let cycle = component.len() > 1;
+    // A class whose files read what others of them write is a cycle of its own.
+    let cycle = component.len() > 1
+        || matches!(&component[0], Unit::Class(_))
+            && component[0].files(ext).iter().any(|f| discovery_reads(ext, f).contains(&component[0]));
 
     let mut deps: HashSet<PathBuf> = files.iter().cloned().collect();
     let mut previous: Option<Arc<HashMap<Unit, Harvest>>> = None;
@@ -2404,7 +2502,10 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                 }
                 // A reading saying no more than `any` or `nil` is the field's own read
                 // in the harvest, cut (`self` the workspace's class): its writes type it.
-                let untyped = only.reading.as_ref().is_none_or(says_nothing);
+                // So does a reading of the table the scan gave it (its constructor's
+                // entries only exist there).
+                let scanned = scanned_table(ext, &cls, &fname).map(|t| ValueType::Table(Some(t)));
+                let untyped = only.reading.as_ref().is_none_or(|reading| says_nothing(reading) || Some(reading) == scanned.as_ref());
                 let (ty, carried) = match &only.reading {
                     Some(reading) if !untyped => {
                         let ty = all.sub_fields.clone().onto(reading.clone(), ext, None);
@@ -2412,7 +2513,12 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                         (Some(ty), carried)
                     }
                     _ => {
-                        all.tys = only.tys.clone();
+                        // A constructor's `nil` entry declares its field, as the
+                        // scan's table it replaces has it (any value).
+                        all.tys = only.tys.iter().map(|ty| match &scanned {
+                            Some(_) => nil_entries_declared(ty),
+                            None => ty.clone(),
+                        }).collect();
                         let bare = gate_harvested_field(all.tys.clone(), all.lateinit);
                         let ty = gate_writes(ext, &all, true);
                         let carried = ty.is_some() && ty != bare;
@@ -2445,7 +2551,15 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
                 for (_, f) in &files {
                     all.absorb(&effective(f));
                 }
-                let lists = has_typed_elements(&all.tys, ext);
+                // A bare `table` (an empty constructor entry) says nothing beside a
+                // list or map of typed elements, or a table another write types.
+                let typed_table = |ty: &ValueType| match ty {
+                    ValueType::Table(Some(_)) => true,
+                    ValueType::TableShape(shape) => !shape.fields.is_empty(),
+                    ValueType::Intersection(members) => members.iter().any(|m| matches!(m, ValueType::Table(Some(_)) | ValueType::TableShape(_))),
+                    _ => false,
+                };
+                let lists = has_typed_elements(&all.tys, ext) || all.tys.iter().any(typed_table);
                 let contribution = |f: &AccField| {
                     let mut f = effective(f);
                     if lists {
@@ -2487,6 +2601,24 @@ fn gate_class_fields(ext: &Arc<PreResolvedGlobals>, per_file: &[(PathBuf, Arc<Fi
         by_class.entry(cls).or_default().insert(fname, field);
     }
     by_class
+}
+
+/// `ty` with the `nil` fields of its records `any`: a constructor's `k = nil` entry
+/// declares the field without typing it.
+fn nil_entries_declared(ty: &ValueType) -> ValueType {
+    match ty {
+        ValueType::TableShape(shape) if shape.fields.iter().any(|(_, t)| matches!(t, ValueType::Nil)) => {
+            let mut shape = (**shape).clone();
+            for (_, t) in &mut shape.fields {
+                if matches!(t, ValueType::Nil) {
+                    *t = ValueType::Any;
+                }
+            }
+            ValueType::TableShape(Box::new(shape))
+        }
+        ValueType::Union(members) => ValueType::make_union(members.iter().map(nil_entries_declared).collect()),
+        _ => ty.clone(),
+    }
 }
 
 /// The fields of the scan's table of `class.field` that files other than the class's
@@ -2581,12 +2713,15 @@ fn keeps_scanned_table(ext: &PreResolvedGlobals, class: &str, field: &str, write
     if table.class_name.is_some() || table.placeholder || table.is_shapeless() {
         return false;
     }
-    if table.value_type.as_ref().is_none_or(|v| !v.contains_any()) {
+    // A constructor's entries have no location of their own: the writer's.
+    if ext.field_locations.get(&idx).is_some_and(|locations| {
+        table.fields.keys().any(|name| locations.get(name).is_some_and(|loc| !writers.contains(&loc.path.as_path())))
+    }) {
         return true;
     }
-    // A constructor's entries have no location of their own: the writer's.
-    let Some(locations) = ext.field_locations.get(&idx) else { return false };
-    table.fields.keys().any(|name| locations.get(name).is_some_and(|loc| !writers.contains(&loc.path.as_path())))
+    // An entry the scan only says exists (a call, a reference) is its writers'.
+    table.value_type.as_ref().is_none_or(|v| !v.contains_any())
+        && !table.fields.values().any(|fi| field_is_coarse_placeholder(fi, ext))
 }
 
 /// What the writes `f` accumulated type a field as (see [`gate_harvested_field`]),
@@ -2762,10 +2897,10 @@ pub(crate) fn single_lua_file<'a>(ext: &'a PreResolvedGlobals, class: &str) -> O
 
 /// Read `read` off the harvested fields of the workspace class `class` (see
 /// [`read_unit`]): its only Lua file's harvest, or the class's own.
-fn read_class<R>(ext: &Arc<PreResolvedGlobals>, class: &str, read: impl Fn(&ClassFields) -> Option<R>) -> Option<R> {
+fn read_class<R>(ext: &Arc<PreResolvedGlobals>, class: &str, field: &str, read: impl Fn(&ClassFields) -> Option<R>) -> Option<R> {
     match single_lua_file(ext, class) {
         Some(path) => read_unit(ext, Unit::File(path.to_path_buf()), ReadPart::ClassOf(class.to_string()), |h| h.file()?.classes.get(class).and_then(&read)).flatten(),
-        None => read_unit(ext, Unit::Class(class.to_string()), ReadPart::Whole, |h| h.class().and_then(&read)).flatten(),
+        None => read_unit(ext, Unit::Class(class.to_string()), ReadPart::Field(field.to_string()), |h| h.class().and_then(&read)).flatten(),
     }
 }
 
@@ -2983,13 +3118,14 @@ fn harvest_call_fields(
     result: &crate::analysis::AnalysisResult,
     globals: &GlobalTables,
 ) -> HashMap<u32, Option<ValueType>> {
-    use crate::annotations::scan_globals::{call_assigns_field, call_initializes_local};
+    use crate::annotations::scan_globals::{call_and_operand, call_assigns_field, call_initializes_local};
     let ir = &result.ir;
     let root = crate::syntax::SyntaxNode::new_root(tree);
     let mut harvested: HashMap<u32, Option<ValueType>> = HashMap::default();
     for (offset, target) in ext.deferred_field_calls_by_path.get(path).into_iter().flatten() {
         let resolved = call_type_at(result, root, *offset, |call| match target {
-            CallTarget::Field(field) => call_assigns_field(call, field),
+            // A call an `and` guards isn't all the field may hold: its writes type it.
+            CallTarget::Field(field) => call_assigns_field(call, field) && !call_and_operand(call),
             CallTarget::Local(local) => call_initializes_local(call, local),
         })
         .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, path, globals))
@@ -3662,9 +3798,12 @@ impl CarriedFields {
 /// types (a `lateinit` field reads as non-nil, so nil is stripped), then keep the
 /// result only when it says more than the coarse placeholder (`any` or a bare
 /// `table`) it would replace. Dropped (→ keep coarse placeholder):
-/// - an untyped result ([`contains_untyped`]) — `any` (generics decay to `any` here
-///   — the "keep generics coarse" gate), a bare `function`, or the
-///   `callable_or_unknown` intersection;
+/// - a result saying no more than `any` ([`says_no_more_than_any`]) — `any`
+///   (generics decay to `any` here — the "keep generics coarse" gate), the
+///   `callable_or_unknown` intersection, or a union of such and `nil`. A union one
+///   member of which says more is kept (`fun() | any`), and so is a bare
+///   `function`, which the gate dropped before the inversion's slice 5 (it took any
+///   result containing `any` or a bare `function` for untyped);
 /// - a union whose bare `table` would swallow another table ([`absorbs_tables`]);
 /// - a purely-`nil` field (upgrading a placeholder → `nil` would over-narrow).
 ///
@@ -3682,7 +3821,7 @@ fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType
         return None;
     }
     let ty = if lateinit { ty.strip_nil() } else { ty };
-    (!contains_untyped(&ty)).then_some(ty)
+    (!says_no_more_than_any(&ty)).then_some(ty)
 }
 
 /// Lift a per-file `ResolvedOverload` into external-index space: each param type
@@ -3716,17 +3855,33 @@ fn lift_overload_to_ext(o: &ResolvedOverload, ir: &Ir, ext: &PreResolvedGlobals,
 /// `Function(None)` — the `callable_or_unknown` intersection (`function & table`)
 /// is caught by the recursion.
 ///
-/// Used by the cross-file field harvests to decide whether a harvested type says
-/// more than the coarse placeholder (`any` or a bare `table`) it would replace:
-/// `Any` doesn't, and a bare `function` or `callable_or_unknown` is a guess at a
-/// value that may be a callable table. A bare `table` is kept: the top-level lift
-/// only yields one for a table its file reads as `table` too.
+/// Used where a function value is told from a function the workspace build typed
+/// (`is_function_value(ty) && !contains_untyped(ty)`: a slot's written functions,
+/// whose signatures cross files on their own). The harvests' gate on whether a
+/// type says more than `any` is [`says_no_more_than_any`].
 pub(crate) fn contains_untyped(ty: &ValueType) -> bool {
     match ty {
         ValueType::Any | ValueType::Function(None) => true,
         ValueType::Union(members) | ValueType::Intersection(members) => {
             members.iter().any(contains_untyped)
         }
+        _ => false,
+    }
+}
+
+/// Whether a harvested type says no more than `any`: `any` itself, the
+/// `callable_or_unknown` guess, an intersection of such, or a union of such and
+/// `nil`. A member saying more is kept: `fun() | function` is what its file reads,
+/// and says more than `any` to every other.
+pub(crate) fn says_no_more_than_any(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Any => true,
+        _ if *ty == ValueType::callable_or_unknown() => true,
+        ValueType::Union(members) => {
+            let mut values = members.iter().filter(|m| !matches!(m, ValueType::Nil)).peekable();
+            values.peek().is_some() && values.all(says_no_more_than_any)
+        }
+        ValueType::Intersection(members) => members.iter().all(says_no_more_than_any),
         _ => false,
     }
 }
@@ -4288,11 +4443,14 @@ fn lift_local_type_to_ext_depth(
                 let mut names: Vec<&String> = info.fields.keys().collect();
                 names.sort_unstable();
                 let fields: Vec<(String, ValueType)> = names
-                    .into_iter()
-                    .map(|name| (name.clone(), lift_field_type(&info.fields[name], ir, ext, depth, res, guard)))
+                    .iter()
+                    .map(|&name| (name.clone(), lift_field_type(&info.fields[name], ir, ext, depth, res, guard)))
                     .collect();
                 guard.tables_on_path.pop();
-                ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))
+                let field_defs = local_field_defs(ir, *idx, &names, guard.path);
+                let mut shape = crate::types::TableShape::new_with_defs(fields, field_defs);
+                shape.closed = ir.is_closed_record(*idx);
+                ValueType::TableShape(Box::new(shape))
             } else if info.is_shapeless() {
                 ValueType::Table(None)
             } else {
@@ -4336,6 +4494,13 @@ fn lift_local_type_to_ext_depth(
         // index, so carry its signature inline (lossless presentation). Past the
         // depth bound, on a cycle, or over budget, decay to bare `function`.
         ValueType::Function(Some(idx)) => {
+            // A value that is the file's own definition of a workspace function is
+            // that function.
+            if depth == 0
+                && let Some(own) = guard.path.and_then(|path| own_workspace_function(ir, ext, path, *idx))
+            {
+                return ValueType::Function(Some(own));
+            }
             if depth >= LIFT_MAX_DEPTH || guard.funcs_on_path.contains(idx) {
                 return ValueType::Function(None);
             }
@@ -4351,6 +4516,18 @@ fn lift_local_type_to_ext_depth(
         // Primitives, Any, Nil, Table(None), Function(None), FunctionSig, etc.
         other => other.clone(),
     }
+}
+
+/// The workspace function the analyzed file `path` defines as its local function
+/// `func`, by where the definition starts.
+fn own_workspace_function(ir: &Ir, ext: &PreResolvedGlobals, path: &Path, func: FunctionIndex) -> Option<FunctionIndex> {
+    let def = ir.func(func).def_node;
+    if def == DefNode::DUMMY {
+        return None;
+    }
+    ext.workspace_functions_by_path.get(path)?.iter()
+        .copied()
+        .find(|f| ext.function_locations.get(f).is_some_and(|loc| loc.start == def.start))
 }
 
 /// A record or instance field's type in ext space: its resolved type when the
@@ -4397,23 +4574,28 @@ fn lift_instance(
         .map(|&name| (name.clone(), lift_field_type(&info.fields[name], ir, ext, depth, res, guard)))
         .collect();
     guard.tables_on_path.pop();
-    // A constructor entry is defined at its key, a field written later at its first write.
-    let field_defs = guard.path.map_or_else(Vec::new, |path| {
-        let mut writes: HashMap<&str, (u32, u32)> = HashMap::default();
-        for fa in ir.field_assignments.iter().filter(|fa| fa.table_idx == idx) {
-            writes.entry(fa.field_name.as_str()).or_insert((fa.ident_start, fa.ident_end));
-        }
-        names
-            .iter()
-            .filter_map(|&name| {
-                let (start, end) = info.fields[name].def_range.or_else(|| writes.get(name.as_str()).copied())?;
-                let loc = crate::types::ExternalLocation { path: path.to_path_buf(), start, end, name_start: start, name_end: end };
-                Some((name.clone(), loc))
-            })
-            .collect()
-    });
-    let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
+    let shape = crate::types::TableShape::new_with_defs(fields, local_field_defs(ir, idx, &names, guard.path));
     ValueType::Intersection(vec![class, ValueType::TableShape(Box::new(shape))])
+}
+
+/// Where the analyzed file `path` defines the fields `names` of its table `idx`,
+/// for go-to-definition through a shape lifted from it: a constructor entry at its
+/// key, a field written later at its first write.
+fn local_field_defs(ir: &Ir, idx: TableIndex, names: &[&String], path: Option<&Path>) -> Vec<(String, crate::types::ExternalLocation)> {
+    let Some(path) = path else { return Vec::new() };
+    let info = ir.table(idx);
+    let mut writes: HashMap<&str, (u32, u32)> = HashMap::default();
+    for fa in ir.field_assignments.iter().filter(|fa| fa.table_idx == idx) {
+        writes.entry(fa.field_name.as_str()).or_insert((fa.ident_start, fa.ident_end));
+    }
+    names
+        .iter()
+        .filter_map(|&name| {
+            let (start, end) = info.fields[name].def_range.or_else(|| writes.get(name.as_str()).copied())?;
+            let loc = crate::types::ExternalLocation { path: path.to_path_buf(), start, end, name_start: start, name_end: end };
+            Some((name.clone(), loc))
+        })
+        .collect()
 }
 
 /// Build an inline [`crate::types::FunctionShape`] from a local function index,

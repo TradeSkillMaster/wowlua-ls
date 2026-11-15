@@ -4,9 +4,9 @@
 ---@type SubFieldHost
 local host = nil
 
--- Direct field access — should still resolve as Frame
+-- Direct field access: the Frame, carrying what is written onto it
 local _sd = host.SpeedDisplay
---    ^ hover: (local) _sd: Frame {
+--    ^ hover: (local) _sd: Frame & { Speed: Cooldown } {
 
 -- Sub-field access — should find Speed on the cloned table, not undefined-field
 local _spd = host.SpeedDisplay.Speed
@@ -18,4 +18,4 @@ local _txt = host.TextDisplay.Text
 
 -- Direct field still works on the parent
 local _td = host.TextDisplay
---    ^ hover: (local) _td: Frame {
+--    ^ hover: (local) _td: Frame & { Text: Frame } {

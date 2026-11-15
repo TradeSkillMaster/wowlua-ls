@@ -818,7 +818,10 @@ impl<'a> Analysis<'a> {
                 let table_idx = TableIndex(self.ir.tables.len());
                 let needs_deferred = !bracket_fields.is_empty() || (key_type.is_none() && !array_fields.is_empty());
                 let constructor_bracket_count = bracket_fields.len();
-                self.ir.tables.push(TableInfo { fields, array_fields, key_type, value_type, constructor_bracket_count, ..Default::default() });
+                let constructor_field_count = fields.len();
+                self.ir.tables.push(TableInfo {
+                    fields, array_fields, key_type, value_type, constructor_bracket_count, constructor_field_count, ..Default::default()
+                });
                 if needs_deferred {
                     self.ir.bracket_key_fields.insert(table_idx, bracket_fields);
                 }

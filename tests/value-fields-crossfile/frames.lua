@@ -1,7 +1,6 @@
 ---@diagnostic disable: create-global, unused-local
 -- A field written calls in several methods (or branches) reads in other files
--- (frames_user.lua) as this file reads it: the calls' type when they agree, the
--- callee's when they don't.
+-- (frames_user.lua) as this file reads it: the union of what the calls give.
 ---@class PanelHost
 PanelHost = {}
 
@@ -22,9 +21,9 @@ end
 
 function PanelHost:Use()
     local frame = self.frame
-    --    ^ hover: (local) frame: Frame {
+    --    ^ hover: (local) frame: Frame & BackdropTemplate | Frame & UIPanelDialogTemplate
     local pair = self.pair
     --    ^ hover: (local) pair: BackdropTemplate {
     local alt = self.alt
-    --    ^ hover: (local) alt: Frame {
+    --    ^ hover: (local) alt: Frame & UIPanelDialogTemplate | Frame & BackdropTemplate
 end

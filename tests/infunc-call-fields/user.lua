@@ -4,7 +4,7 @@
 local _, ns = ...
 
 local row = ns.Row
---    ^ hover: (local) row: Frame & InFuncRowTemplate
+--    ^ hover: (local) row: Frame & InFuncRowTemplate?
 local lazyRow = ns.LazyRow
 --    ^ hover: (local) lazyRow: Frame & InFuncRowTemplate
 local panel = ns.Panel
@@ -16,7 +16,7 @@ local button = ns.UI.Button
 local selfRow = ns.SelfRow
 --    ^ hover: (local) selfRow: Frame & InFuncRowTemplate
 local topRow = ns.TopRow
---    ^ hover: (local) topRow: Frame & InFuncRowTemplate
+--    ^ hover: (local) topRow: Frame & InFuncRowTemplate?
 
 ns.Options:Refresh()
 --         ^ hover: (method) function Frame:Refresh()

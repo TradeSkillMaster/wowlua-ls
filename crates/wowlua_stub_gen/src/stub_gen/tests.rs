@@ -62,14 +62,7 @@ function FakeWidget:Hide() end
         &[],
         &crate::annotations::CreatesGlobalMap::default(),
     );
-    let pg = crate::pre_globals::PreResolvedGlobals::build(
-        &scan.globals,
-        &scan.classes,
-        &scan.aliases,
-        false,
-        &HashMap::default(),
-        &HashSet::default(),
-    );
+    let pg = crate::pre_globals::PreResolvedGlobals::build_stub_blob(&scan.globals, &scan.classes, &scan.aliases);
     // Sanity: the methods attach to LibObj as (annotation-less) fields, so the
     // pre-fix matcher WOULD have seen a 3-way overlap on Enable/Disable/GetName.
     let libobj = pg.classes["LibObj"];
@@ -177,14 +170,7 @@ end
         &[],
         &crate::annotations::CreatesGlobalMap::default(),
     );
-    let pg = crate::pre_globals::PreResolvedGlobals::build(
-        &scan.globals,
-        &scan.classes,
-        &scan.aliases,
-        false,
-        &HashMap::default(),
-        &HashSet::default(),
-    );
+    let pg = crate::pre_globals::PreResolvedGlobals::build_stub_blob(&scan.globals, &scan.classes, &scan.aliases);
     let commentator = pg.try_table(pg.classes["Commentator"]).unwrap();
     assert!(commentator.fields.get("role").is_some_and(|fi| fi.annotation.is_none()));
 
