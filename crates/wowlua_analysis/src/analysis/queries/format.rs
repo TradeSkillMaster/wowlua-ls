@@ -612,19 +612,27 @@ pub fn format_vararg_return(formatted: String, index: usize, func: &Function) ->
     }
 }
 
-/// Join multiple return values, parenthesizing any element that itself contains
-/// a top-level comma.  Such an element is a nested multi-return function value
-/// (e.g. `fun(): number, string`); without grouping, its returns blur into the
-/// sibling returns — `fun(): number, string, Foo` reads ambiguously.  Wrapping
-/// gives `(fun(): number, string), Foo`.  A single return (no sibling to confuse
-/// with) and elements without a top-level comma pass through unchanged.
-pub(super) fn join_returns(rets: &[String]) -> String {
+/// Join multiple return values, parenthesizing any element whose own returns
+/// would otherwise run into its siblings':
+/// - an element with a top-level comma is a multi-return function value
+///   (`fun(): number, string`) — grouped wherever it sits;
+/// - an element with a top-level return clause is a function value
+///   (`fun(): string`, or the named return `iter: fun(): string`) — grouped
+///   when another return follows it, since `fun(): string, table` reads as one
+///   function returning two values.  As the last return its clause ends the
+///   list, so it stays bare.
+///
+/// A single return (no sibling to confuse with) passes through unchanged.
+pub fn join_returns(rets: &[String]) -> String {
     if rets.len() <= 1 {
         return rets.join(", ");
     }
+    let last = rets.len() - 1;
     rets.iter()
-        .map(|r| {
-            if has_top_level_comma(r) {
+        .enumerate()
+        .map(|(i, r)| {
+            let (comma, ret_clause) = top_level_separators(r);
+            if comma || (ret_clause && i < last) {
                 format!("({r})")
             } else {
                 r.clone()
@@ -634,24 +642,39 @@ pub(super) fn join_returns(rets: &[String]) -> String {
         .join(", ")
 }
 
-/// Whether `s` contains a comma that is not nested inside any bracket pair
-/// (`()`, `<>`, `[]`, `{}`).  Used to detect a rendered type whose top-level
-/// shape is itself a comma-separated tuple (i.e. a multi-return function value).
+/// Whether `s` contains, outside any bracket pair (`()`, `<>`, `[]`, `{}`) or
+/// string literal, a comma / a function return clause.  A top-level comma marks
+/// a rendered type that is itself a comma-separated tuple (a multi-return
+/// function value).  A return clause is a `:` right after a top-level `)` —
+/// `fun(a: number): string` (the param colon is nested), as opposed to a named
+/// return's `name: type` colon.
 ///
 /// Assumes well-formed input (balanced brackets) since `s` is always produced
 /// by the type formatter.  Depth is clamped to 0 on close-brackets so a stray
-/// unmatched closer cannot drive depth negative and mask later commas.
-fn has_top_level_comma(s: &str) -> bool {
+/// unmatched closer cannot drive depth negative and mask later separators.
+fn top_level_separators(s: &str) -> (bool, bool) {
+    let (mut comma, mut ret_clause) = (false, false);
     let mut depth = 0i32;
+    let mut in_string = false;
+    let mut after_close_paren = false;
     for b in s.bytes() {
+        let closed_paren = after_close_paren;
+        after_close_paren = false;
         match b {
+            b'"' => in_string = !in_string,
+            _ if in_string => {}
             b'(' | b'<' | b'[' | b'{' => depth += 1,
-            b')' | b'>' | b']' | b'}' => { depth = (depth - 1).max(0); }
-            b',' if depth == 0 => return true,
+            b')' => {
+                depth = (depth - 1).max(0);
+                after_close_paren = depth == 0;
+            }
+            b'>' | b']' | b'}' => { depth = (depth - 1).max(0); }
+            b',' if depth == 0 => comma = true,
+            b':' if closed_paren => ret_clause = true,
             _ => {}
         }
     }
-    false
+    (comma, ret_clause)
 }
 
 /// Check whether a return annotation at `index` was written as `& ...M`
