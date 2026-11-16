@@ -10,6 +10,13 @@ PlayerGetTimerunningSeasonID()
 -- AbandonQuest is available in classic + classic_era, so no warning.
 AbandonQuest()
 
+-- Retail and Forever implement these in C, the Classic clients define them in
+-- FrameXML: available everywhere, so no warning.
+local _has = tContains({ 1, 2 }, 1)
+local _clamped = Clamp(5, 0, 10)
+local _empty = TableIsEmpty({})
+local _idx = tIndexOf({ 1, 2 }, 2)
+
 -- Frame:SetMinResize left the Classic clients too (Classic Era 1.14.4, Wrath Classic
 -- 3.4.1; replaced by SetResizeBounds), so it is undefined on every flavor.
 _f:SetMinResize(10, 10)

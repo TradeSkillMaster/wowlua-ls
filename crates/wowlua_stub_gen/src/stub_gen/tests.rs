@@ -1767,26 +1767,36 @@ fn test_compute_flavor_map_from_branch_sets() {
     use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
 
     let set = |names: &[&str]| -> HashSet<String> { names.iter().map(|s| s.to_string()).collect() };
-    let retail = set(&["GetItemInfo", "C_Map.GetBestMapForUnit", "RetailOnly", "SharedRetailClassicEra", "OnRetailClient"]);
+    let retail = set(&["GetItemInfo", "C_Map.GetBestMapForUnit", "RetailOnly", "SharedRetailClassicEra", "OnRetailClient", "tContains", "CNotOnClassicEra"]);
     let classic = set(&["GetItemInfo", "ClassicOnly"]);
     let classic_era = set(&["GetItemInfo", "ClassicEraOnly", "SharedRetailClassicEra"]);
-    let forever = set(&["GetItemInfo", "OnRetailClient", "ForeverOnly", "tContains"]);
-    // `tContains` is FrameXML on retail; Forever implements it in C.
-    let retail_fxml = set(&["tContains"]);
+    let forever = set(&["GetItemInfo", "OnRetailClient", "ForeverOnly", "tContains", "Clamp", "CNotOnClassicEra"]);
+    // Retail and Forever implement `tContains` in C, the classic clients in FrameXML.
+    // `Clamp` is the reverse split: FrameXML on retail, C on Forever.
+    let retail_fxml = set(&["Clamp", "RetailFrameXMLOnly"]);
+    let classic_fxml = set(&["tContains", "Clamp", "CNotOnClassicEra"]);
+    let classic_era_fxml = set(&["tContains", "Clamp", "ClassicEraFrameXMLOnly"]);
+    let forever_fxml = set(&[]);
 
     let map = compute_flavor_map(&[
-        (FLAVOR_RETAIL, &retail),
-        (FLAVOR_CLASSIC, &classic),
-        (FLAVOR_CLASSIC_ERA, &classic_era),
-        (FLAVOR_FOREVER, &forever),
-    ], &retail_fxml);
+        (FLAVOR_RETAIL, &retail, &retail_fxml),
+        (FLAVOR_CLASSIC, &classic, &classic_fxml),
+        (FLAVOR_CLASSIC_ERA, &classic_era, &classic_era_fxml),
+        (FLAVOR_FOREVER, &forever, &forever_fxml),
+    ]);
 
+    // A C function some clients define in FrameXML is available on all of them.
+    assert!(!map.contains_key("tContains"));
+    assert!(!map.contains_key("Clamp"));
+    // ...and on only those: Classic's FrameXML adds Classic, Classic Era lists neither.
+    assert_eq!(map["CNotOnClassicEra"], FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_FOREVER);
+    // A name no client implements in C gets no mask, wherever FrameXML defines it.
+    assert!(!map.contains_key("RetailFrameXMLOnly"));
+    assert!(!map.contains_key("ClassicEraFrameXMLOnly"));
     // GetItemInfo is in all four → FLAVOR_ALL → not stored
     assert!(!map.contains_key("GetItemInfo"));
     assert_eq!(map["OnRetailClient"], FLAVOR_RETAIL | FLAVOR_FOREVER);
     assert_eq!(map["ForeverOnly"], FLAVOR_FOREVER);
-    // A retail FrameXML function doesn't become Forever-only.
-    assert!(!map.contains_key("tContains"));
     // RetailOnly → only retail
     assert_eq!(map["RetailOnly"], FLAVOR_RETAIL);
     // ClassicOnly → only classic
@@ -1812,12 +1822,13 @@ fn test_retail_presence_adds_documented_names_a_branch_lists() {
     let documented = set(&["GetItemInfo", "C_Intl.GetCurrentLocale", "UnlistedEverywhere"]);
 
     let retail_present = retail_presence(&retail, &documented, &[&classic, &classic_era, &forever]);
+    let no_fxml = HashSet::default();
     let map = compute_flavor_map(&[
-        (FLAVOR_RETAIL, &retail_present),
-        (FLAVOR_CLASSIC, &classic),
-        (FLAVOR_CLASSIC_ERA, &classic_era),
-        (FLAVOR_FOREVER, &forever),
-    ], &HashSet::default());
+        (FLAVOR_RETAIL, &retail_present, &no_fxml),
+        (FLAVOR_CLASSIC, &classic, &no_fxml),
+        (FLAVOR_CLASSIC_ERA, &classic_era, &no_fxml),
+        (FLAVOR_FOREVER, &forever, &no_fxml),
+    ]);
 
     assert_eq!(map["C_Intl.GetCurrentLocale"], FLAVOR_RETAIL | FLAVOR_FOREVER);
     assert_eq!(map["ForeverOnly"], FLAVOR_FOREVER);

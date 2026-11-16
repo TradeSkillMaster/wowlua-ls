@@ -817,13 +817,13 @@ pub(in crate::stub_gen) fn fetch_branch_resources(
 
     let retail_present = retail_presence(&retail, documented_functions, &[&classic, &classic_era, &forever]);
 
-    // Flavor map from GlobalAPI.lua branch presence (not FrameXML — see doc comment)
+    // Flavor map for GlobalAPI.lua names, present where either file lists them (see doc comment)
     let flavor_map = compute_flavor_map(&[
-        (FLAVOR_RETAIL, &retail_present),
-        (FLAVOR_CLASSIC, &classic),
-        (FLAVOR_CLASSIC_ERA, &classic_era),
-        (FLAVOR_FOREVER, &forever),
-    ], &retail_fxml);
+        (FLAVOR_RETAIL, &retail_present, &retail_fxml),
+        (FLAVOR_CLASSIC, &classic, &classic_fxml),
+        (FLAVOR_CLASSIC_ERA, &classic_era, &classic_era_fxml),
+        (FLAVOR_FOREVER, &forever, &forever_fxml),
+    ]);
     log::info!("  Flavor map: {} non-universal entries", flavor_map.len());
 
     // Classic-only API diff

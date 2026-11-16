@@ -109,32 +109,32 @@ pub(in crate::stub_gen) fn camel_to_upper_snake(s: &str) -> String {
 // ── Phase 2: Frame globals from XML parsing (all versions) ────────────────────
 
 
-/// Compute flavor bitmasks from per-branch API name sets, given as
-/// `(flavor bit, GlobalAPI.lua names)` per branch.
+/// Compute flavor bitmasks from per-branch name sets, given as
+/// `(flavor bit, GlobalAPI.lua names, FrameXML.lua names)` per branch.
 /// Only stores entries where the API is NOT available on all flavors.
 ///
-/// Flavor is determined by `GlobalAPI.lua` presence only — `FrameXML.lua` entries
-/// are implementation-level functions that may exist as compatibility shims across
-/// branches (e.g. `AbbreviateLargeNumbers` is a retail API but has a FrameXML
-/// shim in classic). Using FrameXML presence would incorrectly mark retail-only
-/// APIs as available everywhere. The reverse is skipped entirely: a name retail
-/// defines in FrameXML stays a FrameXML function where a client implements it in
-/// C (Forever's `tContains`, `Clamp`, …), so `retail_fxml` names get no mask.
+/// Only `GlobalAPI.lua` names (C functions on some client) get a mask: a name no
+/// client implements in C stays unrestricted, so FrameXML-only functions never pick
+/// up a flavor restriction. A masked name is available on every branch that lists it
+/// in either file, because a client can define in FrameXML what another implements
+/// in C — retail and Forever moved `tContains`, `Clamp`, `TableIsEmpty`, … into C
+/// while Classic and Classic Era still define them in Lua, and the reverse held for
+/// Forever before retail followed. Counting only `GlobalAPI.lua` made such a name
+/// unavailable wherever FrameXML defines it.
 pub(in crate::stub_gen) fn compute_flavor_map(
-    branch_apis: &[(u8, &HashSet<String>)], retail_fxml: &HashSet<String>,
+    branches: &[(u8, &HashSet<String>, &HashSet<String>)],
 ) -> HashMap<String, u8> {
     use crate::flavor::FLAVOR_ALL;
     let mut map = HashMap::default();
-    let all_names: HashSet<&str> = branch_apis.iter()
-        .flat_map(|(_, api)| api.iter())
+    let all_names: HashSet<&str> = branches.iter()
+        .flat_map(|(_, api, _)| api.iter())
         .map(|s| s.as_str())
-        .filter(|name| !retail_fxml.contains(*name))
         .collect();
 
     for name in all_names {
-        let mask = branch_apis.iter()
-            .filter(|(_, api)| api.contains(name))
-            .fold(0u8, |acc, (bit, _)| acc | bit);
+        let mask = branches.iter()
+            .filter(|(_, api, fxml)| api.contains(name) || fxml.contains(name))
+            .fold(0u8, |acc, (bit, _, _)| acc | bit);
         if mask != FLAVOR_ALL && mask != 0 {
             map.insert(name.to_string(), mask);
         }
