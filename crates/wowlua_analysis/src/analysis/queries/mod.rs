@@ -38,9 +38,8 @@ pub use call_hierarchy::{CallSiteResult, OutgoingCallResult};
 pub use path_accesses::{ext_table_paths, FieldPath, PathAccess, PathRoot, TablePaths, Unkeyed, WrittenSlot};
 pub use format::return_type_at_slot;
 pub use format::{dedup_return_types, inferred_return_types};
-pub use format::{format_vararg_return, format_vararg_param};
+pub use format::{format_vararg_return, format_vararg_param, join_returns};
 pub(crate) use format::{resolve_expr_type_impl, table_is_map};
-use format::join_returns;
 
 /// JSON data key: byte offset where the completion's text_edit range starts.
 pub const DATA_REPLACE_START: &str = "replace_start";

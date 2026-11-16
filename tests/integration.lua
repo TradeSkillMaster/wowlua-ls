@@ -995,6 +995,60 @@ function MultiRetSelfIter:Iterate()
 end
 _consume(MultiRetSelfIter)
 
+-- A function-valued return followed by more returns is grouped even when it
+-- has a single return of its own: `fun(): string, table` reads as one function
+-- returning two values.  Last in the list, its return clause ends the list, so
+-- it stays bare; a function value with no return clause is never ambiguous.
+---@class MultiRetFunc
+local MultiRetFunc = {}
+
+---@return fun(): string @iterator over the item strings
+---@return table
+function MultiRetFunc.Iter()
+--                    ^ hover: (field) function MultiRetFunc.Iter()\n  -> (fun(): string), table
+    return function() return "" end, {}
+end
+
+---@return table
+---@return fun(): string
+function MultiRetFunc.IterLast()
+--                    ^ hover: (field) function MultiRetFunc.IterLast()\n  -> table, fun(): string
+    return {}, function() return "" end
+end
+
+---@return fun(a: number)
+---@return table
+function MultiRetFunc.NoRetClause()
+--                    ^ hover: (field) function MultiRetFunc.NoRetClause()\n  -> fun(a: number), table
+    return function(_) end, {}
+end
+
+---@return fun(a: number): string
+---@return table
+---@return number
+function MultiRetFunc.Middle()
+--                    ^ hover: (field) function MultiRetFunc.Middle()\n  -> (fun(a: number): string), table, number
+    return function(_) return "" end, {}, 0
+end
+
+---@return fun(): string iter
+---@return table data
+function MultiRetFunc.Named()
+--                    ^ hover: (field) function MultiRetFunc.Named()\n  -> (iter: fun(): string), data: table
+    return function() return "" end, {}
+end
+
+---@return "a:b"
+---@return number
+function MultiRetFunc.ColonLiteral()
+--                    ^ hover: (field) function MultiRetFunc.ColonLiteral()\n  -> "a:b", number
+    return "a:b", 0
+end
+
+local multiRetHolder = { iter = MultiRetFunc.Iter }
+--    ^ hover: (local) multiRetHolder: {\n    iter: fun(): (fun(): string), table\n}
+_consume(multiRetHolder)
+
 -- ── While-loop body merge: nil-init vars assigned inside loops ──────
 -- Variables initialized to nil and conditionally assigned inside a while
 -- loop should have their post-loop type merged as pre-loop | in-body.
