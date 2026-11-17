@@ -1249,9 +1249,17 @@ impl<'a> Analysis<'a> {
     }
 
     /// Check whether every path through `block` either assigns the named variable
-    /// or exits (return/break/error). Used to verify that a nil-guard's then-block
-    /// eliminates the nil case before applying post-merge StripNil.
-    pub(super) fn block_ensures_assigned_or_exits(block: &Block<'_>, var_name: &str) -> bool {
+    /// or exits (return/break/a `@noreturn` call). Used to verify that a
+    /// nil-guard's then-block eliminates the nil case before applying
+    /// post-merge StripNil. `block` runs in `scope`, which needn't hold its
+    /// locals yet.
+    pub(super) fn block_ensures_assigned_or_exits(&self, block: &Block<'_>, var_name: &str, scope: ScopeIndex) -> bool {
+        self.block_ensures_assigned_or_exits_in(block, var_name, block.syntax(), scope)
+    }
+
+    /// [`Self::block_ensures_assigned_or_exits`] for a block inside `region`,
+    /// the code whose locals `scope` may not hold yet.
+    fn block_ensures_assigned_or_exits_in(&self, block: &Block<'_>, var_name: &str, region: SyntaxNode<'_>, scope: ScopeIndex) -> bool {
         let stmts = block.statements();
         // Check if any top-level statement assigns the variable directly
         for stmt in &stmts {
@@ -1260,7 +1268,7 @@ impl<'a> Analysis<'a> {
             }
         }
         // If not assigned at top level, check if the block always exits
-        if Self::block_always_exits(block) {
+        if self.block_always_exits_in(block, region, scope) {
             return true;
         }
         // Check last statement: if it's an if/else chain where all branches
@@ -1269,10 +1277,10 @@ impl<'a> Analysis<'a> {
             let branches = if_chain.if_branches();
             if let Some(else_branch) = if_chain.else_branch() {
                 let all_if_ok = branches.iter().all(|b| {
-                    b.block().is_some_and(|bl| Self::block_ensures_assigned_or_exits(&bl, var_name))
+                    b.block().is_some_and(|bl| self.block_ensures_assigned_or_exits_in(&bl, var_name, region, scope))
                 });
                 let else_ok = else_branch.block().is_some_and(|bl| {
-                    Self::block_ensures_assigned_or_exits(&bl, var_name)
+                    self.block_ensures_assigned_or_exits_in(&bl, var_name, region, scope)
                 });
                 if all_if_ok && else_ok {
                     return true;
@@ -3534,9 +3542,26 @@ impl<'a> Analysis<'a> {
                 Expr::ForInVar { iterator_call, var_index, .. } => {
                     return self.forin_var_table(*iterator_call, *var_index, depth);
                 }
+                Expr::FunctionCall { func, ret_index, .. } => {
+                    return self.call_return_tables(*func, *ret_index, depth).into_iter().next();
+                }
                 _ => return None,
             }
         }
+    }
+
+    /// The classes a call's `ret_index`th result is declared as, read off the
+    /// callee's `@return` before resolve: `local log = GetLogger()` walks to
+    /// `Logger` the way a for-in variable walks to its iterator's return.
+    fn call_return_tables(&self, func: ExprId, ret_index: usize, depth: usize) -> Vec<TableIndex> {
+        if depth == 0 { return Vec::new(); }
+        let mut tables = Vec::new();
+        if let Some(func_idx) = self.find_callable_function(func, depth - 1)
+            && let Some(ret) = self.func(func_idx).return_annotations.get(ret_index)
+        {
+            Self::collect_tables_from_type(ret, &mut tables);
+        }
+        tables
     }
 
     /// Phase-1 resolution of a for-in variable's type to a TableIndex by
@@ -3593,8 +3618,19 @@ impl<'a> Analysis<'a> {
                 }
                 Expr::FieldAccess { table, field, .. } => {
                     let table_idx = self.resolve_expr_to_table_depth(*table, depth)?;
-                    let fi = self.ir.get_field(table_idx, field)?;
-                    current = fi.expr;
+                    if let Some(fi) = self.ir.get_field(table_idx, field) {
+                        current = fi.expr;
+                    } else if self.ir.is_global_env(table_idx) {
+                        // `_G.f` through a localized `_G` (`local _G = _G`) reads the global `f`.
+                        let ver = self.sym(self.ir.global_env_symbol(field)?).versions.last()?;
+                        match (ver.type_source, &ver.resolved_type) {
+                            (Some(source), _) => current = source,
+                            (None, Some(ValueType::Function(Some(idx)))) => return Some(*idx),
+                            _ => return None,
+                        }
+                    } else {
+                        return None;
+                    }
                 }
                 _ => return None,
             }
@@ -3646,6 +3682,9 @@ impl<'a> Analysis<'a> {
                         return self.resolve_expr_to_tables_inner(ts, depth + 1);
                     }
                 vec![]
+            }
+            Expr::FunctionCall { func, ret_index, .. } => {
+                self.call_return_tables(*func, *ret_index, 20usize.saturating_sub(depth))
             }
             Expr::FieldAccess { table, field, .. } => {
                 let table = *table;

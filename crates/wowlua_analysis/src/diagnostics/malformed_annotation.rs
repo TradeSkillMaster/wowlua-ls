@@ -37,7 +37,7 @@ fn next_token_is_continuation(tok: &SyntaxToken<'_>) -> bool {
 
 const KNOWN_TAGS: &[&str] = &[
     "class", "field", "alias", "param", "return", "type", "enum",
-    "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
+    "meta", "overload", "defclass", "deprecated", "nodiscard", "noreturn", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "returns-enum", "narrows-arg", "stores-into",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",

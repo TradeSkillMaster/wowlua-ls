@@ -5,6 +5,10 @@
 -- pattern get a synthesized return-only overload. Sibling narrowing then propagates
 -- through the existing return-only overload pipeline.
 
+-- No stubs here: this stands in for the stub's `error`, which is `@noreturn`.
+---@noreturn
+local function error(...) end
+
 local function _consume(...) end
 
 local cond = true

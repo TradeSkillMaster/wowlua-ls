@@ -4,7 +4,7 @@ use crate::syntax::tree::SyntaxTree;
 use super::{DiagnosticPass, WowDiagnostic};
 
 const FUNCTION_LEVEL_TAGS: &[&str] = &[
-    "param", "return", "overload", "generic", "nodiscard", "deprecated",
+    "param", "return", "overload", "generic", "nodiscard", "noreturn", "deprecated",
     "constructor", "builds-field", "built-name", "built-extends",
     "type-narrows", "returns-class-name", "returns-enum", "defclass", "narrows-arg", "stores-into", "creates-global", "generates-events",
     "callback-event-arg", "requires", "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",

@@ -71,7 +71,7 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs: an override's function and method definitions replace the vendor's, whatever the file is named. Where the vendor redeclares an overridden method on subclasses with the same parameters, as Ketho does for `SetScript` and `HookScript` on every widget type to narrow the script-name type, those redeclarations keep their own signature and gain the override's `@overload`s. An override whose filename stem matches a vendor file (such as `LibStub.lua`) also replaces that whole vendor file, along with the pipeline's in-place rewrites of it (wiki enrichment, secret-value annotations, tooltip data accessors), so an override that changes individual methods gets a stem of its own (such as `SetOwner.lua`). Overrides handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (47 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs: an override's function and method definitions replace the vendor's, whatever the file is named. Where the vendor redeclares an overridden method on subclasses with the same parameters, as Ketho does for `SetScript` and `HookScript` on every widget type to narrow the script-name type, those redeclarations keep their own signature and gain the override's `@overload`s. An override whose filename stem matches a vendor file (such as `LibStub.lua`) also replaces that whole vendor file, along with the pipeline's in-place rewrites of it (wiki enrichment, secret-value annotations, tooltip data accessors), so an override that changes individual methods gets a stem of its own (such as `SetOwner.lua`). Overrides handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (48 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
@@ -90,6 +90,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `debugstack.lua` | Debug stack trace function |
 | `EnumUtil.lua` | `@returns-enum` on `EnumUtil.MakeEnum`, so `EnumUtil.MakeEnum("A", "B")` is typed as `{ A = 1, B = 2 }` |
 | `EquipmentManager.lua` | Full-arity `@return` for `EquipmentManager_UnpackLocation` (deprecated on retail with no `@return`, still live on Classic) so destructuring its result doesn't false-positive `unbalanced-assignments` |
+| `error.lua` | `@noreturn` on `error`, so a block ending in a call to it exits like `return` (narrowing, `missing-return`) |
 | `EventRegistry.lua` | `@class EventRegistry : CallbackRegistryMixin` with `FrameEvent`-typed callback params |
 | `GetCursorInfo.lua` | Cursor info return type overloads |
 | `GetObjectType.lua` | `@returns-class-name` on `FrameScriptObject:GetObjectType` for equality-comparison receiver narrowing (`region:GetObjectType() == "FontString"`) |

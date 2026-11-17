@@ -2460,6 +2460,7 @@ mod tests {
                 deprecated: false,
                 deprecated_message: None,
                 nodiscard: false,
+                noreturn: false,
                 constructor: false,
                 visibility: Visibility::Public,
                 generics: Vec::new(),
@@ -2971,6 +2972,7 @@ mod tests {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             constructor: false,
             visibility: Visibility::Public,
             generics: Vec::new(),
@@ -3347,6 +3349,29 @@ mod tests {
         assert!(
             !matches!(rebuild("Panels = {}\nPanels.Formatter = CreateFromMixins(FormatterB)\n"), RebuildScope::None),
             "a field's named call argument must trigger a rebuild",
+        );
+    }
+
+    #[test]
+    fn noreturn_edits_trigger_rebuild() {
+        // Whether a call to the function leaves its block is decided in the
+        // calling file, so adding or removing `@noreturn` must rebuild.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: String| {
+            let tree = crate::syntax::parser::parse(&src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+
+        let fail = |tag: &str| format!("{tag}---@param msg string\nfunction Fail(msg) end\n");
+        let _ = rebuild(fail(""));
+        assert!(
+            !matches!(rebuild(fail("---@noreturn\n")), RebuildScope::None),
+            "adding @noreturn must trigger a rebuild",
+        );
+        assert!(
+            !matches!(rebuild(fail("")), RebuildScope::None),
+            "removing @noreturn must trigger a rebuild",
         );
     }
 

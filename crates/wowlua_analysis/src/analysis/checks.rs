@@ -381,11 +381,12 @@ impl AnalysisResult {
         super::class_has_field_impl(&self.ir, table_idx, field_name)
     }
 
-    pub fn block_ends_with_return(block: &Block) -> bool {
-        Self::block_always_exits(block)
-    }
-
-    pub fn block_always_exits(block: &Block) -> bool {
+    /// Whether every path through `block` leaves it: a `return` or `break`, an
+    /// infinite loop, a call `never_returns` says doesn't come back (a
+    /// `@noreturn` function), or an `if` with an `else` whose every branch
+    /// leaves. Code after such a block is unreachable, and a function body
+    /// ending in one never falls off the end.
+    pub fn block_always_exits(block: &Block, never_returns: &dyn Fn(&FunctionCall) -> bool) -> bool {
         // Check if block ends with a break keyword (not wrapped in a Statement node)
         let mut ends_with_break = false;
         for child in block.syntax().children_with_tokens() {
@@ -407,37 +408,14 @@ impl AnalysisResult {
         let Some(last) = statements.last() else { return false };
         match last {
             Statement::Return(_) => true,
-            Statement::FunctionCall(call) => {
-                // error() never returns
-                if let Some(ident) = call.identifier() {
-                    let names = ident.names();
-                    names.len() == 1 && names[0] == "error"
-                } else {
-                    false
-                }
-            }
+            Statement::FunctionCall(call) => never_returns(call),
             Statement::While(_) | Statement::Repeat(_) => Self::is_infinite_loop_stmt(last),
             Statement::If(if_chain) => {
                 // All branches must exit, and there must be an else
-                let branches = if_chain.if_branches();
-                let else_branch = if_chain.else_branch();
-                if else_branch.is_none() { return false; }
-                for branch in &branches {
-                    if let Some(block) = branch.block() {
-                        if !Self::block_always_exits(&block) { return false; }
-                    } else {
-                        return false;
-                    }
-                }
-                if let Some(eb) = &else_branch {
-                    if let Some(block) = eb.block() {
-                        Self::block_always_exits(&block)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
+                let Some(else_block) = if_chain.else_branch().and_then(|eb| eb.block()) else { return false };
+                if_chain.if_branches().iter()
+                    .all(|branch| branch.block().is_some_and(|b| Self::block_always_exits(&b, never_returns)))
+                    && Self::block_always_exits(&else_block, never_returns)
             }
             _ => false,
         }

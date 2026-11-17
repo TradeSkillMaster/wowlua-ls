@@ -4204,6 +4204,25 @@ fn count_down_loop() {
 }
 
 #[test]
+fn noreturn() {
+    // `error` is `@noreturn` through its stub tag.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/noreturn.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn noreturn_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/noreturn-crossfile/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/noreturn-crossfile"),
+    });
+}
+
+#[test]
 fn infinite_loop() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/infinite-loop.lua",

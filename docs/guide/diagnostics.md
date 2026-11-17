@@ -276,6 +276,8 @@ function getName(name)
 end
 ```
 
+A function that ends in a call to `error()`, or to a function tagged [`@noreturn`](/reference/annotations#metadata-annotations), doesn't fall off the end.
+
 ### `redundant-return-value` <Badge type="warning" text="Warning" />
 
 Returning more values than declared:

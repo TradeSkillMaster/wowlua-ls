@@ -1339,6 +1339,9 @@ pub struct Function {
     #[serde(skip)]
     pub deprecated_message: Option<String>,
     pub nodiscard: bool,
+    /// `@noreturn`: a call to this function never comes back (it always
+    /// errors), so a block ending in one exits the way a `return` does.
+    pub noreturn: bool,
     pub generics: Vec<(String, Option<ValueType>)>,
     pub generic_constraints_raw: Vec<(String, Option<String>)>,
     pub param_annotations: Vec<crate::annotations::AnnotationType>,

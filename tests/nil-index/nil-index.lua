@@ -1,5 +1,10 @@
 ---@diagnostic disable: undefined-global, unused-local
 -- Test: nil-index diagnostic
+
+-- No stubs here: this stands in for the stub's `error`, which is `@noreturn`.
+---@noreturn
+local function error(...) end
+
 local function _consume(...) end
 
 ---@type table<string, number>

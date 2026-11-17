@@ -1838,3 +1838,8 @@ function DeepPanel:Init(parent)
     self.transferButton = self:MakeTransferButton(parent)
     self.transferButton.currencyID = 5
 end
+
+-- Indirect _G read into a local of the same name: still the global, not the
+-- local it declares
+local rawequal = _g_indirect.rawequal
+--    ^ hover: (local) function rawequal(v1: any, v2: any)

@@ -170,7 +170,7 @@ fn substitute_annotation_type_inner(
 /// or any serialized type changes shape — or when serialized data changes
 /// meaning, like a new flavor bit in the `flavors` masks.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 45;
+pub const BLOB_VERSION: u32 = 46;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -1726,6 +1726,7 @@ pub struct FnMeta<'a> {
     pub deprecated: bool,
     pub deprecated_message: Option<String>,
     pub nodiscard: bool,
+    pub noreturn: bool,
     pub defclass: Option<String>,
     pub defclass_parent: Option<String>,
     pub generic_annotations: &'a [(String, Option<String>)],
@@ -1772,6 +1773,7 @@ impl<'a> FnMeta<'a> {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             defclass: None,
             defclass_parent: None,
             generic_annotations: &[],
@@ -1817,6 +1819,7 @@ impl<'a> FnMeta<'a> {
             deprecated: g.deprecated,
             deprecated_message: g.deprecated_message.clone(),
             nodiscard: g.nodiscard,
+            noreturn: g.noreturn,
             defclass: g.defclass.clone(),
             defclass_parent: g.defclass_parent.clone(),
             generic_annotations: &g.generics,
@@ -5199,6 +5202,7 @@ impl PreResolvedGlobals {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations: param_annotations.to_vec(),
@@ -5257,6 +5261,7 @@ impl PreResolvedGlobals {
             deprecated,
             deprecated_message,
             nodiscard,
+            noreturn,
             defclass,
             defclass_parent,
             generic_annotations,
@@ -5605,6 +5610,7 @@ impl PreResolvedGlobals {
             deprecated,
             deprecated_message,
             nodiscard,
+            noreturn,
             generics: resolved_generics,
             generic_constraints_raw: generic_annotations.to_vec(),
             param_annotations: param_annotations_vec,

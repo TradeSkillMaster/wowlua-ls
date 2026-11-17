@@ -1644,6 +1644,7 @@ impl AnalysisResult {
             ("constructor",    "Mark as constructor method",              F|C,       None),
             ("deprecated",     "Mark as deprecated",                      F|C|S,     None),
             ("nodiscard",      "Warn if return value is ignored",         F|C,       None),
+            ("noreturn",       "Calls never return (the function always errors)", F,     None),
             ("private",        "Mark as private visibility",              F|C|S,     None),
             ("protected",      "Mark as protected visibility",            F|C|S,     None),
             ("accessor",       "Define accessor with visibility",           C,       None),

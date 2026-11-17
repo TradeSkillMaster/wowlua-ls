@@ -1,6 +1,10 @@
 -- Test: redundant-condition diagnostic (always-truthy/falsy if/while conditions)
 ---@diagnostic disable: unused-local, unused-function, undefined-global, empty-block, shadowed-local
 
+-- No stubs here: this stands in for the stub's `error`, which is `@noreturn`.
+---@noreturn
+local function error(...) end
+
 local function _use(...) end
 
 -- ── Always truthy: if ────────────────────────────────────────────────────────

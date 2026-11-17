@@ -169,7 +169,7 @@ impl<'a> Analysis<'a> {
     /// nothing. A call that may run one of several functions (`obj:Check()`
     /// with `obj` an `A|B`) proves only the facts each of them does.
     fn guard_call_facts(&self, call: &FunctionCall<'_>, scope: ScopeIndex, truthy: bool) -> Vec<(Vec<String>, GuardFactKind)> {
-        let mut callees = self.guard_callees(call, scope).into_iter();
+        let mut callees = self.callees(call, scope).into_iter();
         let Some(first) = callees.next() else { return Vec::new() };
         let mut facts = self.callee_facts(first, call, truthy);
         for func_idx in callees {
@@ -204,7 +204,7 @@ impl<'a> Analysis<'a> {
     /// among the classes of a union — or none when one of them lacks it. A
     /// call whose prefix doesn't resolve to classes that way runs the function
     /// its name path does.
-    fn guard_callees(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Vec<FunctionIndex> {
+    pub(super) fn callees(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Vec<FunctionIndex> {
         let names = call.identifier().map(|ident| ident.names()).unwrap_or_default();
         if let Some((name, path)) = names.split_last()
             && let Some(tables) = self.path_tables(path, scope)

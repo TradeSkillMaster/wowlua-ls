@@ -5097,10 +5097,7 @@ impl<'a> Analysis<'a> {
         // _G global-environment redirect: look up field as a scope0 symbol
         for &idx in &table_indices {
             if self.ir.is_global_env(idx) {
-                let sym_id = SymbolIdentifier::Name(field.to_string());
-                let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
-                    .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
-                if let Some(si) = sym_idx {
+                if let Some(si) = self.ir.global_env_symbol(field) {
                     let sym = self.sym(si);
                     if let Some(vt) = sym.versions.last().and_then(|v| v.resolved_type.clone()) {
                         return Some(vt);

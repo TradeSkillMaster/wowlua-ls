@@ -685,7 +685,7 @@
           "end": "(?=[\\n@#])"
         },
         {
-          "match": "(?<=---)[ \\t]*@(nodiscard)",
+          "match": "(?<=---)[ \\t]*@(nodiscard|noreturn)\\b",
           "name": "storage.type.annotation.lua"
         },
         {

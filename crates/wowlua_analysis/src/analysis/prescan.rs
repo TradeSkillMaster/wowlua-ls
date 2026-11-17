@@ -2188,6 +2188,7 @@ impl<'a> Analysis<'a> {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations,

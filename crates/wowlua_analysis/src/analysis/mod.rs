@@ -20,7 +20,7 @@ mod proptests;
 use crate::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
-use crate::ast::Block;
+use crate::ast::{AstNode, Block};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::{SyntaxTree, NodeId};
 use crate::types::*;
@@ -1240,6 +1240,16 @@ impl Ir {
     pub fn is_global_env(&self, table_idx: TableIndex) -> bool {
         self.g_table_idx == Some(table_idx)
             || self.table(table_idx).class_name.as_deref() == Some("_G")
+    }
+
+    /// The global `_G.name` reads: the file's own global of that name, else the
+    /// workspace's or the stubs'. A file-level `local` of that name isn't one —
+    /// `local error = _G.error` reads the global, not the local it declares.
+    pub fn global_env_symbol(&self, name: &str) -> Option<SymbolIndex> {
+        let id = SymbolIdentifier::Name(name.to_string());
+        self.scopes[0].symbols.get(&id).copied()
+            .filter(|sym| !self.local_decl_symbols.contains(sym))
+            .or_else(|| self.ext.scope0_symbols.get(&id).copied())
     }
 
     /// Allocate the next creation_order value (monotonically increasing).
@@ -4129,6 +4139,23 @@ impl Ir {
     }
 }
 
+/// Whether a `local` statement or `local function` in `region` that ends
+/// before `before` declares `name`.
+fn declares_local_before(region: SyntaxNode, name: &str, before: crate::syntax::TextSize) -> bool {
+    use crate::ast::{FunctionDefinition, LocalAssign};
+    region.descendants()
+        .filter(|node| node.text_range().end() <= before)
+        .any(|node| {
+            if let Some(local) = LocalAssign::cast(node) {
+                local.name_list().is_some_and(|names| names.names().iter().any(|n| n == name))
+            } else if let Some(func) = FunctionDefinition::cast(node) {
+                func.is_local() && func.name().as_deref() == Some(name)
+            } else {
+                false
+            }
+        })
+}
+
 // ── Stored analysis output for LSP queries ───────────────────────────────────
 
 /// Stored analysis output for LSP queries. No lifetime — can be persisted in Document.
@@ -5016,8 +5043,38 @@ impl<'a> Analysis<'a> {
         class_has_field_impl(&self.ir, table_idx, field_name)
     }
 
-    pub(super) fn block_always_exits(block: &Block) -> bool {
-        AnalysisResult::block_always_exits(block)
+    /// [`AnalysisResult::block_always_exits`] for a block about to be lowered
+    /// (an `if` branch is checked before its body is) that runs in `scope`: a
+    /// call leaves it when every function the call may run is `@noreturn`.
+    pub(super) fn block_always_exits(&self, block: &Block, scope: ScopeIndex) -> bool {
+        self.block_always_exits_in(block, block.syntax(), scope)
+    }
+
+    /// [`Self::block_always_exits`] for a block inside `region`, the code not
+    /// lowered yet. `scope` doesn't hold the locals `region` declares, so a
+    /// call whose name one of them declares before it isn't taken to leave.
+    pub(super) fn block_always_exits_in(&self, block: &Block, region: SyntaxNode, scope: ScopeIndex) -> bool {
+        AnalysisResult::block_always_exits(block, &|call| {
+            self.call_never_returns(call, scope) && !call.identifier()
+                .and_then(|ident| ident.names().into_iter().next())
+                .is_none_or(|root| declares_local_before(region, &root, call.syntax().text_range().start()))
+        })
+    }
+
+    /// [`Self::block_always_exits`] for a block already lowered: each call is
+    /// looked up in the scope it runs in.
+    pub(super) fn lowered_block_always_exits(&self, block: &Block) -> bool {
+        AnalysisResult::block_always_exits(block, &|call| {
+            self.ir.scope_at_offset(call.syntax().text_range().start())
+                .is_some_and(|scope| self.call_never_returns(call, scope))
+        })
+    }
+
+    /// Whether every function `call`, looked up from `scope`, may run is
+    /// `@noreturn` (and it runs one).
+    fn call_never_returns(&self, call: &crate::ast::FunctionCall, scope: ScopeIndex) -> bool {
+        let callees = self.callees(call, scope);
+        !callees.is_empty() && callees.iter().all(|&func| self.func(func).noreturn)
     }
 
     pub fn dump(&self) {

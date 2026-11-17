@@ -1023,6 +1023,8 @@ pub struct AnnotationBlock {
     /// Shown in hover and appended to the `deprecated` diagnostic message.
     pub deprecated_message: Option<String>,
     pub nodiscard: bool,
+    /// `@noreturn`: the function never returns to its caller (it always errors).
+    pub noreturn: bool,
     pub constructor: bool,
     pub constructor_methods: Vec<String>,
     pub visibility: Visibility,
@@ -2376,6 +2378,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if content.starts_with("@nodiscard") {
             block.nodiscard = true;
+        } else if content.starts_with("@noreturn") {
+            block.noreturn = true;
         } else if let Some(rest) = content.strip_prefix("@constructor") {
             let rest = rest.trim();
             if rest.is_empty() {

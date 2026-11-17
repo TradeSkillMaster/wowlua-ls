@@ -693,13 +693,13 @@ impl<'a> Analysis<'a> {
         let branches = if_chain.if_branches();
         let chain_end = node_range(if_chain.syntax()).1;
         let chain_start = self.field_writes_recorded;
-        // Pre-compute whether the else block always exits (calls error() or
-        // returns). Conditions in a chain with a defensive exit-else are
+        // Pre-compute whether the else block always exits (returns or calls a
+        // `@noreturn` function like `error`). Conditions in a chain with a defensive exit-else are
         // suppressed from `redundant-condition` when they evaluate as
         // always-true — this is the exhaustive type-check guard pattern.
         let exit_else = ExitElse::from_has_exit(if_chain.else_branch()
             .and_then(|eb| eb.block())
-            .is_some_and(|b| Self::block_always_exits(&b)));
+            .is_some_and(|b| self.block_always_exits(&b, scope_idx)));
         let mut branch_scopes: Vec<ScopeIndex> = Vec::new();
         let mut exiting_scopes: Vec<ScopeIndex> = Vec::new();
         if let Some(sym) = self.nil_defaulted_symbol(if_chain, scope_idx) {
@@ -716,7 +716,7 @@ impl<'a> Analysis<'a> {
             if let Some(inner_block) = branch.block() {
                 let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                 branch_scopes.push(new_scope_idx);
-                if Self::block_always_exits(&inner_block) {
+                if self.block_always_exits(&inner_block, scope_idx) {
                     exiting_scopes.push(new_scope_idx);
                 }
                 // elseif branches: apply inverse narrowing from ALL preceding
@@ -756,7 +756,7 @@ impl<'a> Analysis<'a> {
             && let Some(inner_block) = else_branch.block() {
                 let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                 branch_scopes.push(new_scope_idx);
-                if Self::block_always_exits(&inner_block) {
+                if self.block_always_exits(&inner_block, scope_idx) {
                     exiting_scopes.push(new_scope_idx);
                 }
                 // Apply inverse narrowing from ALL branches' conditions
@@ -780,7 +780,7 @@ impl<'a> Analysis<'a> {
         // false for the code after the chain (applied by
         // `process_pending_exit_narrowings`).
         let exiting_prefix_len = branches.iter()
-            .take_while(|b| b.block().is_some_and(|blk| Self::block_always_exits(&blk)))
+            .take_while(|b| b.block().is_some_and(|blk| self.block_always_exits(&blk, scope_idx)))
             .count();
         let first_branch_exits = exiting_prefix_len > 0;
         let ensure_initialized = branches.len() == 1 && !has_else;
@@ -804,17 +804,17 @@ impl<'a> Analysis<'a> {
         if has_else {
             // Check which branches always exit (including else)
             let else_exits = if_chain.else_branch().is_some_and(|eb| {
-                eb.block().is_some_and(|b| Self::block_always_exits(&b))
+                eb.block().is_some_and(|b| self.block_always_exits(&b, scope_idx))
             });
             let any_exit = else_exits || branches.iter().any(|b| {
-                b.block().is_some_and(|blk| Self::block_always_exits(&blk))
+                b.block().is_some_and(|blk| self.block_always_exits(&blk, scope_idx))
             });
             if any_exit {
                 // Filter to only non-exiting branches
                 let non_exiting: Vec<ScopeIndex> = branch_scopes.iter().enumerate()
                     .filter(|(i, _)| {
                         if *i < branches.len() {
-                            branches[*i].block().is_none_or(|b| !Self::block_always_exits(&b))
+                            branches[*i].block().is_none_or(|b| !self.block_always_exits(&b, scope_idx))
                         } else {
                             // Else branch (last element when has_else)
                             !else_exits
@@ -859,7 +859,7 @@ impl<'a> Analysis<'a> {
                 Self::extract_nil_guard_symbols(&cond, &mut guard_candidates, &self.ir, scope_idx);
                 if let Some(inner_block) = branches[0].block() {
                     for (sym_idx, strip_falsy, var_name) in guard_candidates {
-                        if Self::block_ensures_assigned_or_exits(&inner_block, &var_name) {
+                        if self.block_ensures_assigned_or_exits(&inner_block, &var_name, scope_idx) {
                             implicit_else_strip_nil.push((sym_idx, strip_falsy));
                         }
                     }
@@ -3506,7 +3506,7 @@ impl<'a> Analysis<'a> {
                 // an implicit nil return at every slot. Union it into
                 // the inferred type when there are no `@return`
                 // annotations.
-                if !Self::block_always_exits(&popped_block) {
+                if !self.lowered_block_always_exits(&popped_block) {
                     self.ir.functions[fid.val()].implicit_nil_return = true;
                 }
                 self.expand_tail_call_returns(fid);
@@ -3684,6 +3684,7 @@ impl<'a> Analysis<'a> {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations: Vec::new(),
@@ -4195,6 +4196,9 @@ impl<'a> Analysis<'a> {
         }
         if annotations.nodiscard {
             self.ir.functions[func_idx.val()].nodiscard = true;
+        }
+        if annotations.noreturn {
+            self.ir.functions[func_idx.val()].noreturn = true;
         }
         if annotations.flavor_guard != 0 {
             self.ir.functions[func_idx.val()].flavor_guard |= annotations.flavor_guard;

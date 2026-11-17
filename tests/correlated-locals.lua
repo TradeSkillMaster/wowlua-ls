@@ -1,4 +1,9 @@
 ---@diagnostic disable: undefined-global, unused-local
+
+-- No stubs here: this stands in for the stub's `error`, which is `@noreturn`.
+---@noreturn
+local function error(...) end
+
 local function _consume(...) end
 
 ---@param n number

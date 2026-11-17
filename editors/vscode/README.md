@@ -43,7 +43,7 @@ LuaLS-compatible `---@` annotations:
 
 Plus WoW-specific extensions:
 
-`@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@correlated` `@flavor-narrows` `@constructor` `@accessor`
+`@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@correlated` `@flavor-narrows` `@constructor` `@accessor` `@noreturn`
 
 ## Documentation
 

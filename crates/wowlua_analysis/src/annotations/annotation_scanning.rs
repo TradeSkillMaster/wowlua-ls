@@ -364,6 +364,8 @@ pub struct ExternalGlobal {
     #[serde(skip)]
     pub deprecated_message: Option<String>,
     pub nodiscard: bool,
+    /// `@noreturn`: calls to the function never return.
+    pub noreturn: bool,
     pub constructor: bool,
     pub visibility: Visibility,
     pub generics: Vec<(String, Option<String>)>,
@@ -582,6 +584,7 @@ impl ExternalGlobal {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             constructor: false,
             visibility: Visibility::Public,
             generics: Vec::new(),
@@ -1678,7 +1681,7 @@ pub fn scan_method_funcall_self_fields(
                 },
             ),
             params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
-            overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false,
+            overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false, noreturn: false,
             constructor: false, visibility: vis,
             generics: Vec::new(), defclass: None, defclass_parent: None,
             source_path: source_path.clone(),

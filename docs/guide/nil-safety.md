@@ -61,7 +61,26 @@ function processPlayer(player)
 end
 ```
 
-All early-exit forms work: `return`, `return value`, `error()`, `break` (in loops).
+All early-exit forms work: `return`, `return value`, `error()`, `break` (in loops), and calls to your own functions tagged `@noreturn`.
+
+A function whose only job is to raise an error doesn't narrow anything on its own, because the language server doesn't know it never returns. Tag it `@noreturn` to make a call to it end its block like `error()` does:
+
+```lua
+---@param msg string
+---@noreturn
+local function Fail(msg)
+    error("MyAddon: " .. msg, 2)
+end
+
+---@param player Player?
+---@return string
+function getPlayerName(player)
+    if not player then Fail("no player") end
+    return player.name -- narrowed; no missing-return either
+end
+```
+
+For the narrowing, a file-local helper like `Fail` (a `local function`, or a function on a `local` table) has to be defined above the code that calls it. Globals, addon-namespace functions, and class methods narrow wherever they're defined. `missing-return` recognizes the call either way.
 
 ### `assert()`
 

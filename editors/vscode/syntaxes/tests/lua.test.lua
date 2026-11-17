@@ -273,6 +273,10 @@ goto myLabel
 ---@nodiscard
 -- ^^^^^^^^^^ storage.type.annotation.lua
 
+-- Annotation: @noreturn
+---@noreturn
+-- ^^^^^^^^^ storage.type.annotation.lua
+
 -- Annotation: @meta
 ---@meta
 -- ^^^^^ storage.type.annotation.lua

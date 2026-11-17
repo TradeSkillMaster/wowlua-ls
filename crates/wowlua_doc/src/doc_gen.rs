@@ -584,6 +584,7 @@ mod tests {
             deprecated: false,
             deprecated_message: None,
             nodiscard: false,
+            noreturn: false,
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations: Vec::new(),

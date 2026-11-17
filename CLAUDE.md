@@ -199,6 +199,7 @@ These annotation-syntax and `ValueType` features are conventions — load-bearin
 - `@generates-events N [Field]` — synthesized event enum table on a class (never hard-code the method/field). [→](.claude/ARCHITECTURE.md#generates-events-n-field-synthesized-event-enum-table-on-a-class)
 - `@callback-event-arg N` — callback-registry event-name validation/completion (pairs with `@generates-events`). [→](.claude/ARCHITECTURE.md#callback-event-arg-n-callback-registry-event-name-validationcompletion)
 - `@returns-enum` — a string-literal call returns the table its constructor would (`EnumUtil.MakeEnum`; never hard-code the name). [→](.claude/ARCHITECTURE.md#returns-enum-enum-table-built-from-a-calls-string-literal-arguments)
+- `@noreturn` — a call to the function ends its block like `return` (`error` via its stub override; never match a function name in the exit check). [→](.claude/ARCHITECTURE.md#noreturn-calls-that-never-come-back)
 - `@requires T: Constraint` — method availability gating (`param-constraint-mismatch`). [→](.claude/ARCHITECTURE.md#requires-t-constraint-method-availability-gating)
 - Mixin-object params accept the data type; methods-typed params are strict (replaces the former `@shape`). [→](.claude/ARCHITECTURE.md#mixin-object-params-accept-the-data-type-methods-typed-params-are-strict)
 - `@return self<X>` — re-parameterized self return (`Function.returns_self_type_args`). [→](.claude/ARCHITECTURE.md#return-selfx-re-parameterized-self-return)
