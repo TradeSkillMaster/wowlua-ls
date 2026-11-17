@@ -1,0 +1,4 @@
+---@class CorrPair
+---@field top integer?
+---@field bottom integer?
+---@correlated top, bottom

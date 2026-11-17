@@ -93,7 +93,19 @@ pub fn register_classes_and_aliases(
 ) -> HashSet<String> {
     // Register class names (table indices use EXT_BASE)
     for class in class_decls {
-        if skip_existing && reg.classes.contains_key(&class.name) { continue; }
+        if skip_existing && let Some(&prev) = reg.classes.get(&class.name) {
+            // The first declaration keeps the table, but a later one's
+            // `@correlated` groups still apply to it (written only on a real
+            // change: the table may be a shared stub entry).
+            let prev_groups = &reg.tables[prev.val() - EXT_BASE].correlated_groups;
+            let added: Vec<Vec<String>> = class.correlated_groups.iter()
+                .filter(|g| !prev_groups.contains(g))
+                .cloned().collect();
+            if !added.is_empty() {
+                reg.tables[prev.val() - EXT_BASE].correlated_groups.extend(added);
+            }
+            continue;
+        }
         let table_idx = TableIndex(EXT_BASE + reg.tables.len());
         let accessors = class.accessors.iter().cloned().collect();
         // A later declaration of the same class replaces the table; keep the
@@ -106,6 +118,15 @@ pub fn register_classes_and_aliases(
                 secret_when.push(predicate.clone());
             }
         }
+        // Likewise its `@correlated` field groups.
+        let mut correlated_groups = reg.classes.get(&class.name)
+            .map(|&prev| reg.tables[prev.val() - EXT_BASE].correlated_groups.clone())
+            .unwrap_or_default();
+        for group in &class.correlated_groups {
+            if !correlated_groups.contains(group) {
+                correlated_groups.push(group.clone());
+            }
+        }
         reg.tables.push(TableInfo {
             class_name: Some(class.name.clone()),
             class_type_params: class.type_params.clone(),
@@ -115,6 +136,7 @@ pub fn register_classes_and_aliases(
             constructors: class.constructor_methods.iter().cloned().collect(),
             enum_kind: class.initial_enum_kind(),
             is_key_enum: class.is_key_enum,
+            correlated_groups,
             see: class.see.clone(),
             secret_when,
             ..Default::default()

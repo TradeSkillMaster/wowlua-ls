@@ -2857,7 +2857,18 @@ impl<'a> Analysis<'a> {
             self.resolve_field_chain_table(root_name, &chain[..chain.len() - 1], scope_idx)
         };
         let Some(table_idx) = table_idx else { return };
-        let groups = self.ir.table(table_idx).correlated_groups.clone();
+        // The class's own groups and its ancestors' (`parent_classes` is the
+        // flattened chain), so a subclass declared in another file than its
+        // parent gets them too.
+        let table = self.ir.table(table_idx);
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        for idx in std::iter::once(table_idx).chain(table.parent_classes.iter().copied()) {
+            for group in &self.ir.table(idx).correlated_groups {
+                if !groups.contains(group) {
+                    groups.push(group.clone());
+                }
+            }
+        }
         if groups.is_empty() { return; }
         for group in &groups {
             if !group.iter().any(|f| f == narrowed_field) { continue; }

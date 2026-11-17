@@ -133,6 +133,16 @@ impl<'a> Analysis<'a> {
                     constructors.insert(ctor.clone());
                 }
             }
+            // The `@correlated` groups other declarations of the class gave it
+            // apply here too.
+            let mut correlated_groups = class.correlated_groups.clone();
+            if let Some(&prev_idx) = self.ir.classes.get(&class.name) {
+                for group in &self.ir.table(prev_idx).correlated_groups {
+                    if !correlated_groups.contains(group) {
+                        correlated_groups.push(group.clone());
+                    }
+                }
+            }
             self.ir.tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
@@ -142,7 +152,7 @@ impl<'a> Analysis<'a> {
                 constructors,
                 enum_kind: class.initial_enum_kind(),
                 is_key_enum: class.is_key_enum,
-                correlated_groups: class.correlated_groups.clone(),
+                correlated_groups,
                 see: class.see.clone(),
                 secret_when: class.secret_when.clone(),
                 ..Default::default()

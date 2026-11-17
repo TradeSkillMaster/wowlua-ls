@@ -2883,6 +2883,20 @@ fn crossfile_deep_chain() {
     });
 }
 
+// `@correlated` field groups narrow a class's fields in files other than the
+// one declaring it: on its subclasses, with the groups of every declaration,
+// and in a file that declares the class again.
+#[test]
+fn correlated_fields_crossfile() {
+    for lua_file in ["user.lua", "redeclare.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file: &format!("tests/correlated-fields-crossfile/{lua_file}"),
+            with_stubs: false,
+            scan_dir: Some("tests/correlated-fields-crossfile"),
+        });
+    }
+}
+
 // Fields written through a nested path under a `@class` global
 // (`Root.Config.scale = 2`) reach other files, on both the cold and the
 // stub-based workspace build.
