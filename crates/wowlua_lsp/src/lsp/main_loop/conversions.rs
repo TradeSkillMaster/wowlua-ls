@@ -1,13 +1,5 @@
 use super::*;
 
-/// URI → path, but only for files inside the workspace. In a multi-folder
-/// workspace a file may live under any root (e.g. an attached project), so the
-/// path is accepted if it is under **any** of `workspace_roots`.
-pub(super) fn uri_to_path(uri: &lsp_types::Uri, workspace_roots: &[PathBuf]) -> Option<PathBuf> {
-    let path = uri_to_abs_path(uri)?;
-    workspace_roots.iter().any(|root| path.starts_with(root)).then_some(path)
-}
-
 pub(super) fn defnode_to_range(def: crate::types::DefNode, numbers: &crate::lsp::SafeLinePositions) -> Range {
     numbers.lsp_range(def.start as usize, def.end as usize, use_utf8())
 }
@@ -50,8 +42,8 @@ pub(super) fn entry_to_document_symbol(
     }
 }
 
-/// Permissive URI → path conversion (unlike `uri_to_path`, doesn't require the path
-/// to be inside the workspace root). Used for dedupe only.
+/// Permissive URI → path conversion: the path needn't be in the workspace (see
+/// `is_workspace_source`). Used for dedupe only.
 pub(super) fn uri_to_path_lax(uri: &lsp_types::Uri) -> Option<PathBuf> {
     uri_to_abs_path(uri)
 }

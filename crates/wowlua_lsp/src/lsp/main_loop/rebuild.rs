@@ -311,9 +311,8 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
 pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> RebuildScope {
     use crate::annotations::scan_defclass_calls;
 
-    let file_path = match uri_to_path(uri, &ws.roots) {
-        Some(p) => p,
-        None => return RebuildScope::None,
+    let Some(file_path) = uri_to_abs_path(uri).filter(|path| is_workspace_source(path, ws)) else {
+        return RebuildScope::None;
     };
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);

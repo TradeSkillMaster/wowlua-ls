@@ -281,14 +281,14 @@ struct WorkspaceState {
     /// Paths of open documents edited since their declarations were last
     /// reconciled into the `ws_file_*` scan maps. Set on `didChange`; cleared
     /// wherever the sequential path *finalizes* the doc — the top of the Phase-4
-    /// per-doc loop (covers the normal-Lua, TOC, `@meta`/stub, ignored, and
-    /// out-of-root branches, several of which skip `maybe_rebuild_workspace`
+    /// per-doc loop (covers the normal-Lua, TOC, stub, ignored, and
+    /// non-workspace branches, several of which skip `maybe_rebuild_workspace`
     /// entirely) and `didOpen` — and removed on `didClose`. The parallel batch
     /// fast-path (`try_batch_analyze`) bails when any dirty doc is in this set,
     /// routing the whole set to the sequential path that runs the full rebuild
     /// check. Clearing must NOT live only inside `maybe_rebuild_workspace`: it
-    /// early-returns for out-of-root files and is skipped for TOC/`@meta`/stub/
-    /// ignored docs, so an entry for such a file would leak and permanently force
+    /// early-returns for files the workspace doesn't read and is skipped for
+    /// TOC/stub/ignored docs, so an entry for such a file would leak and permanently force
     /// it off the batch fast-path once a later rebuild re-dirties it.
     /// `pending_text.is_some()` alone is NOT a reliable "was edited" signal: the
     /// Phase 2 interactive re-analysis (completion/signatureHelp, which IntelliJ
@@ -539,8 +539,8 @@ fn resolve_workspace_roots(
 }
 
 /// Drop any root nested inside another root. The ancestor's recursive scan
-/// already covers the nested subtree, and `uri_to_path` still matches a nested
-/// file against the retained ancestor — so pruning avoids walking (and re-running
+/// already covers the nested subtree, and `is_workspace_source` still finds a nested
+/// file under the retained ancestor — so pruning avoids walking (and re-running
 /// the non-idempotent `configs.try_load`/`try_load_toc` on) the overlapping
 /// subtree twice. Order of the surviving roots is preserved.
 fn prune_nested_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -1488,8 +1488,8 @@ fn main_loop(
                     // Every branch below finalizes this dirty doc (re-inserts it
                     // clean), so it no longer needs the sequential rebuild path — clear
                     // its edited flag HERE, not inside `maybe_rebuild_workspace`, which
-                    // some of those branches skip (TOC / @meta / stub / ignored) and
-                    // which early-returns for out-of-root files. Clearing only there
+                    // some of those branches skip (TOC / stub / ignored) and which
+                    // early-returns for files the workspace doesn't read. Clearing only there
                     // would leak the entry and permanently force such docs off the
                     // batch-warm fast-path for the rest of the session.
                     let was_edited = !file_path.as_os_str().is_empty() && ws.edited_uris.remove(&file_path);
@@ -1522,9 +1522,12 @@ fn main_loop(
                             doc.tree.unwrap_or_else(|| parse_lua(&text))
                         };
 
-                        // Skip workspace rebuild for stub / @meta files
-                        let rebuild_scope = if is_stub_path(&uri)
-                            || doc.analysis.as_ref().is_some_and(|a| a.is_meta()) {
+                        // A stub has nothing to rescan. A `@meta` file the workspace
+                        // reads is rescanned like any other source — what it declares
+                        // is what other files read — and a file the workspace doesn't
+                        // read (a stub not recognized by path among them) rescans
+                        // nothing (`update_file_scan`).
+                        let rebuild_scope = if is_stub_path(&uri) {
                             RebuildScope::None
                         } else {
                             let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -1994,7 +1997,7 @@ mod tests {
         );
 
         // A folder nested inside the rootUri ancestor is pruned — the ancestor's
-        // scan covers it and uri_to_path still matches its files. Prevents walking
+        // scan covers it and is_workspace_source still accepts its files. Prevents walking
         // the overlapping subtree (and re-running configs.try_load) twice.
         let nested = vec![folder("/tmp/Root/Sub")];
         assert_eq!(
@@ -2012,21 +2015,44 @@ mod tests {
         assert!(resolve_workspace_roots(None, None).is_empty());
     }
 
-    // A file under any workspace root must resolve, so the incremental rebuild
-    // (`maybe_rebuild_workspace`) fires for edits in an attached second folder.
+    // A file under any workspace root is a workspace source, so the incremental
+    // rebuild (`maybe_rebuild_workspace`) fires for edits in an attached second
+    // folder. Outside every root, only a file the scan read is.
     #[test]
-    fn uri_to_path_accepts_any_workspace_root() {
-        let roots = vec![PathBuf::from("/tmp/FirstAddon"), PathBuf::from("/tmp/SecondAddon")];
-        let in_second = abs_path_to_uri(&PathBuf::from("/tmp/SecondAddon/Config/config.lua")).unwrap();
-        assert_eq!(
-            uri_to_path(&in_second, &roots),
-            Some(PathBuf::from("/tmp/SecondAddon/Config/config.lua")),
-        );
-        // Outside every root -> rejected.
-        let outside = abs_path_to_uri(&PathBuf::from("/tmp/Elsewhere/x.lua")).unwrap();
-        assert_eq!(uri_to_path(&outside, &roots), None);
-        // No roots -> nothing resolves.
-        assert_eq!(uri_to_path(&in_second, &[]), None);
+    fn workspace_source_under_any_root_or_scanned() {
+        let mut ws = WorkspaceState::for_test(None);
+        ws.roots = vec![PathBuf::from("/tmp/FirstAddon"), PathBuf::from("/tmp/SecondAddon")];
+        let in_second = Path::new("/tmp/SecondAddon/Config/config.lua");
+        assert!(is_workspace_source(in_second, &ws));
+        // Outside every root -> rejected, unless the scan read it.
+        let outside = Path::new("/tmp/Elsewhere/x.lua");
+        assert!(!is_workspace_source(outside, &ws));
+        ws.ws_file_globals.insert(outside.to_path_buf(), Vec::new());
+        assert!(is_workspace_source(outside, &ws));
+        // No roots -> nothing unscanned is.
+        ws.roots.clear();
+        assert!(!is_workspace_source(in_second, &ws));
+    }
+
+    // The scan also walks `library` folders outside the roots, so a file created
+    // in one since is a workspace source too; an ignored file under a root isn't.
+    #[test]
+    fn workspace_source_in_library_outside_root_but_not_ignored() {
+        let dir = std::env::temp_dir().join(format!("wowlua_ws_source_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let addon = dir.join("Addon");
+        std::fs::create_dir_all(&addon).unwrap();
+        std::fs::create_dir_all(dir.join("Types")).unwrap();
+        std::fs::write(addon.join(".wowluarc.json"), r#"{ "library": ["../Types"], "ignore": ["Build"] }"#).unwrap();
+        let mut ws = WorkspaceState::for_test(Some(addon.clone()));
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
+
+        assert!(is_workspace_source(&addon.join("New.lua"), &ws));
+        assert!(is_workspace_source(&dir.join("Types").join("New.lua"), &ws));
+        assert!(!is_workspace_source(&dir.join("Elsewhere").join("New.lua"), &ws));
+        assert!(!is_workspace_source(&addon.join("Build").join("New.lua"), &ws));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Regression: refresh requests must *merge* into one owed set, not overwrite.
@@ -3824,8 +3850,8 @@ mod tests {
 
         // The flag is cleared wherever the sequential path finalizes the doc (the
         // Phase-4 per-doc loop / didOpen) and removed on didClose — NOT only inside
-        // maybe_rebuild_workspace (which is skipped for TOC/@meta/stub/ignored/
-        // out-of-root docs, so clearing there alone would leak the entry). Simulate
+        // maybe_rebuild_workspace (which is skipped for TOC/stub/ignored docs and
+        // ones the workspace doesn't read, so clearing there alone would leak the entry). Simulate
         // that reconciliation; the now-unmodified file must batch again — proving the
         // guard is transient, not a permanent poison.
         ws.edited_uris.remove(&paths[1]);
@@ -4507,6 +4533,339 @@ mod tests {
         let (before, after) = driver.join().unwrap();
         assert!(before.contains("label: number"), "{before}");
         assert!(after.contains("label: string"), "{after}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const META_SAVED: &str = "---@meta\n\n---@class MetaThing\n---@field a number\n";
+    const META_READER: &str = "---@type MetaThing\nlocal t\nlocal b = t.b\n";
+
+    /// Where a `@meta` declaration file sits relative to the workspace an addon
+    /// reads it from.
+    #[derive(Clone, Copy, Debug)]
+    enum MetaPlacement {
+        /// At the root of a workspace holding several addon folders.
+        RepoRoot,
+        /// Inside the addon folder that is the workspace.
+        AddonFolder,
+        /// A sibling of the addon folder that is the workspace, reached through
+        /// `library: ["../Types"]`.
+        LibraryOutsideRoot,
+        /// A sibling of the addon folder that is the workspace, which the
+        /// workspace doesn't read.
+        OutsideWorkspace,
+        /// At the root of a workspace holding several addon folders, created after
+        /// the workspace scan: [`meta_workspace`] leaves writing it to the caller.
+        NewInRepoRoot,
+    }
+
+    /// A scanned workspace of `meta.lua` (saved as [`META_SAVED`]), declaring
+    /// `MetaThing`, and `Addon/reader.lua` (as [`META_READER`]), which reads its `b`
+    /// field. Returns the temp dir, the meta file's and reader's URIs, and the
+    /// workspace.
+    fn meta_workspace(tag: &str, placement: MetaPlacement) -> (PathBuf, lsp_types::Uri, lsp_types::Uri, WorkspaceState) {
+        let dir = std::env::temp_dir().join(format!("wowlua_meta_edit_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let addon = dir.join("Addon");
+        std::fs::create_dir_all(&addon).unwrap();
+        std::fs::write(addon.join("reader.lua"), META_READER).unwrap();
+        let (root, meta) = match placement {
+            MetaPlacement::RepoRoot | MetaPlacement::NewInRepoRoot => (dir.clone(), dir.join("meta.lua")),
+            MetaPlacement::AddonFolder => (addon.clone(), addon.join("meta.lua")),
+            MetaPlacement::LibraryOutsideRoot => {
+                std::fs::write(addon.join(".wowluarc.json"), r#"{ "library": ["../Types"] }"#).unwrap();
+                std::fs::create_dir_all(dir.join("Types")).unwrap();
+                (addon.clone(), dir.join("Types").join("meta.lua"))
+            }
+            MetaPlacement::OutsideWorkspace => {
+                std::fs::create_dir_all(dir.join("Elsewhere")).unwrap();
+                (addon.clone(), dir.join("Elsewhere").join("meta.lua"))
+            }
+        };
+        if !matches!(placement, MetaPlacement::NewInRepoRoot) {
+            std::fs::write(&meta, META_SAVED).unwrap();
+        }
+        let mut ws = WorkspaceState::for_test(Some(root));
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
+        let scanned = !matches!(placement, MetaPlacement::OutsideWorkspace | MetaPlacement::NewInRepoRoot);
+        assert_eq!(ws.ws_file_globals.contains_key(&meta), scanned, "test setup: whether the scan reads {}", meta.display());
+        let meta_uri = abs_path_to_uri(&meta).unwrap();
+        let reader_uri = abs_path_to_uri(&addon.join("reader.lua")).unwrap();
+        (dir, meta_uri, reader_uri, ws)
+    }
+
+    /// [`META_SAVED`] with the `b` field the reader reads.
+    fn meta_edited() -> String {
+        format!("{META_SAVED}---@field b string\n")
+    }
+
+    /// How the editor brings the edited text into the `@meta` file.
+    #[derive(Clone, Copy, Debug)]
+    enum MetaEdit {
+        /// Opens it saved, waits for its analysis, then edits it.
+        AfterAnalysis,
+        /// Opens it saved and edits it at once, before a background analysis of
+        /// it could land.
+        AsItOpens,
+        /// Opens it saved, edits it, then saves and closes it.
+        SaveAndClose,
+        /// Opens it with the edit already in its buffer: unsaved (IntelliJ
+        /// reopening a closed tab's edits), or saved since the workspace scan.
+        OpenEdited,
+    }
+
+    /// The hover a [`hover_after_meta_edit`] run waits for.
+    struct HoverProbe {
+        uri: lsp_types::Uri,
+        line: u32,
+        character: u32,
+        expect: &'static str,
+    }
+
+    /// Drives the real main loop: brings `edited` into the `@meta` file at
+    /// `meta_uri` as `how` says, opens `reader_uri` (as [`META_READER`]), and returns
+    /// the hover `probe` names once it contains the text it expects, or what it is
+    /// at a timeout.
+    fn hover_after_meta_edit(
+        ws: WorkspaceState,
+        meta_uri: lsp_types::Uri,
+        reader_uri: lsp_types::Uri,
+        how: MetaEdit,
+        edited: String,
+        probe: HoverProbe,
+    ) -> String {
+        let (server, client) = Connection::memory();
+        let driver = std::thread::spawn(move || {
+            let next_id = std::cell::Cell::new(0);
+            let request = |method: &str, params: serde_json::Value| {
+                next_id.set(next_id.get() + 1);
+                let id = RequestId::from(next_id.get());
+                client.sender.send(Message::Request(Request::new(id.clone(), method.to_string(), params))).unwrap();
+                loop {
+                    match client.receiver.recv_timeout(Duration::from_secs(30)).expect("server response") {
+                        Message::Response(r) if r.id == id => return r.result.unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            };
+            let notify = |method: &str, params: serde_json::Value| {
+                client.sender.send(Message::Notification(Notification::new(method.to_string(), params))).unwrap();
+            };
+            let open = |uri: &lsp_types::Uri, text: &str| notify("textDocument/didOpen", serde_json::json!({
+                "textDocument": { "uri": uri, "languageId": "lua", "version": 1, "text": text },
+            }));
+            let edit = || notify("textDocument/didChange", serde_json::json!({
+                "textDocument": { "uri": meta_uri, "version": 2 },
+                "contentChanges": [{ "text": edited }],
+            }));
+            let hover = |uri: &lsp_types::Uri, line: u32, character: u32| request("textDocument/hover", serde_json::json!({
+                "textDocument": { "uri": uri }, "position": { "line": line, "character": character },
+            }))["contents"]["value"].as_str().unwrap_or_default().to_string();
+            let poll = |done: &dyn Fn(&str) -> bool, get: &dyn Fn() -> String| {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut got = get();
+                while !done(&got) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                    got = get();
+                }
+                got
+            };
+            match how {
+                MetaEdit::AfterAnalysis => {
+                    open(&meta_uri, META_SAVED);
+                    // `MetaThing` in `---@class MetaThing` hovers once the analysis landed.
+                    let landed = poll(&|h| h.contains("MetaThing"), &|| hover(&meta_uri, 2, 12));
+                    assert!(landed.contains("MetaThing"), "the @meta file's analysis lands: {landed:?}");
+                    edit();
+                }
+                MetaEdit::AsItOpens => {
+                    open(&meta_uri, META_SAVED);
+                    edit();
+                }
+                MetaEdit::SaveAndClose => {
+                    open(&meta_uri, META_SAVED);
+                    edit();
+                    std::fs::write(uri_to_abs_path(&meta_uri).unwrap(), &edited).unwrap();
+                    notify("textDocument/didClose", serde_json::json!({ "textDocument": { "uri": meta_uri } }));
+                }
+                MetaEdit::OpenEdited => open(&meta_uri, &edited),
+            }
+            open(&reader_uri, META_READER);
+            let got = poll(&|h| h.contains(probe.expect), &|| hover(&probe.uri, probe.line, probe.character));
+            request("shutdown", serde_json::Value::Null);
+            got
+        });
+        main_loop(server, ws, ClientSupport::default()).unwrap();
+        driver.join().unwrap()
+    }
+
+    /// [`hover_after_meta_edit`] of [`meta_edited`], returning the reader's hover
+    /// over `local b` once it shows `b: string`.
+    fn reader_b_after_meta_edit(ws: WorkspaceState, meta_uri: lsp_types::Uri, reader_uri: lsp_types::Uri, how: MetaEdit) -> String {
+        let probe = HoverProbe { uri: reader_uri.clone(), line: 2, character: 6, expect: "b: string" };
+        hover_after_meta_edit(ws, meta_uri, reader_uri, how, meta_edited(), probe)
+    }
+
+    /// Editing a `@meta` declaration file reaches the files that read what it
+    /// declares, wherever the file lives: at the root of a multi-addon repo, in the
+    /// addon, or in a `library` folder outside the workspace. Phase 4 used to skip
+    /// the workspace rebuild for every `@meta` document (a guard meant for the
+    /// built-in stubs go-to-definition opens), and the per-file rescan dropped files
+    /// outside the workspace roots, so the change waited for a restart.
+    #[test]
+    fn meta_file_edit_reaches_other_files() {
+        for placement in [MetaPlacement::RepoRoot, MetaPlacement::AddonFolder, MetaPlacement::LibraryOutsideRoot] {
+            let (dir, meta_uri, reader_uri, ws) = meta_workspace(&format!("{placement:?}"), placement);
+            let after = reader_b_after_meta_edit(ws, meta_uri, reader_uri, MetaEdit::AfterAnalysis);
+            assert!(after.contains("b: string"), "{placement:?}: {after}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Without the edit, the reader doesn't see `b` — the control for the tests
+    /// around it.
+    #[test]
+    fn meta_file_unedited_declares_no_b() {
+        let (dir, _, reader_uri, ws) = meta_workspace("unedited", MetaPlacement::RepoRoot);
+        let tree = parse_lua(META_READER);
+        let result = analyze_lua_parsed(&reader_uri, &ws.pre_globals, &ws.configs, &tree);
+        let offset = META_READER.find("local b").unwrap() + "local ".len();
+        let hover = result.hover_at(&tree, offset as u32).map(|h| h.type_str);
+        assert!(!hover.as_deref().unwrap_or_default().contains("b: string"), "{hover:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An edit typed the moment a `@meta` file the workspace doesn't read opens,
+    /// before its background analysis lands, is kept: didChange used to drop it,
+    /// leaving the document's text stale for every later incremental edit.
+    #[test]
+    fn meta_file_edit_before_analysis_lands_is_kept() {
+        let (dir, meta_uri, reader_uri, ws) = meta_workspace("as_it_opens", MetaPlacement::OutsideWorkspace);
+        let renamed = META_SAVED.replace("MetaThing", "Renamed");
+        let probe = HoverProbe { uri: meta_uri.clone(), line: 2, character: 12, expect: "Renamed" };
+        let hover = hover_after_meta_edit(ws, meta_uri, reader_uri, MetaEdit::AsItOpens, renamed, probe);
+        assert!(hover.contains("Renamed"), "{hover}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `@meta` edit saved and closed stays in the workspace — the close takes the
+    /// file from disk, which holds the edit.
+    #[test]
+    fn meta_file_edit_survives_save_and_close() {
+        for placement in [MetaPlacement::RepoRoot, MetaPlacement::LibraryOutsideRoot] {
+            let (dir, meta_uri, reader_uri, ws) = meta_workspace(&format!("closed_{placement:?}"), placement);
+            let after = reader_b_after_meta_edit(ws, meta_uri, reader_uri, MetaEdit::SaveAndClose);
+            assert!(after.contains("b: string"), "{placement:?}: {after}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A `@meta` file opened with unsaved edits in its buffer reaches other files
+    /// with them, as a reopened ordinary file does.
+    #[test]
+    fn meta_file_reopened_with_unsaved_edits_reaches_other_files() {
+        for placement in [MetaPlacement::RepoRoot, MetaPlacement::LibraryOutsideRoot] {
+            let (dir, meta_uri, reader_uri, ws) = meta_workspace(&format!("reopened_{placement:?}"), placement);
+            let after = reader_b_after_meta_edit(ws, meta_uri, reader_uri, MetaEdit::OpenEdited);
+            assert!(after.contains("b: string"), "{placement:?}: {after}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A `@meta` file created since the workspace scan and opened before the
+    /// editor reports it on disk reaches other files, though its buffer is what's
+    /// saved.
+    #[test]
+    fn meta_file_created_after_scan_reaches_other_files() {
+        let (dir, meta_uri, reader_uri, ws) = meta_workspace("created", MetaPlacement::NewInRepoRoot);
+        std::fs::write(uri_to_abs_path(&meta_uri).unwrap(), meta_edited()).unwrap();
+        let after = reader_b_after_meta_edit(ws, meta_uri, reader_uri, MetaEdit::OpenEdited);
+        assert!(after.contains("b: string"), "{after}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Closing a `@meta` file the workspace reads refreshes its entry in the
+    /// workspace diagnostics, as closing any other source does. The warm reads
+    /// files from disk, so its entry can predate the save; didClose used to skip
+    /// every `@meta` file as if it were a stub, and the Problems panel showed the
+    /// old text's diagnostics until the next warm. Drives the real main loop as a
+    /// pull client.
+    #[test]
+    fn meta_file_close_refreshes_its_workspace_diagnostics() {
+        const SAVED: &str = "---@meta\n\n---@type OldMissing\nlocal x\n";
+        let edited = SAVED.replace("OldMissing", "NewMissing");
+        let dir = std::env::temp_dir().join(format!("wowlua_meta_close_diags_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = dir.join("meta.lua");
+        std::fs::write(&meta, SAVED).unwrap();
+        let mut ws = WorkspaceState::for_test(Some(dir.clone()));
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
+        let meta_uri = abs_path_to_uri(&meta).unwrap();
+        let (server, client) = Connection::memory();
+        let driver = std::thread::spawn(move || {
+            let next_id = std::cell::Cell::new(0);
+            let request = |method: &str, params: serde_json::Value| {
+                next_id.set(next_id.get() + 1);
+                let id = RequestId::from(next_id.get());
+                client.sender.send(Message::Request(Request::new(id.clone(), method.to_string(), params))).unwrap();
+                loop {
+                    match client.receiver.recv_timeout(Duration::from_secs(30)).expect("server response") {
+                        Message::Response(r) if r.id == id => return r.result.unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            };
+            let notify = |method: &str, params: serde_json::Value| {
+                client.sender.send(Message::Notification(Notification::new(method.to_string(), params))).unwrap();
+            };
+            let messages = |items: &serde_json::Value| items.as_array().map(|items| {
+                items.iter().map(|d| d["message"].as_str().unwrap_or_default().to_string()).collect::<Vec<_>>().join("\n")
+            });
+            // The closed file's entry in the workspace report, if listed.
+            let workspace_entry = || {
+                let report = request("workspace/diagnostic", serde_json::json!({ "previousResultIds": [] }));
+                report["items"].as_array().unwrap()
+                    .iter()
+                    .find(|r| r["uri"] == meta_uri.as_str())
+                    .and_then(|r| messages(&r["items"]))
+                    .unwrap_or_default()
+            };
+            let document_report = || messages(&request("textDocument/diagnostic", serde_json::json!({
+                "textDocument": { "uri": meta_uri },
+            }))["items"]).unwrap_or_default();
+            let wait_for = |get: &dyn Fn() -> String, expect: &str| {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut got = get();
+                while !got.contains(expect) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                    got = get();
+                }
+                got
+            };
+
+            let warmed = wait_for(&workspace_entry, "OldMissing");
+            assert!(warmed.contains("OldMissing"), "the warm reports the saved file: {warmed:?}");
+            notify("textDocument/didOpen", serde_json::json!({
+                "textDocument": { "uri": meta_uri, "languageId": "lua", "version": 1, "text": SAVED },
+            }));
+            notify("textDocument/didChange", serde_json::json!({
+                "textDocument": { "uri": meta_uri, "version": 2 },
+                "contentChanges": [{ "text": edited }],
+            }));
+            // Phase 4 took the edit, so the close finds nothing to reconcile.
+            let analyzed = wait_for(&document_report, "NewMissing");
+            assert!(analyzed.contains("NewMissing"), "Phase 4 analyzes the edit: {analyzed:?}");
+            std::fs::write(uri_to_abs_path(&meta_uri).unwrap(), &edited).unwrap();
+            notify("textDocument/didClose", serde_json::json!({ "textDocument": { "uri": meta_uri } }));
+            let closed = wait_for(&workspace_entry, "NewMissing");
+            request("shutdown", serde_json::Value::Null);
+            closed
+        });
+        let client_support = ClientSupport { diagnostic_refresh: true, ..ClientSupport::default() };
+        main_loop(server, ws, client_support).unwrap();
+        let closed = driver.join().unwrap();
+        assert!(closed.contains("NewMissing") && !closed.contains("OldMissing"), "the closed file's entry: {closed:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

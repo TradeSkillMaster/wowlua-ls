@@ -312,8 +312,8 @@ const SYNTHETIC_STUB_OPEN_SEQ: u64 = u64::MAX;
 /// Ensure a stub / `@meta` document opened via go-to-definition has its
 /// analysis ready before a query runs against it.
 ///
-/// Stub and `@meta` files are parsed + analyzed on a background thread (see the
-/// `didOpen` handler) so large generated files (e.g. the 2.4 MB
+/// Stubs, and `@meta` files the workspace doesn't read, are parsed + analyzed on a
+/// background thread (see the `didOpen` handler) so large generated files (e.g. the 2.4 MB
 /// `ClassicGlobals.lua`) don't block the main loop. A navigation/query request
 /// that arrives before that background work lands would see `analysis: None`
 /// and fall through `with_doc_at_position` to an empty result — surfacing as
@@ -1188,9 +1188,11 @@ pub(super) fn handle_notification(
         "textDocument/didChange" => {
             if let Ok(params) = cast_not::<notification::DidChangeTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
+                // A document whose background analysis (see didOpen) hasn't landed
+                // yet (`stub_open_seq != 0`) is Lua too: dropping an edit typed the
+                // moment it opened would apply the next incremental edit to stale text.
                 let is_lua = documents.get(&uri_str)
-                    .and_then(|d| d.analysis.as_ref())
-                    .is_some();
+                    .is_some_and(|d| d.analysis.is_some() || d.stub_open_seq != 0);
                 let is_toc = documents.get(&uri_str)
                     .and_then(|d| d.toc.as_ref())
                     .is_some();
@@ -1343,13 +1345,19 @@ pub(super) fn handle_notification(
                         documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         return;
                     }
-                    // Stub / @meta files: store text immediately (so the editor
-                    // can display the file) and parse + analyze on a background
-                    // thread so large generated files (e.g. ClassicGlobals.lua,
-                    // 2.4 MB) don't block the main loop. When the background
-                    // analysis completes, the result is drained at the top of
-                    // the loop and patched into the document.
-                    if is_stub_path(&uri) || text_has_meta(&text) {
+                    // Stubs, and `@meta` files the workspace doesn't read (a stub
+                    // not recognized by its path among them): store text
+                    // immediately (so the editor can display the file) and parse +
+                    // analyze on a background thread so large generated files
+                    // (e.g. ClassicGlobals.lua, 2.4 MB) don't block the main loop.
+                    // When the background analysis completes, the result is
+                    // drained at the top of the loop and patched into the
+                    // document. A `@meta` file the workspace reads is a source like
+                    // any other, and opens like one below.
+                    if is_stub_path(&uri)
+                        || (text_has_meta(&text)
+                            && !uri_to_abs_path(&uri).is_some_and(|path| is_workspace_source(&path, ws)))
+                    {
                         let uri_key = uri.to_string();
                         let seq = bg.stub_open_counter.fetch_add(1, Ordering::Relaxed) + 1;
                         documents.insert(uri_key.clone(), Document { text: text.clone(), pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: seq });
@@ -1508,8 +1516,7 @@ pub(super) fn handle_notification(
                     if e.uri.as_str().ends_with(".lua")
                         && let Some(path) = uri_to_abs_path(&e.uri)
                         && !open_paths.contains(&path)
-                        && (ws.ws_file_globals.contains_key(&path)
-                            || (uri_to_path(&e.uri, &ws.roots).is_some() && change_participates_in_scan(&e.uri, ws)))
+                        && is_workspace_source(&path, ws)
                         && !closed_lua.iter().any(|(_, p)| *p == path)
                     {
                         closed_lua.push((e.uri.clone(), path));
@@ -1577,12 +1584,14 @@ pub(super) fn handle_notification(
                     _ => None,
                 };
                 // Stub files never participate in workspace diagnostics.
-                // Defense-in-depth: also check is_meta (analysis may be None
-                // for stubs whose background analysis hasn't completed yet).
+                // Defense-in-depth: neither does a `@meta` file the workspace doesn't
+                // read (a stub not recognized by its path among them). A `@meta` file
+                // it reads does: the warm last read it from disk, maybe before the
+                // save, so its entry is refreshed below like any other source's.
                 let is_meta_doc = doc.as_ref().is_some_and(|d|
                     d.analysis.as_ref().is_some_and(|a| a.is_meta())
                 );
-                if is_stub || is_meta_doc {
+                if is_stub || (is_meta_doc && !path.as_ref().is_some_and(|p| is_workspace_source(p, ws))) {
                     return;
                 }
                 // Capture the document's last-known diagnostics. If it was just taken
@@ -1713,6 +1722,18 @@ pub(super) fn change_participates_in_scan(uri: &lsp_types::Uri, ws: &WorkspaceSt
         Some(path) => !ws.configs.is_ignored(&path) || ws.configs.is_library(&path),
         None => false,
     }
+}
+
+/// Whether the `.lua` file at `path` is one the workspace scan reads, so what it
+/// declares reaches other files and an edit to it must be rescanned: a file the
+/// scan read — which includes the `library` folders outside the workspace roots it
+/// also walks — or a file under a root or one of those folders that the scan would
+/// read, created since.
+pub(super) fn is_workspace_source(path: &Path, ws: &WorkspaceState) -> bool {
+    ws.ws_file_globals.contains_key(path)
+        || ((ws.roots.iter().any(|root| path.starts_with(root))
+            || ws.configs.external_library_dirs().iter().any(|dir| path.starts_with(dir)))
+            && (!ws.configs.is_ignored(path) || ws.configs.is_library(path)))
 }
 
 /// The [`is_full_rescan_trigger`] files among `uris` that participate in the scan
