@@ -2003,7 +2003,7 @@ impl<'a> Analysis<'a> {
         fn_generics: &[(String, Option<String>)],
         generic_subs: &HashMap<String, ValueType>,
     ) {
-        let crate::annotations::AnnotationType::Parameterized(_, type_arg_anns) = raw_ret else {
+        let Some(type_arg_anns) = self.ir.class_type_arg_anns(raw_ret, self.annotation_names_ext_first) else {
             return;
         };
         let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
@@ -2041,7 +2041,7 @@ impl<'a> Analysis<'a> {
         if generic_subs.is_empty() && ret_index == 0 {
             let raw_ret = self.func(func_idx).return_annotations_raw
                 .get(ret_index).cloned();
-            if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ret {
+            if let Some(type_arg_anns) = raw_ret.as_ref().and_then(|r| self.ir.class_type_arg_anns(r, self.annotation_names_ext_first)) {
                 let substituted_args: Vec<ValueType> = type_arg_anns.iter()
                     .map(|ta| {
                         self.resolve_annotation_type_mut_gen(ta, &[])
@@ -2363,51 +2363,15 @@ impl<'a> Analysis<'a> {
             // Class-level type param substitution for inline callback resolution.
             // When calling a method on a parameterized class (e.g. Box<boolean>:Apply(fun(value: T))),
             // we need to resolve T → boolean from the receiver's type_args.
-            let receiver_type = self.resolve_expr(receiver_expr);
-            let ctp = match &receiver_type {
-                Some(ValueType::Table(Some(tidx))) => self.table(*tidx).class_type_params.clone(),
-                _ => Vec::new(),
-            };
-            if !ctp.is_empty() {
-                for (pos, name) in ctp.iter().enumerate() {
-                    if let Some(vt) = receiver_type_args.get(pos) {
-                        class_type_param_subs.insert(name.clone(), vt.clone());
-                    }
-                }
-            }
-            // Translate ancestor class type-param names through parameterized-parent
-            // bindings (e.g. `Child<TCur,TShared> : Parent<TCur>` makes Parent's `T`
-            // resolve to TCur's concrete binding). Walk `parent_type_bindings`
-            // transitively so an inherited method's `@requires`/param/return
-            // annotations — which reference the ANCESTOR's param names — resolve to
-            // the receiver's concrete types. Child bindings win on name collision
-            // (`or_insert`), and `visited` guards against cyclic inheritance.
-            //
-            // Uses DFS (work.pop) which is fine: `or_insert` means the child's own
-            // bindings always win regardless of visit order, and sibling parents with
-            // the same param name are not a real-world pattern. The `.clone()` calls
-            // on `parent_type_bindings` and `class_type_params` are borrow-checker
-            // workarounds — `self` is borrowed mutably by `substitute_generics_deep`,
-            // so we can't hold shared refs into `self.table()` across that call.
-            if let Some(ValueType::Table(Some(recv_tidx))) = &receiver_type {
-                let mut work: Vec<(TableIndex, HashMap<String, ValueType>)> =
-                    vec![(*recv_tidx, class_type_param_subs.clone())];
-                let mut visited: HashSet<TableIndex> = HashSet::default();
-                while let Some((tidx, cur_subs)) = work.pop() {
-                    if !visited.insert(tidx) { continue; }
-                    let parent_bindings = self.table(tidx).parent_type_bindings.clone();
-                    for (parent_idx, bindings) in parent_bindings {
-                        let parent_params = self.table(parent_idx).class_type_params.clone();
-                        let mut parent_subs: HashMap<String, ValueType> = HashMap::default();
-                        for (i, p_name) in parent_params.iter().enumerate() {
-                            if let Some(b) = bindings.get(i) {
-                                let concrete = self.substitute_generics_deep(b, &cur_subs);
-                                class_type_param_subs.entry(p_name.clone())
-                                    .or_insert_with(|| concrete.clone());
-                                parent_subs.insert(p_name.clone(), concrete);
-                            }
-                        }
-                        work.push((parent_idx, parent_subs));
+            // An inherited method's `@requires`/param/return annotations reference
+            // the ANCESTOR's param names, so every class's bindings go in one map
+            // (`class_param_bindings`). The receiver's own come first and win on a
+            // name collision (`or_insert`); sibling parents sharing a param name
+            // are not a real-world pattern.
+            if let Some(ValueType::Table(Some(recv_tidx))) = self.resolve_expr(receiver_expr) {
+                for (_, subs) in self.class_param_bindings(recv_tidx, &receiver_type_args) {
+                    for (name, vt) in subs {
+                        class_type_param_subs.entry(name).or_insert(vt);
                     }
                 }
             }
@@ -3857,6 +3821,74 @@ impl<'a> Analysis<'a> {
 
     // ── Generic type arg helpers ──────────────────────────────────────────────
 
+    /// The type-param bindings of a receiver of class `recv_tidx` instantiated
+    /// with `type_args` (`---@type Box<boolean>`), for its class and for each
+    /// ancestor `parent_type_bindings` reaches, each in that class's own param
+    /// names: `Child<T> : Parent<string>` binds the child's `T` to its arg and the
+    /// parent's `T` to `string`, `Child<TCur> : Parent<TCur>` the parent's `T` to
+    /// TCur's binding. The receiver's class comes first, then the ancestors in the
+    /// order the walk reaches them; `visited` guards against cyclic inheritance.
+    pub(super) fn class_param_bindings(
+        &mut self,
+        recv_tidx: TableIndex,
+        type_args: &[ValueType],
+    ) -> Vec<(TableIndex, HashMap<String, ValueType>)> {
+        let own: HashMap<String, ValueType> = self.table(recv_tidx).class_type_params.iter().cloned()
+            .zip(type_args.iter().cloned())
+            .collect();
+        let mut out = vec![(recv_tidx, own.clone())];
+        let mut work = vec![(recv_tidx, own)];
+        let mut visited: HashSet<TableIndex> = HashSet::default();
+        while let Some((tidx, cur_subs)) = work.pop() {
+            if !visited.insert(tidx) { continue; }
+            // Cloned: `substitute_generics_deep` borrows `self` mutably.
+            for (parent_idx, bindings) in self.table(tidx).parent_type_bindings.clone() {
+                let parent_params = self.table(parent_idx).class_type_params.clone();
+                let parent_subs: HashMap<String, ValueType> = parent_params.into_iter().zip(&bindings)
+                    .map(|(name, b)| (name, self.substitute_generics_deep(b, &cur_subs)))
+                    .collect();
+                out.push((parent_idx, parent_subs.clone()));
+                work.push((parent_idx, parent_subs));
+            }
+        }
+        out
+    }
+
+    /// The bindings of the type params a read of `field` through `receiver`, of
+    /// class `recv_tidx`, sees: the params of the class declaring the field
+    /// (`---@class Box<T>` with `---@field value T`), bound from the receiver's
+    /// type args (`---@type Box<boolean>`) or an ancestor binding (`---@class
+    /// BoolBox : Box<boolean>`). Empty when nothing binds them.
+    pub(super) fn field_class_param_subs(
+        &mut self,
+        receiver: ExprId,
+        recv_tidx: TableIndex,
+        field: &str,
+    ) -> HashMap<String, ValueType> {
+        let class = self.table(recv_tidx);
+        if class.class_type_params.is_empty() && class.parent_type_bindings.is_empty() {
+            return HashMap::default();
+        }
+        let type_args = self.get_expr_type_args(receiver);
+        // A class holds copies of its ancestors' fields (`prescan`'s inheritance
+        // pass), so the declaring class is the furthest one holding the same field
+        // the nearest one does; a redeclaring class has its own. Only a field an
+        // annotation declares binds here: a method (`function Box:Get()`) binds
+        // the params at its calls (`resolve_receiver_type_param_subs`).
+        let mut decl: Option<(ExprId, HashMap<String, ValueType>)> = None;
+        for (t, subs) in self.class_param_bindings(recv_tidx, &type_args) {
+            let Some(fi) = self.table(t).fields.get(field) else { continue };
+            if fi.annotation_type_raw.is_none() {
+                return HashMap::default();
+            }
+            let expr = fi.expr;
+            if decl.as_ref().is_none_or(|(e, _)| *e == expr) {
+                decl = Some((expr, subs));
+            }
+        }
+        decl.map(|(_, subs)| subs).unwrap_or_default()
+    }
+
     fn bind_receiver_type_args(
         &mut self,
         func_idx: FunctionIndex,
@@ -3934,17 +3966,7 @@ impl<'a> Analysis<'a> {
             }
             Expr::AssignNarrow { inner, .. } => self.get_expr_type_args(inner),
             Expr::SymbolRef(sym_idx, ver) => {
-                let sym = self.sym(sym_idx);
-                if let Some(version) = sym.versions.get(ver) {
-                    if !version.type_args.is_empty() {
-                        return version.type_args.clone();
-                    }
-                    if let Some(src_expr) = version.type_source
-                        && let Some(args) = self.call_type_args.get(&src_expr) {
-                            return args.clone();
-                        }
-                }
-                Vec::new()
+                self.ir.version_type_args(sym_idx, ver, &self.call_type_args).cloned().unwrap_or_default()
             }
             Expr::FieldAccess { table, field, .. } => {
                 if let Some(ValueType::Table(Some(table_idx))) = self.resolve_expr(table) {
@@ -3955,10 +3977,30 @@ impl<'a> Analysis<'a> {
                         (fi.annotation_type_raw.clone(), fi.expr, fi.extra_exprs.clone())
                     });
                     if let Some((raw_ann, field_expr, extra_exprs)) = fi_info {
-                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ann {
-                            let resolved: Vec<ValueType> = type_arg_anns.iter()
-                                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &[]))
+                        if let Some(type_arg_anns) = raw_ann.as_ref().and_then(|r| self.ir.class_type_arg_anns(r, self.annotation_names_ext_first)) {
+                            // The params of the receiver's class and its ancestors, one
+                            // of which declares the field.
+                            let class = self.table(table_idx);
+                            let class_params: Vec<(String, Option<String>)> = std::iter::once(table_idx)
+                                .chain(class.parent_classes.iter().copied())
+                                .flat_map(|t| self.table(t).class_type_params.iter().map(|p| (p.clone(), None)))
                                 .collect();
+                            let resolved: Vec<ValueType> = type_arg_anns.iter()
+                                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &class_params))
+                                .collect();
+                            // Args naming the declaring class's own params (`---@field
+                            // inner Inner<T>` on `Outer<T>`) are bound by this receiver
+                            // (`Outer<number>`), so they aren't the field's to cache.
+                            if resolved.iter().any(ValueType::contains_type_variable) {
+                                let subs = self.field_class_param_subs(table, table_idx, &field);
+                                if subs.is_empty() {
+                                    self.ir.bound_field_type_args.remove(&expr_id);
+                                    return resolved;
+                                }
+                                let bound: Vec<ValueType> = resolved.iter().map(|a| self.substitute_generics_deep(a, &subs)).collect();
+                                self.ir.bound_field_type_args.insert(expr_id, bound.clone());
+                                return bound;
+                            }
                             self.field_type_args_cache.insert((table_idx, field), resolved.clone());
                             return resolved;
                         }

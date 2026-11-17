@@ -355,6 +355,9 @@ fn resolve_expr_type_uncleared(
             crate::analysis::resolve::apply_unary_secrecy(op, &operand_type, plain)
         }
         Expr::FieldAccess { table, field, .. } => {
+            if let Some(bound) = ir.bound_field_reads.get(&expr_id) {
+                return Some(bound.clone());
+            }
             let table = *table;
             let field = field.clone();
             let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
@@ -1126,19 +1129,12 @@ impl AnalysisResult {
             }
             Expr::AssignNarrow { inner, .. } => self.get_type_args_for_expr(inner),
             Expr::SymbolRef(sym_idx, ver) => {
-                let sym = self.sym(sym_idx);
-                if let Some(version) = sym.versions.get(ver) {
-                    if !version.type_args.is_empty() {
-                        return version.type_args.clone();
-                    }
-                    if let Some(src_expr) = version.type_source
-                        && let Some(args) = self.call_type_args.get(&src_expr) {
-                            return args.clone();
-                        }
-                }
-                Vec::new()
+                self.ir.version_type_args(sym_idx, ver, &self.call_type_args).cloned().unwrap_or_default()
             }
             Expr::FieldAccess { table, field, .. } => {
+                if let Some(args) = self.ir.bound_field_type_args.get(&expr_id) {
+                    return args.clone();
+                }
                 let table_idx = match self.resolve_expr_type(table) {
                     Some(ValueType::Table(Some(idx))) => idx,
                     _ => return Vec::new(),
@@ -1164,17 +1160,7 @@ impl AnalysisResult {
 
     pub(super) fn get_symbol_type_args(&self, sym_idx: SymbolIndex, token_start: u32) -> Vec<ValueType> {
         let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
-        let sym = self.sym(sym_idx);
-        if let Some(version) = sym.versions.get(ver_idx) {
-            if !version.type_args.is_empty() {
-                return version.type_args.clone();
-            }
-            if let Some(src_expr) = version.type_source
-                && let Some(args) = self.call_type_args.get(&src_expr) {
-                    return args.clone();
-                }
-        }
-        Vec::new()
+        self.ir.version_type_args(sym_idx, ver_idx, &self.call_type_args).cloned().unwrap_or_default()
     }
 
     pub(super) fn format_type_args(&self, type_args: &[ValueType]) -> String {
@@ -1428,6 +1414,52 @@ impl AnalysisResult {
         })
     }
 
+    /// `Box<number>` for a field declared `---@field box Box<number>` (or
+    /// `Box<number>?`, or a parameterized alias of it) whose formatted class type
+    /// (`Box`) drops the args. Not when an arg names no type: a field typed by a
+    /// generic call's `@return Box<T>` has the call's `T`, which only the call
+    /// binds.
+    fn with_declared_type_args(&self, formatted: String, field_info: &FieldInfo) -> String {
+        let Some(args) = field_info.annotation_type_raw.as_ref().and_then(|raw| self.ir.class_type_arg_anns(raw, false)) else {
+            return formatted;
+        };
+        if !args.iter().all(|arg| self.type_names_resolve(arg)) {
+            return formatted;
+        }
+        let Some(ValueType::Table(Some(idx))) = field_info.annotation.as_ref().map(ValueType::strip_nil) else {
+            return formatted;
+        };
+        let table = self.table(idx);
+        let Some(class_name) = table.class_name.as_deref().filter(|_| !table.class_type_params.is_empty()) else {
+            return formatted;
+        };
+        match formatted.strip_prefix(class_name) {
+            Some(rest @ ("" | "?")) => {
+                let args: Vec<String> = args.iter().map(crate::annotations::format_annotation_type).collect();
+                format!("{class_name}<{}>{rest}", args.join(", "))
+            }
+            _ => formatted,
+        }
+    }
+
+    /// Whether every type name `at` mentions is a type, so that it reads the same
+    /// anywhere (no generic's or class's type param).
+    fn type_names_resolve(&self, at: &crate::annotations::AnnotationType) -> bool {
+        use crate::annotations::AnnotationType;
+        match at {
+            AnnotationType::Simple(_) => self.ir.resolve_annotation_type_for_check(at, &[]).is_some(),
+            AnnotationType::Parameterized(_, members) | AnnotationType::Union(members) | AnnotationType::Intersection(members) => {
+                members.iter().all(|m| self.type_names_resolve(m))
+            }
+            AnnotationType::Array(inner) | AnnotationType::NonNil(inner) => self.type_names_resolve(inner),
+            AnnotationType::Fun(params, returns, _) => {
+                params.iter().all(|p| self.type_names_resolve(&p.typ)) && returns.iter().all(|r| self.type_names_resolve(r))
+            }
+            AnnotationType::TableLiteral(fields) => fields.iter().all(|(_, t)| self.type_names_resolve(t)),
+            _ => false,
+        }
+    }
+
     pub(super) fn format_field_type(&self, field_info: &FieldInfo, depth: usize) -> String {
         if let Some(ref text) = field_info.annotation_text {
             // annotation_text from format_annotation_type already includes ! for NonNil
@@ -1442,6 +1474,7 @@ impl AnalysisResult {
                 None
             };
             let base = self.format_type_depth(refined.as_ref().unwrap_or(ann), depth + 1);
+            let base = if refined.is_none() { self.with_declared_type_args(base, field_info) } else { base };
             return if field_info.lateinit { format!("{}!", base) } else { base };
         }
         // Union original expr with any reassignment exprs.

@@ -885,6 +885,18 @@ pub struct Ir {
     /// (`R.f = Call()` + `function R.f:m()`), by that call. See
     /// [`Self::call_object_table`].
     pub call_objects: HashMap<ExprId, TableIndex>,
+    /// What a read of a generic class's field binds the class's params to, by the
+    /// read (`box.value` with `---@type Box<number>` and `---@field value T`:
+    /// `number`; `bind_field_class_params`). The query-side resolver reads it,
+    /// since a fixpoint pass that clears the expression cache leaves reads it
+    /// doesn't revisit uncached.
+    pub bound_field_reads: HashMap<ExprId, ValueType>,
+    /// The type args a read of a field declared as a generic class with its
+    /// declaring class's params carries, bound by the read's receiver
+    /// (`---@field inner Box<T>` read through `Outer<number>`: `[number]`), for
+    /// the query side (`get_type_args_for_expr`). Only for display: the fixpoint
+    /// recomputes them, since the receiver's args may still refine.
+    pub bound_field_type_args: HashMap<ExprId, Vec<ValueType>>,
     /// Calls whose object a `@narrows-arg` call changes in place (`local f =
     /// CreateFrame(...)` + `Mixin(f, M)`, or `t.f = CreateFrame(...)` +
     /// `Mixin(t.f, M)`), by the call's start: the last such call, whose type is
@@ -3536,6 +3548,73 @@ impl Ir {
         }
     }
 
+    /// The type args the value version `ver` of `sym_idx` holds carries for its
+    /// class's params (`---@type Box<number>`), or a call it holds the return of
+    /// (`call_type_args`). A version narrowing an earlier one (`b and b.value`,
+    /// `if not b then return end`), or restoring it after one
+    /// (`push_alias_version`), carries that one's.
+    pub fn version_type_args<'a>(
+        &'a self,
+        sym_idx: SymbolIndex,
+        mut ver: usize,
+        call_type_args: &'a HashMap<ExprId, Vec<ValueType>>,
+    ) -> Option<&'a Vec<ValueType>> {
+        let sym = self.sym(sym_idx);
+        loop {
+            let version = sym.versions.get(ver)?;
+            if !version.type_args.is_empty() {
+                return Some(&version.type_args);
+            }
+            let src = version.type_source?;
+            if let Some(args) = call_type_args.get(&src) {
+                return Some(args);
+            }
+            let inner = match self.expr(src) {
+                Expr::SymbolRef(..) => src,
+                Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
+                | Expr::CastRemove(inner, _) | Expr::TypeFilter(inner, _) => *inner,
+                Expr::AssignNarrow { inner, .. } => *inner,
+                _ => return None,
+            };
+            // Each step goes to an earlier version, so the walk ends.
+            match self.expr(inner) {
+                Expr::SymbolRef(s, prev) if *s == sym_idx && *prev < ver => ver = *prev,
+                _ => return None,
+            }
+        }
+    }
+
+    /// The type args a value typed by `at` carries for its class's params:
+    /// `[number]` for `Box<number>` or `Box<number>?`, and for a parameterized
+    /// `@alias` the args of the class it stands for, in that class's order
+    /// (`---@alias StrStore<V> Store<string, V>`: `StrStore<number>` carries
+    /// `[string, number]`). `ext_first` looks aliases up as
+    /// `Analysis::annotation_names_ext_first` says.
+    pub fn class_type_arg_anns(
+        &self,
+        at: &crate::annotations::AnnotationType,
+        ext_first: bool,
+    ) -> Option<Vec<crate::annotations::AnnotationType>> {
+        let (local, ext) = (&self.parameterized_aliases, &self.ext.parameterized_aliases);
+        let (first, second) = if ext_first { (ext, local) } else { (local, ext) };
+        let mut expanded: Option<crate::annotations::AnnotationType> = None;
+        // Bounded: an alias may stand for another (or, malformed, for itself).
+        for _ in 0..8 {
+            let (base, args) = expanded.as_ref().unwrap_or(at).parameterized()?;
+            if self.classes.contains_key(base) || self.ext.classes.contains_key(base) {
+                return Some(args.to_vec());
+            }
+            let Some((type_params, body)) = first.get(base).or_else(|| second.get(base)) else {
+                return Some(args.to_vec());
+            };
+            if type_params.len() != args.len() {
+                return None;
+            }
+            expanded = Some(crate::annotations::substitute_alias_type_params(body, type_params, args));
+        }
+        None
+    }
+
     fn is_ancestor_scope(&self, ancestor: ScopeIndex, descendant: ScopeIndex) -> bool {
         ancestor_scopes(&self.scopes, descendant).skip(1).any(|s| s == ancestor)
     }
@@ -4761,6 +4840,8 @@ impl<'a> Analysis<'a> {
                 annotated_targets: HashSet::default(),
                 field_write_targets: Vec::new(),
                 call_objects: HashMap::default(),
+                bound_field_reads: HashMap::default(),
+                bound_field_type_args: HashMap::default(),
                 narrowed_calls: HashMap::default(),
                 call_resolutions: HashMap::default(),
                 and_guarded_call_exprs: HashSet::default(),

@@ -35,6 +35,20 @@ pub enum AnnotationType {
 }
 
 impl AnnotationType {
+    /// A parameterized annotation, bare or optional, as its name and type args:
+    /// `("Box", [number])` for `Box<number>`, `Box<number>?` and `Box<number> | nil`.
+    pub fn parameterized(&self) -> Option<(&str, &[AnnotationType])> {
+        match self {
+            AnnotationType::Parameterized(base, args) => Some((base, args)),
+            AnnotationType::Union(members) => match members.as_slice() {
+                [AnnotationType::Parameterized(base, args), AnnotationType::Simple(nil)]
+                | [AnnotationType::Simple(nil), AnnotationType::Parameterized(base, args)] if nil == "nil" => Some((base, args)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The `T` of a `secret<T>` annotation (retail secret values); any other
     /// arity is malformed (reported by `malformed-annotation`).
     pub fn secret_arg(&self) -> Option<&AnnotationType> {

@@ -105,8 +105,13 @@ impl AnalysisResult {
 
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
                 let _field_secrecy = self.secrecy_display_for_tables(&receiver_tables);
+                let bound = field_info.annotation.as_ref().and_then(|ann| self.bound_class_param_field_at(offset, ann));
                 let (formatted, effective_type, has_annotation) = {
-                    if let Some(ref text) = field_info.annotation_text {
+                    if let Some(bound) = bound {
+                        // A generic class's field read through a receiver binding its
+                        // params (`box.value` on `Box<number>`) shows the bound type.
+                        (self.format_type_accessible(&bound, &[enclosing_class]), Some(bound), true)
+                    } else if let Some(ref text) = field_info.annotation_text {
                         let expansion = field_info.annotation_type_raw.as_ref()
                             .and_then(|raw| self.expand_alias_fun_signature(raw));
                         let s = match expansion {
@@ -136,7 +141,14 @@ impl AnalysisResult {
                             // (typed default-section shapes) — see `enrich_class_field`.
                             (self.format_type_accessible(&enriched, &[enclosing_class]), Some(enriched), false)
                         } else {
-                            (self.format_type_accessible(ann, &[enclosing_class]), Some(ann.clone()), true)
+                            // A generic class read with its args (`Box<number>`), as a
+                            // local of that type shows.
+                            let formatted = self.format_type_accessible(ann, &[enclosing_class]);
+                            let type_args = self.ir.field_access_exprs_at(offset)
+                                .map(|(eid, _)| self.get_type_args_for_expr(eid))
+                                .find(|args| !args.is_empty())
+                                .unwrap_or_default();
+                            (self.append_type_args_to_class(&formatted, ann, &type_args), Some(ann.clone()), true)
                         }
                     } else if let Some(written) = SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased()
                         .and_then(|token| self.written_over_placeholder(u32::from(token.text_range().start()), field_info))
@@ -621,6 +633,19 @@ impl AnalysisResult {
             }
         }
         None
+    }
+
+    /// What a read at `offset` of a generic class's field declared `ann` binds the
+    /// class's params to (`box.value` with `---@type Box<boolean>` and `---@field
+    /// value T` reads `boolean`, `Analysis::bind_field_class_params`). `None`
+    /// where `ann` has no class param or nothing binds it (`self.value` in the
+    /// class's own methods).
+    fn bound_class_param_field_at(&self, offset: u32, ann: &ValueType) -> Option<ValueType> {
+        if !self.type_contains_type_variable_deep(ann) {
+            return None;
+        }
+        let ty = self.ir.field_access_exprs_at(offset).find_map(|(eid, _)| self.resolve_expr_type(eid))?;
+        (ty != *ann).then_some(ty)
     }
 
     /// The `(field, V)` of a dot access at `offset` whose receiver is a typed map

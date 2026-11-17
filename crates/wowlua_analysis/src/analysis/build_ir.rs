@@ -3832,7 +3832,7 @@ impl<'a> Analysis<'a> {
                         let expr_id = self.ir.push_expr(Expr::Literal(vt));
                         self.ir.set_param_type_source(func_idx, i, expr_id);
                         // Store resolved type args for parameterized param annotations
-                        if let AnnotationType::Parameterized(_, ref type_arg_annotations) = p.typ {
+                        if let Some(type_arg_annotations) = self.ir.class_type_arg_anns(&p.typ, self.annotation_names_ext_first) {
                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
                                 .filter_map(|ta| self.resolve_annotation_type_gen(ta, generics))
                                 .collect();
@@ -4606,7 +4606,7 @@ impl<'a> Analysis<'a> {
         self.ir.set_type_source(symbol_idx, expr_id);
         // Store resolved type args for parameterized class annotations
         // (e.g. @type Future<number> → type_args = [Number])
-        if let AnnotationType::Parameterized(_param_class_name, type_arg_annotations) = at {
+        if let Some(type_arg_annotations) = self.ir.class_type_arg_anns(at, self.annotation_names_ext_first) {
             let type_args: Vec<ValueType> = type_arg_annotations.iter()
                 .filter_map(|ta| self.resolve_declared_annotation_gen(ta, &[]))
                 .collect();

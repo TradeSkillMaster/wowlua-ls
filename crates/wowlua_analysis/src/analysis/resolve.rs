@@ -343,7 +343,7 @@ impl<'a> Analysis<'a> {
                                     decl.resolved_type = Some(vt);
                                 }
                                 // Store type args for parameterized annotations
-                                if let crate::annotations::AnnotationType::Parameterized(_, type_arg_anns) = ann {
+                                if let Some(type_arg_anns) = self.ir.class_type_arg_anns(ann, self.annotation_names_ext_first) {
                                     let type_args: Vec<ValueType> = type_arg_anns.iter()
                                         .filter_map(|ta| self.resolve_annotation_type(ta))
                                         .collect();
@@ -4500,7 +4500,8 @@ impl<'a> Analysis<'a> {
             }
 
             Expr::FieldAccess { table, field, field_range } => {
-                let result = self.resolve_field_access(*table, field)?;
+                let result = self.resolve_field_access(expr_id, *table, field)?;
+                self.note_field_type_args(expr_id, *table, field, &result);
                 // A guard clearing the struct's predicates unwraps the field (`secret_context.rs`).
                 let cleared = match field_range {
                     Some((start, _)) if result.has_secret() && !self.ir.secret_context_regions.is_empty() => {
@@ -4812,9 +4813,69 @@ impl<'a> Analysis<'a> {
     }
 
     /// Resolve `Expr::FieldAccess`: dot/colon field lookup over a table type (with union/intersection/shape/parent-class handling).
-    fn resolve_field_access(&mut self, table: ExprId, field: &str) -> Option<ValueType> {
+    fn resolve_field_access(&mut self, expr_id: ExprId, table: ExprId, field: &str) -> Option<ValueType> {
         let table_type = self.resolve_expr(table)?;
-        self.resolve_field_of(table_type, field)
+        let ty = self.resolve_field_of(table_type.clone(), field)?;
+        let Some(bound) = self.bind_field_class_params(table, &table_type, field, &ty) else {
+            // What an earlier pass bound no longer holds.
+            if !self.ir.bound_field_reads.is_empty() {
+                self.ir.bound_field_reads.remove(&expr_id);
+            }
+            return Some(ty);
+        };
+        self.ir.bound_field_reads.insert(expr_id, bound.clone());
+        Some(bound)
+    }
+
+    /// Work out, for the query side (`get_type_args_for_expr`), the type args a
+    /// read of a field its annotation declares a generic class carries, which
+    /// its type (`Box`) doesn't: `get_expr_type_args` keeps them in
+    /// `field_type_args_cache`, or in `Ir::bound_field_type_args` when the read's
+    /// receiver binds them (`---@field inner Box<T>` read through `Outer<number>`).
+    /// The args a field's writes give it, which refine during the fixpoint, the
+    /// query side reads itself.
+    fn note_field_type_args(&mut self, expr_id: ExprId, table: ExprId, field: &str, result: &ValueType) {
+        let idx = match result {
+            ValueType::Table(Some(idx)) => *idx,
+            ValueType::Union(members) if members.len() == 2 && members.contains(&ValueType::Nil) => {
+                let Some(&ValueType::Table(Some(idx))) = members.iter().find(|m| **m != ValueType::Nil) else { return };
+                idx
+            }
+            _ => return,
+        };
+        if self.table(idx).class_type_params.is_empty() {
+            return;
+        }
+        let Some(ValueType::Table(Some(receiver))) = self.resolve_expr(table) else { return };
+        if self.table(receiver).fields.get(field).is_some_and(|fi| fi.annotation_type_raw.is_some()) {
+            self.get_expr_type_args(expr_id);
+        }
+    }
+
+    /// A read of a generic class's field through a receiver that binds the class's
+    /// params: `box.value` with `---@type Box<boolean>` and `---@field value T`
+    /// reads `boolean` (`field_class_param_subs`); `None` when nothing binds them.
+    /// A field typed as a parameterized class (`Inner<T>`) keeps its class: its
+    /// args are bound where they're read (`get_expr_type_args`), not by copying
+    /// the class.
+    fn bind_field_class_params(&mut self, receiver: ExprId, receiver_type: &ValueType, field: &str, ty: &ValueType) -> Option<ValueType> {
+        if let ValueType::Table(Some(idx)) = ty
+            && self.table(*idx).class_name.is_some()
+        {
+            return None;
+        }
+        // One class, `nil` aside (`Box<number>?`).
+        let tables = match receiver_type {
+            ValueType::OpaqueAlias(_, inner) => self.field_receiver_tables(inner),
+            other => self.field_receiver_tables(other),
+        };
+        let &[recv_tidx] = tables.as_slice() else { return None };
+        let subs = self.field_class_param_subs(receiver, recv_tidx, field);
+        if subs.is_empty() || !self.ir.type_contains_type_variable_deep(ty) {
+            return None;
+        }
+        let bound = self.substitute_generics_deep(ty, &subs);
+        (bound != *ty).then_some(bound)
     }
 
     /// What a read of `field` through a receiver of type `table_type` resolves to

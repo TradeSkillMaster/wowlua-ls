@@ -1475,3 +1475,133 @@ local fkey, fval = facetsGet(ordered)
 --          ^ hover: (local) fval: number
 
 _G.useIntersectionGenerics = { orderedGet, facetsGet, ordered, okey, oval, fkey, fval }
+
+-- ── Class type params bind in field reads ───────────────────────────────────
+-- A `@field value T` read through a receiver that instantiates the class
+-- (`---@type FieldBox<boolean>`, a field typed `FieldBox<boolean>`, a parent
+-- binding) reads the bound type, not the bare type param.
+
+---@class FieldBox<T>
+---@field value T
+---@field items T[]
+---@field cb fun(v: T): T
+---@field opt T?
+local FieldBox = {}
+
+---@return T
+function FieldBox:Get()
+    local own = self.value
+    --    ^ hover: (local) own: T
+    --               ^ hover: (field) value: T
+    return own
+end
+
+---@class FieldBoxHolder
+---@field box FieldBox<boolean>
+
+---@type FieldBoxHolder
+local fbHolder = {}
+local fbHeld = fbHolder.box.value
+--    ^ hover: (local) fbHeld: boolean
+--                      ^ hover: (field) box: FieldBox<boolean>
+--                          ^ hover: (field) value: boolean
+
+---@type FieldBox<number>
+local fbNum = {}
+local fbVal = fbNum.value
+--    ^ hover: (local) fbVal: number
+--                  ^ hover: (field) value: number
+local fbItem = fbNum.items[1]
+--    ^ hover: (local) fbItem: number
+local fbOpt = fbNum.opt
+--    ^ hover: (local) fbOpt: number?
+local fbCb = fbNum.cb(1)
+--    ^ hover: (local) fbCb: number
+
+-- Inherited fields bind through the parent's args, in the declaring class's
+-- names: `FieldBoxFixed<T> : FieldBox<string>` reads `value` as `string`.
+---@class FieldBoxSub<T> : FieldBox<T>
+
+---@class FieldBoxFixed<T> : FieldBox<string>
+---@field extra T
+
+---@class FieldBoxBool : FieldBox<boolean>
+
+---@type FieldBoxSub<number>
+local fbSub = {}
+local fbSubVal = fbSub.value
+--    ^ hover: (local) fbSubVal: number
+
+---@type FieldBoxFixed<number>
+local fbFixed = {}
+local fbFixedVal, fbFixedExtra = fbFixed.value, fbFixed.extra
+--    ^ hover: (local) fbFixedVal: string
+--                ^ hover: (local) fbFixedExtra: number
+
+---@type FieldBoxBool
+local fbBool = {}
+local fbBoolVal = fbBool.value
+--    ^ hover: (local) fbBoolVal: boolean
+
+-- A field typed with the outer class's param carries the outer binding.
+---@class FieldBoxOuter<T>
+---@field inner FieldBox<T>
+
+---@type FieldBoxOuter<string>
+local fbOuter = {}
+local fbInner = fbOuter.inner.value
+--    ^ hover: (local) fbInner: string
+--                      ^ hover: (field) inner: FieldBox<string>
+
+-- Optional receivers and narrowed reads keep the args (fields and methods).
+---@type FieldBox<number>?
+local fbMaybe = nil
+local fbAnd = fbMaybe and fbMaybe.value
+--    ^ hover: (local) fbAnd: number?
+local fbAndGet = fbMaybe and fbMaybe:Get()
+--    ^ hover: (local) fbAndGet: number?
+if fbMaybe then
+    local fbIn = fbMaybe.value
+    --    ^ hover: (local) fbIn: number
+end
+
+---@param p FieldBox<number>?
+local function fbEarly(p)
+    if not p then return end
+    local fbEarlyVal = p.value
+    --    ^ hover: (local) fbEarlyVal: number
+    local fbEarlyGet = p:Get()
+    --    ^ hover: (local) fbEarlyGet: number
+    return fbEarlyVal, fbEarlyGet
+end
+
+_G.useFieldBoxes = { fbEarly }
+
+-- A parameterized alias of a generic class binds the class's params from the
+-- alias's args, in the class's order.
+---@class FieldPair<K, V>
+---@field key K
+---@field val V
+
+---@alias StrFieldPair<V> FieldPair<string, V>
+---@alias SwapFieldPair<X, Y> FieldPair<Y, X>
+
+---@class FieldPairHolder
+---@field swapped SwapFieldPair<number, string>
+
+---@type StrFieldPair<number>
+local fpStr = {}
+local fpKey, fpVal = fpStr.key, fpStr.val
+--    ^ hover: (local) fpKey: string
+--           ^ hover: (local) fpVal: number
+
+---@type SwapFieldPair<number, string>
+local fpSwap = {}
+local fpSwapKey = fpSwap.key
+--    ^ hover: (local) fpSwapKey: string
+
+---@type FieldPairHolder
+local fpHolder = {}
+local fpHeldVal = fpHolder.swapped.val
+--    ^ hover: (local) fpHeldVal: number
+--                         ^ hover: (field) swapped: FieldPair<string, number>

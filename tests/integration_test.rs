@@ -1922,6 +1922,11 @@ fn expression_builder_module_field_refines() {
         with_stubs: true,
         scan_dir: Some("tests/expression-deferred-harvest"),
     });
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/expression-deferred-harvest/local_read_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/expression-deferred-harvest"),
+    });
 }
 
 #[test]
@@ -2902,6 +2907,24 @@ fn class_deep_field_crossfile() {
         lua_file: "tests/class-deep-field-crossfile/overlay.lua",
         with_stubs: true,
         scan_dir: Some("tests/class-deep-field-crossfile"),
+    });
+}
+
+// A generic class's `@field value T` read in another file through a receiver that
+// binds its params (`---@type XFieldValue<boolean>`, a `@field` of that type, a
+// parent binding) reads the bound type.
+#[test]
+fn generic_field_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/generic-field-crossfile/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/generic-field-crossfile"),
+    });
+    // The scan types a `@defclass` constructor's field only with the stubs.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/generic-field-crossfile/stream_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/generic-field-crossfile"),
     });
 }
 

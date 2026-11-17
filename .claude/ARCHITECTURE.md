@@ -155,8 +155,10 @@ When a generic function's return annotation is `Parameterized("Pool", [Simple("T
 
 `get_expr_type_args` (in `resolve_call.rs`) checks this cache:
 1. Direct cache hit for the ExprId (covers `FunctionCall` receivers)
-2. `SymbolRef(sym, ver)` — first check the version's `type_args` (set by `---@type Pool<Concrete>` in build_ir), then follow `type_source` ExprId into the cache
-3. `FieldAccess { table, field }` — check the field's `annotation_type_raw`, then the field's stored `expr` in the cache (covers `private = { pool = New(...) }` table-field patterns)
+2. `SymbolRef(sym, ver)` — `Ir::version_type_args`: the version's `type_args` (set by `---@type Pool<Concrete>`/`@param` in build_ir, through `Ir::class_type_arg_anns`, which takes them from `Pool<X>?` too and maps a parameterized alias's args onto its class's params), else its `type_source` ExprId in the cache, walking back through the versions narrowing (`b and b.x`, early exits) or restoring an earlier one
+3. `FieldAccess { table, field }` — check the field's `annotation_type_raw`, then the field's stored `expr` in the cache (covers `private = { pool = New(...) }` table-field patterns). An annotation naming its class's own params (`---@field inner Box<T>` on `Outer<T>`) is bound by the read's receiver (`field_class_param_subs`), uncached; `Ir::bound_field_type_args` keeps that per read for the query side
+
+A read of a field declared with its class's params (`---@field value T`) is bound the same way in `resolve.rs::bind_field_class_params`: by the receiver's args (`---@type Box<number>`) or an ancestor's `parent_type_bindings`, in the params of the class declaring the field (classes hold copies of their ancestors' fields, so that's the furthest class holding the same `FieldInfo`). Methods bind at their calls instead. `Ir::bound_field_reads` keeps the bound type per read for `resolve_expr_type_impl`, since a fixpoint pass that clears the expression cache leaves reads it doesn't revisit uncached.
 
 Bump `pre_globals.rs::BLOB_VERSION` when changing any field on a serialized type (`Function`, `ClassDecl`, etc.).
 
