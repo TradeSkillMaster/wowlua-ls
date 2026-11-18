@@ -4536,6 +4536,18 @@ impl<'a> Analysis<'a> {
             }
         }
         let mut types: Vec<(ExprId, Option<ValueType>)> = writes.into_iter().map(|e| (e, self.resolve_expr(e))).collect();
+        // Whether a map this file writes over the scan's map has differing entries,
+        // decided from the entries themselves: its element type, which
+        // `Ir::writes_mixed_map` reads, is set by a later pass of the fixpoint.
+        if self.ir.own_map_slots.contains_key(&primary) && !self.ir.own_map_kept.contains(&primary) {
+            let maps: Vec<TableIndex> = types.iter()
+                .filter_map(|&(e, _)| self.ir.find_table_index(e))
+                .filter(|idx| !idx.is_external() && self.ir.table(*idx).constructor_bracket_count > 0)
+                .collect();
+            if maps.into_iter().any(|idx| self.field_map_entries_agree(idx) == Some(false)) {
+                self.ir.own_map_kept.insert(primary);
+            }
+        }
         // The file's own writes: past the workspace's value, but a class field
         // copy's own first write.
         let own = if primary.is_external() { 1 } else { 0 };
@@ -4647,6 +4659,21 @@ impl<'a> Analysis<'a> {
                         fi.annotation = Some(ty);
                         self.ir.carried_fields.insert((idx, field.clone()));
                         self.ir.deferred_dep_files.extend(ext.deferred_class_field_paths.get(&class).into_iter().flatten().cloned());
+                    }
+                } else if let Some(table) = crate::analysis::deferred::table_past_own_writes(&ext, &class, &field, &path) {
+                    // The map of untyped elements the scan gave a field only this file
+                    // writes, which the harvest takes the file's writes over: the file
+                    // reads its writes, as other files read them — or the map, where
+                    // the harvest keeps it (`Ir::own_map_slots`).
+                    let scanned = ValueType::Table(Some(table));
+                    let fi = if idx.is_external() { self.ir.get_overlay_field_mut(idx, &field) } else { self.ir.tables[idx.val()].fields.get_mut(&field) };
+                    if let Some(fi) = fi.filter(|fi| fi.annotation_text.is_none() && fi.annotation.as_ref() == Some(&scanned)) {
+                        fi.annotation = None;
+                        fi.annotation_type_raw = None;
+                        let key = fi.expr;
+                        self.ir.class_slots.insert(key, None);
+                        let scanned = self.ir.push_expr(Expr::Literal(scanned));
+                        self.ir.own_map_slots.insert(key, scanned);
                     }
                 }
                 continue;

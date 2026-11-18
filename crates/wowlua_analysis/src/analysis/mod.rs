@@ -1090,6 +1090,15 @@ pub struct Ir {
     /// there, or `None` when that says nothing — the field reads the file's own
     /// writes and those (`Analysis::fill_class_others`, `Ir::slot_union_exprs`).
     pub class_slots: HashMap<ExprId, Option<ExprId>>,
+    /// Of `class_slots`, the fields only this file writes that read its writes over
+    /// the scan's map of untyped elements (`deferred::table_past_own_writes`), with
+    /// an expr typed by that map: what the field reads when a write makes the class
+    /// harvest keep the map for other files (`Ir::slot_union_exprs`).
+    pub own_map_slots: HashMap<ExprId, ExprId>,
+    /// Of `own_map_slots`, those whose writes the fixpoint found to be a map of
+    /// differing entries, where the table's element type may not be set yet
+    /// (`Ir::writes_mixed_map`): they read the scan's map.
+    pub own_map_kept: HashSet<ExprId>,
     /// Defining files this file harvested a deferred cross-file type from during
     /// analysis (a body-derived return, a `@creates-global`, a `@class` or table
     /// field, or a constructor generic type-arg — recorded by the `ensure_*_overlay` /
@@ -2562,6 +2571,15 @@ impl Ir {
                 if !writes.contains(&e) {
                     writes.push(e);
                 }
+            }
+            // The scan's map, where the class harvest keeps it for other files: a
+            // write that is a map of differing entries or says no more than a table
+            // (`deferred::gate_class_fields`).
+            if let Some(&scanned) = self.own_map_slots.get(&primary)
+                && (self.own_map_kept.contains(&primary)
+                    || writes.iter().any(|&e| self.writes_mixed_map(e) || resolve(e).is_some_and(|ty| self.is_shapeless_table_type(&ty))))
+            {
+                return (vec![scanned], false);
             }
             let mut own: Vec<ExprId> = writes.iter().flat_map(|&e| self.typed_operands(e, &mut resolve)).collect();
             // Past a write saying no more than `any`, tables saying no more than "a
@@ -4917,6 +4935,8 @@ impl<'a> Analysis<'a> {
                 class_peers: HashMap::default(),
                 slot_others: HashMap::default(),
                 class_slots: HashMap::default(),
+                own_map_slots: HashMap::default(),
+                own_map_kept: HashSet::default(),
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),

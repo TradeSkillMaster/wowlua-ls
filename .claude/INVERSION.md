@@ -419,6 +419,10 @@ Open, by cause (53 function paths):
   `OnMatchStart` are methods one mod defines on itself (`function mod:M()`), which
   another mod reaches through `GetModByName` as a `DBMMod`; giving the class every
   mod's methods would put them on all mods. Visible now that `mod` is typed.
+  Re-examined 2026-11-18 and kept: their readers are as on `c5b95b27` (`any`,
+  `undefined-field`); only the write became visible. The writing file's other mods
+  see them because `function f:m()` through a class's local lands on the file's view
+  of the class (ARCHITECTURE.md, "Writes through a frame local in its own file").
 - Harvest context, needing component work the budget doesn't leave room for
   (Baganator 212 of 220): Auctionator `AH.GetCurrentPage` (a cycle discovery
   doesn't see: `Wrappers.lua` reaches `Scan.lua`'s method only through a slot's
@@ -618,6 +622,43 @@ Gate against main: `check` adds nothing (19 false positives removed); typed → 
 169, all approved: `treeId` 14, `function & table` → `any` 140 (the second round's 192
 less the members whose writes now type them) and a field named like a class → `any` 15;
 265 hovers gain a type. Analyses and `check` times as the third round.
+
+## Slice 5 status (2026-11-18, fifth round)
+
+`MacroToolkit.commandinfo` agrees. A string-keyed constructor of references
+(`{ ["SHOW"] = MT.X }`) is a map whose `[string]` element the scan types `any`; the
+class harvest drops that table for its one writer's constructor (`table<string,
+number>`), but the writer kept reading the scan's table: a constructor twin gives it a
+record's entries, never a map's element type. The writer now reads its writes there
+(`deferred::table_past_own_writes`, a class slot with no others), and the scan's map
+where the harvest keeps it for readers: a write of differing entries (two handler
+functions, a number beside a string) or no more than a table (a `{}` reset), which make
+the harvest's field a bare `table` (`Ir::own_map_slots`, `Ir::own_map_kept`). Records are left to
+their twins: taking the writer's constructor for those too turned `nil` entries the
+scan declares (`relativeFrame = nil`, assigned later) into `nil` and lost entry types
+(DeadlyBossMods' `testDefinition`).
+
+Gate against main: `check` unchanged; `crossfile-types` TestProject 11 → 10, nowhere
+else changed; `dump-types` no typed → untyped, 186 MacroToolkit hovers of the class
+show `commandinfo: table<string, number>`.
+
+Open, same scan entry, not disagreeing in the corpus: the map at a slice-1 slot (an
+addon namespace's or a plain global's field), whose entries are slots but whose element
+type stays the scan's `any`. The namespace's reads `table<string, any>` in every file; a
+plain global's writer reads its constructor (`table<string, number>`), its readers
+`table<string, any>`.
+
+Open, of this round's rule:
+- A map two files of the class write, read by a value derived from it in one of them
+  (`C.copy = C.info`): a harvest analysis can't tell that another file writes the map,
+  so the derived value crosses as that file's writes alone, narrower than the writer
+  reads it. Reading the scan's map in harvest analyses instead (the documented rule)
+  would make the far commoner derived read of a map one file writes (a function
+  returning `C.info[k]`) cross as `any` while its file reads the element type. A proper
+  fix needs discovery of which files write a class field.
+- A map its file also fills under run-time keys (`C.entries[k] = { … }`) reads, in that
+  file as in others, only the constructor's elements: the harvest adds element writes to
+  records, not maps (`with_dynamic_elements`).
 
 ## Acceptance for every slice
 

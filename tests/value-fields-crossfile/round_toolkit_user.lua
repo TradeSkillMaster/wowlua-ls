@@ -11,6 +11,27 @@ local function kindOf(k)
     return v
 end
 
+---@class RoundCommands
+local Commands = RoundCommands
+local info = Commands.info
+--    ^ hover: (local) info: table<string, number>
+---@param k string
+local function paramOf(k)
+    local v = Commands.info[k]
+    --    ^ hover: (local) v: number
+    return v
+end
+local byName = RoundRegistry.byName
+--    ^ hover: (local) byName: table<string, string>
+local param = Commands.Param("CAST")
+--    ^ hover: (local) param: number
+local mixed = RoundMaps.mixed
+--    ^ hover: (local) mixed: table<string, any>
+local handlers = RoundMaps.handlers
+--    ^ hover: (local) handlers: table<string, any>
+local cache = RoundMaps.cache
+--    ^ hover: (local) cache: table<string, any>
+
 local missing = Addon.store["missing"]
 --    ^ hover: (local) missing: any
 

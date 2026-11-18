@@ -13,6 +13,52 @@ Addon.kinds = {
     alpha = Addon.KIND_NUMERIC,
     beta = Addon.KIND_NONE,
 }
+-- A map keyed by strings, of references to its class's fields, that one of the
+-- class's files writes: the file reads the constructor it writes, as the other
+-- files do, not the scan's map of untyped elements.
+---@class RoundCommands
+RoundCommands = {}
+RoundCommands.PARAM_REQUIRED = 1
+RoundCommands.info = {
+    --        ^ hover: (field) info: table<string, number>
+    ["CAST"] = RoundCommands.PARAM_REQUIRED,
+    ["SHOW"] = RoundCommands.PARAM_REQUIRED,
+}
+local info = RoundCommands.info
+--    ^ hover: (local) info: table<string, number>
+-- What a function returns from it reads alike in every file.
+---@param key string
+function RoundCommands.Param(key) return RoundCommands.info[key] end
+local param = RoundCommands.Param("CAST")
+--    ^ hover: (local) param: number
+
+-- Where other files read the scan's map instead — entries of differing types, two
+-- handlers, a reset to `{}` — the writing file reads it too.
+---@class RoundMaps
+RoundMaps = {}
+RoundMaps.LIMIT = 1
+function RoundMaps.Open() end
+---@param force boolean
+function RoundMaps.Close(force) return force end
+RoundMaps.mixed = { ["limit"] = RoundMaps.LIMIT, ["label"] = "text" }
+local mixed = RoundMaps.mixed
+--    ^ hover: (local) mixed: table<string, any>
+RoundMaps.handlers = { ["open"] = RoundMaps.Open, ["close"] = RoundMaps.Close }
+local handlers = RoundMaps.handlers
+--    ^ hover: (local) handlers: table<string, any>
+RoundMaps.cache = { ["first"] = RoundMaps.LIMIT }
+function RoundMaps.Reset() RoundMaps.cache = {} end
+local cache = RoundMaps.cache
+--    ^ hover: (local) cache: table<string, any>
+
+-- And for a class whose only Lua file this is.
+---@class RoundRegistry
+RoundRegistry = {}
+local KIND_TEXT = "text"
+RoundRegistry.byName = { ["label"] = KIND_TEXT, ["title"] = KIND_TEXT }
+--            ^ hover: (field) byName: table<string, string>
+local byName = RoundRegistry.byName
+--    ^ hover: (local) byName: table<string, string>
 
 -- A table built empty and filled later, elements included.
 function Addon:Reset(key, value)

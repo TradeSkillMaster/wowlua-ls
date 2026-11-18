@@ -2734,6 +2734,22 @@ fn gate_writes(ext: &PreResolvedGlobals, f: &AccField, unresolved_any: bool) -> 
         .map(|ty| f.sub_fields.clone().onto(ty, ext, None))
 }
 
+/// The table the workspace scan gives the field `class.field`, when `writer`, the
+/// one file writing the field, reads its writes there instead, as the class harvest
+/// takes them over its reading of that table ([`gate_class_fields`]): a map keyed by
+/// strings (`{ ["k"] = v }`) whose elements the scan couldn't type, which the
+/// harvest doesn't keep ([`keeps_scanned_table`]). A record's entries the scan only
+/// says exist read from the file's constructor already (a constructor twin), but not
+/// a map's element type.
+pub(crate) fn table_past_own_writes(ext: &PreResolvedGlobals, class: &str, field: &str, writer: &Path) -> Option<TableIndex> {
+    let idx = scanned_table(ext, class, field)?;
+    let table = ext.table(idx);
+    let untyped_map = matches!(table.key_type, Some(ValueType::String(None)))
+        && table.value_type.as_ref().is_some_and(ValueType::contains_any);
+    (untyped_map && table.class_name.is_none() && !table.placeholder && !keeps_scanned_table(ext, class, field, &[writer]))
+        .then_some(idx)
+}
+
 /// Accumulate `class`'s fields over its files, analyzed with them all in progress —
 /// and the fields of each co-located class whose result that equally is, with its
 /// dependencies and files.
