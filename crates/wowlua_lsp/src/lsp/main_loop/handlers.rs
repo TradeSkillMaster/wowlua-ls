@@ -120,11 +120,11 @@ fn definition_results_to_response(
         return None;
     }
     // When the client accepts `LocationLink[]`, return links carrying the source
-    // token as `originSelectionRange`. IntelliJ/LSP4IJ needs that origin span to
-    // resolve the source reference on our structureless `.lua` PSI; without it a
-    // multi-target result stops re-showing the picker after the first Ctrl-click
-    // (plain `Location[]`). `targetRange` and `targetSelectionRange` are the same
-    // span — the definition's name token. Mirrors sumneko's response shape. The
+    // token as `originSelectionRange` (the span a client underlines as the link).
+    // LSP4IJ ignores the origin; its picker showing only once is worked around in
+    // the JetBrains plugin (`WowLuaMultiDefinitionGotoHandler`). `targetRange`
+    // and `targetSelectionRange` are the same span — the definition's name
+    // token. Mirrors sumneko's response shape. The
     // origin is computed here (not by the caller) so it is skipped entirely for
     // non-link clients and zero-result queries, reusing the line index above.
     if link_support {
@@ -2190,10 +2190,8 @@ mod definition_response_tests {
     }
 
     // With `definition.linkSupport`, go-to-definition returns `LocationLink[]`
-    // carrying the source token as `originSelectionRange` — the shape IntelliJ /
-    // LSP4IJ needs to keep re-showing the multi-target picker on repeated
-    // Ctrl-clicks over our structureless `.lua` PSI (matches sumneko). Without
-    // it, the classic `Location[]` (`Scalar` for a single result) is returned.
+    // carrying the source token as `originSelectionRange` (matches sumneko).
+    // Without it, the classic `Location[]` (`Scalar` for a single result) is returned.
     #[test]
     fn link_support_toggles_location_link_vs_location() {
         let uri = lsp_types::Uri::from_str("file:///test.lua").unwrap();

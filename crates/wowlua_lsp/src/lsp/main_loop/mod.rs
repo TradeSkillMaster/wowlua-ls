@@ -1000,10 +1000,8 @@ struct ClientSupport {
     snippets: bool,
     /// The client accepts `LocationLink[]` (not just `Location[]`) for
     /// `textDocument/definition` — its `definition.linkSupport` capability. When
-    /// set, go-to-definition returns links carrying an `originSelectionRange`.
-    /// IntelliJ/LSP4IJ needs that origin span to resolve the source reference on
-    /// our structureless `.lua` PSI; without it, a multi-target result stops
-    /// re-showing the picker on repeated Ctrl-clicks (matches sumneko's shape).
+    /// set, go-to-definition returns links carrying an `originSelectionRange`
+    /// (matches sumneko's shape).
     definition_link_support: bool,
     /// As [`Self::definition_link_support`], for `textDocument/typeDefinition`.
     type_definition_link_support: bool,
