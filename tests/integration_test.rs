@@ -7233,6 +7233,40 @@ fn quick_fix_create_global_local_and_config() {
 }
 
 #[test]
+fn quick_fix_create_global_localizes_the_flagged_write() {
+    // The fix declares the write the diagnostic flags, not the first text match
+    // for `name =` — an earlier table key or field write of the same name would
+    // otherwise become `{ local name = 1 }` / `t.local name = 1`.
+    for (src, expected) in [
+        ("local info = { name = 1 }\nname = 5\nreturn info\n",
+         "local info = { name = 1 }\nlocal name = 5\nreturn info\n"),
+        ("local t = {}\nt.name = 1\nname = 5\nreturn t\n",
+         "local t = {}\nt.name = 1\nlocal name = 5\nreturn t\n"),
+        ("local t = {}\nt[1] = { name = 1 }; name = 5\nreturn t\n",
+         "local t = {}\nt[1] = { name = 1 }; local name = 5\nreturn t\n"),
+    ] {
+        let (tree, analysis) = build_analysis_for_quickfix(src);
+        let diag = find_lsp_diagnostic(src, &tree, &analysis, "create-global")
+            .unwrap_or_else(|| panic!("expected create-global in {src:?}"));
+        let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+            .unwrap_or_else(|| panic!("expected a quick fix for {src:?}"));
+        assert_eq!(apply_text_edit(src, &edit), expected);
+    }
+}
+
+#[test]
+fn quick_fix_create_global_skips_multi_target_write() {
+    // `local` before the second target of `a, G = …` isn't valid Lua, so no
+    // local-declaration fix is offered there.
+    let src = "local a\na, NewMultiGlobal = 1, 2\nreturn a\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "create-global")
+        .expect("expected create-global diagnostic");
+    assert!(first_quick_fix_edit(src, &tree, &analysis, &diag).is_none(),
+        "no local-declaration fix for a multi-target assignment");
+}
+
+#[test]
 fn quick_fix_wrong_flavor_api_wraps_in_guard() {
     use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
     // wrong-flavor-api needs flavored stubs + project flavors to fire naturally,

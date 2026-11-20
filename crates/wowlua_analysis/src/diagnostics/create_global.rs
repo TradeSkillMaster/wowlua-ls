@@ -26,7 +26,10 @@ impl DiagnosticPass for CreateGlobal {
                 && analysis.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
             if name.starts_with('_') { continue; }
             if analysis.explicit_globals.contains(&name) { continue; }
-            let Some(first_ver) = sym.versions.first() else { continue; };
+            // Report at the first write in source order. Versions are in build
+            // order, which differs: an if-chain's bodies are built last-to-first,
+            // so a global written in every branch has the `else` write first.
+            let Some(first_ver) = sym.versions.iter().min_by_key(|v| v.def_node.start) else { continue; };
             let def_start = first_ver.def_node.start;
             let def_end = first_ver.def_node.end;
             if analysis.is_local_declaration_site(tree, def_start) { continue; }

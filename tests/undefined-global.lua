@@ -254,3 +254,94 @@ _consume(rptClosureResult)
 repeat
     local rptTail = 1
 until (function() return rptTail == 1 end)()
+
+-- A global written in several branches of an if-chain is reported once, at its
+-- first write in source order — not at the `else` write, which the build visits
+-- first because it walks the branch bodies last-to-first.
+local branchA = math.random() > 0.5
+local branchB = math.random() > 0.5
+if branchA then
+    BranchChainGlobal = {}
+    --  ^ diag: create-global
+elseif branchB then
+    BranchChainGlobal = {}
+else
+    BranchChainGlobal = {}
+end
+
+if branchA then
+    IfElseGlobal = 1
+    --  ^ diag: create-global
+else
+    IfElseGlobal = 2
+end
+
+-- Only the later branches write it: the first of those is the creation site.
+if branchA then
+    _consume(branchB)
+elseif branchB then
+    LaterBranchGlobal = 1
+    --  ^ diag: create-global
+else
+    LaterBranchGlobal = 2
+end
+
+-- Nested chains: the outer `if` branch's inner `if` holds the first write.
+if branchA then
+    if branchB then
+        NestedChainGlobal = 1
+        --  ^ diag: create-global
+    else
+        NestedChainGlobal = 2
+    end
+else
+    NestedChainGlobal = 3
+end
+
+-- Global function definitions in each branch.
+if branchA then
+    function BranchChainFn() end
+    --       ^ diag: create-global
+else
+    function BranchChainFn() end
+end
+
+-- An if-chain inside a function body.
+local function _branchInit()
+    if branchA then
+        FnBranchGlobal = 1
+        --  ^ diag: create-global
+    else
+        FnBranchGlobal = 2
+    end
+end
+_branchInit()
+
+-- A later straight-line write after the chain is not reported.
+if branchA then
+    ChainThenLaterGlobal = 1
+    --  ^ diag: create-global
+else
+    ChainThenLaterGlobal = 2
+end
+ChainThenLaterGlobal = 3
+
+-- Several closures in one statement are built last-to-first too: a global each
+-- of them writes is reported at the first closure's write.
+local localeHooks = {
+    enUS = function()
+        LocaleHookGlobal = 1
+        --  ^ diag: create-global
+    end,
+    deDE = function()
+        LocaleHookGlobal = 2
+    end,
+}
+_consume(localeHooks)
+
+_consume(function()
+    CallbackArgGlobal = 1
+    --  ^ diag: create-global
+end, function()
+    CallbackArgGlobal = 2
+end)

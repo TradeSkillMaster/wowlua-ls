@@ -227,7 +227,9 @@ pub fn compute_quick_fixes(
             // intentional global in the config's allowed write-globals.
             let mut acts = Vec::new();
             if let Some(name) = parse_quoted(&diag.message, "implicit global creation '") {
-                if let Some(a) = make_add_local_for_name(uri, text, diag, name) {
+                if let Some((tree, _)) = tree_and_analysis
+                    && let Some(a) = make_localize_global_write_action(uri, text, diag, name, tree)
+                {
                     acts.push(CodeActionOrCommand::CodeAction(a));
                 }
                 if let Some(ctx) = config_ctx
@@ -745,9 +747,45 @@ pub(super) fn make_add_local_declaration_action(
     make_add_local_for_name(uri, text, diag, name)
 }
 
-/// Shared core: insert `local ` before the first assignment `name = …` in the
-/// file. Powers both the `undefined-global` and `create-global` "declare as local"
-/// fixes. Returns `None` when the name has no assignment (nothing to localize).
+/// Quick fix for `create-global`: declare the flagged write `local`. The
+/// diagnostic sits on the global's first write in source order, so the edit goes
+/// there rather than to the first text match for `name =`, which can be a table
+/// key (`{ name = 1 }`) or a field write (`self.name = 1`) and would turn that
+/// line into a syntax error. Only a single-target `Name = …` is localized:
+/// `local` before one target of `a, Name = …` isn't valid Lua.
+pub(super) fn make_localize_global_write_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    name: &str,
+    tree: &SyntaxTree,
+) -> Option<CodeAction> {
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, use_utf8());
+    let token = crate::syntax::tree::SyntaxNode::new_root(tree)
+        .token_at_offset(crate::syntax::TextSize::from(ds))
+        .right_biased()?;
+    if token.kind() != SyntaxKind::Name || token.text() != name { return None; }
+    let target = token.parent().filter(|n| n.kind() == SyntaxKind::NameRef)?;
+    let var_list = target.parent().filter(|n| n.kind() == SyntaxKind::VariableList)?;
+    if var_list.parent()?.kind() != SyntaxKind::AssignStatement || var_list.children().count() != 1 {
+        return None;
+    }
+    let edit = lsp_types::TextEdit {
+        range: Range { start: diag.range.start, end: diag.range.start },
+        new_text: "local ".to_string(),
+    };
+    Some(CodeAction {
+        title: format!("Add `local` declaration for `{}`", name),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(single_file_edit(uri, vec![edit])),
+        ..Default::default()
+    })
+}
+
+/// Insert `local ` before the first assignment `name = …` in the file: the
+/// `undefined-global` "declare as local" fix. Returns `None` when the name has no
+/// assignment (nothing to localize).
 #[allow(clippy::mutable_key_type)]
 pub(super) fn make_add_local_for_name(
     uri: &lsp_types::Uri,
