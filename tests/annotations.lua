@@ -1383,6 +1383,84 @@ seeOnlyNoDoc()
 --        ^ doc: @*see* RelatedThing
 local _seeTagged = nil
 
+-- ── Doc comments: class description, @field / @param / @return descriptions ──
+
+--- A documented widget.
+---@class DocWidget
+---@field count number How many there are.
+---@field label? string # The display label.
+---@field onDone fun(ok: boolean) Called when finished.
+---@field plain number
+local DocWidget = {}
+
+--- Runs the widget.
+---@param times number How many times to run.
+---@param tag? string
+---@return boolean ok Whether it worked.
+---@return string # The message.
+function DocWidget:Run(times, tag)
+    local _ = times
+--            ^ doc: How many times to run.
+    local _ = tag
+--            ^ doc: !How many
+    return times > 0, tag or ""
+end
+
+-- The class doc comment shows on the class name and on values of the class;
+-- the class body lists each field's description as a trailing comment.
+---@type DocWidget
+--        ^ doc: A documented widget.
+local docWidget = DocWidget
+--    ^ doc: A documented widget.
+--    ^ hover: (local) docWidget: DocWidget {\n  Run: fun(self: DocWidget, times: number, tag?: string): boolean, string,\n  count: number, -- How many there are.\n  extra: number,\n  label: string?, -- The display label.\n  onDone: fun(ok: boolean), -- Called when finished.\n  plain: number\n}
+
+-- A field's description shows on its hover.
+local _ = docWidget.count
+--                  ^ doc: How many there are.
+local _ = docWidget.label
+--                  ^ doc: The display label.
+docWidget.onDone(true)
+--        ^ doc: Called when finished.
+local _ = docWidget.plain
+--                  ^ doc: !How many
+
+-- Return descriptions follow the param descriptions, by name or position.
+docWidget:Run(1)
+--        ^ doc: @*param* `times` — How many times to run.
+docWidget:Run(1)
+--        ^ doc: @*return* `ok` — Whether it worked.
+docWidget:Run(1)
+--        ^ doc: @*return* — The message.
+
+-- A redeclaration without a doc comment keeps the first declaration's.
+---@class DocWidget
+---@field extra number
+
+---@type DocWidget
+--        ^ doc: A documented widget.
+local _docWidget2 = nil
+
+-- A `---` comment trailing code on the line above isn't the class's doc.
+local _docMax = 5 --- The retry limit.
+---@class DocTrailingAbove
+---@field n number
+
+---@type DocTrailingAbove
+--        ^ doc: !The retry limit.
+local _docTrailing = nil
+
+-- A dash-only banner line in a doc comment is dropped, not rendered as a rule.
+-------------------------------------------
+--- A bannered class.
+-------------------------------------------
+---@class DocBannered
+---@field n number
+
+---@type DocBannered
+--        ^ doc: A bannered class.
+--        ^ doc: !---
+local _docBannered = nil
+
 -- ── Blank line separates annotation blocks ──────────────────────────────
 
 ---@class BlankLineSep

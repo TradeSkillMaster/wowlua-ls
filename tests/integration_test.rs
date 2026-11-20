@@ -2173,6 +2173,17 @@ fn crossfile_addon_table() {
 }
 
 #[test]
+fn crossfile_doc_comments() {
+    // A class's doc comment, its `@field` descriptions, and a function's
+    // `@param`/`@return` descriptions show in hover from another file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/doc_comments_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn redundant_logical_crossfile_method_override() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/redundant-logical-crossfile/method_override_user.lua",

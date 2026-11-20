@@ -4180,6 +4180,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Removing a class's doc comment drops it from the class's hover in its own
+    /// file, though the edit is display-only and so rebuilds nothing: the
+    /// workspace's table still carries the removed doc.
+    #[test]
+    fn removed_class_doc_leaves_its_own_file_hover() {
+        let saved = "---Old doc\n---@class DocGone\nlocal DocGone = {}\n";
+        let (dir, writer_uri, _reader, ws, _documents) = widget_workspace("class_doc", saved);
+        let class_doc = |text: &str| {
+            let tree = parse_lua(text);
+            let result = analyze_lua_parsed(&writer_uri, &ws.pre_globals, &ws.configs, &tree);
+            let offset = text.find("@class DocGone").unwrap() + "@class ".len();
+            result.hover_at(&tree, offset as u32).and_then(|h| h.doc)
+        };
+        assert_eq!(class_doc(saved).as_deref(), Some("Old doc"), "the saved doc shows");
+        assert_eq!(class_doc("---@class DocGone\nlocal DocGone = {}\n"), None, "the removed doc is gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     const WIDGET_SAVED: &str = "---@class Widget\nlocal Widget = {}\n\nfunction Widget:Init()\n    self.label = 1 + 2\nend\n";
     const WIDGET_READER: &str = "---@type Widget\nlocal w\nlocal label = w.label\nlocal count = WIDGET_COUNT\n";
 

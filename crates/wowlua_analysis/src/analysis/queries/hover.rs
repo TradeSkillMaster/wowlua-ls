@@ -69,7 +69,12 @@ impl AnalysisResult {
                     let subs = self.method_name_range_at(tree, offset)
                         .and_then(|r| self.method_decl_subs.get(&r));
                     let mut type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self, subs));
-                    let mut doc = self.format_function_doc(*func_idx);
+                    // A function-typed `@field` (`@field OnClick fun(self)`) keeps
+                    // its description above the function's own doc.
+                    let field_desc = self.get_field(table_idx, &field_name)
+                        .and_then(|fi| fi.description.as_deref())
+                        .or_else(|| self.field_description(table_idx, &field_name));
+                    let mut doc = join_docs(field_desc.map(str::to_string), self.format_function_doc(*func_idx));
                     // When the receiver is a union type, collect additional function
                     // signatures from other union members for the hover display.
                     if !is_g_env && receiver_tables.len() > 1 {
@@ -214,7 +219,11 @@ impl AnalysisResult {
                 {
                     type_str.push_str(&format!(" = {}", val));
                 }
-                let doc = effective_type.as_ref().and_then(|r| self.doc_for_type(r));
+                // The field's own `@field` description first, then its type's doc.
+                let field_desc = field_info.description.as_deref()
+                    .or_else(|| self.field_description(table_idx, &field_name))
+                    .map(str::to_string);
+                let doc = join_docs(field_desc, effective_type.as_ref().and_then(|r| self.doc_for_type(r)));
                 let doc = if let Some(ValueType::Table(Some(table_idx))) = &effective_type {
                     self.append_call_hover(*table_idx, &mut type_str, doc)
                 } else {
@@ -320,7 +329,9 @@ impl AnalysisResult {
                     self.narrow_type_for_display(resolved, symbol_idx, offset)
                 };
                 let display_ref = display_type.as_ref().unwrap_or(resolved);
-                let doc = self.doc_for_type(display_ref);
+                // A parameter's own `@param` description leads its doc.
+                let param_desc = if kind == "param" { self.find_param_description(symbol_idx) } else { None };
+                let doc = join_docs(param_desc.clone(), self.doc_for_type(display_ref));
                 // A param whose annotation is a function-typed alias (e.g.
                 // `@param cb MyFuncType` where `MyFuncType = fun(...)`) is
                 // materialized to a concrete Function for type-checking, but its
@@ -340,7 +351,7 @@ impl AnalysisResult {
                     // Re-derived under the guard on purpose: `doc_for_type` reads
                     // the display context to drop predicates the surrounding
                     // context guards clear, so the copy above was built without it.
-                    let doc = self.doc_for_type(display_ref);
+                    let doc = join_docs(param_desc, self.doc_for_type(display_ref));
                     let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false, None));
                     return Some(HoverResult { type_str, doc });
                 }
@@ -445,7 +456,7 @@ impl AnalysisResult {
             } else {
                 format!("{} {}", prefix, word)
             };
-            let doc = self.format_see_doc(&table.see);
+            let doc = self.format_class_doc(table_idx);
             return Some(HoverResult { type_str, doc });
         }
         // Check aliases (local + external)
@@ -691,5 +702,13 @@ impl AnalysisResult {
             None => (format!("({kind}) {name}: ?"), None),
         };
         Some(HoverResult { type_str, doc })
+    }
+}
+
+/// Two hover doc sections, separated by a blank line when both are present.
+fn join_docs(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
     }
 }

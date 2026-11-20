@@ -35,3 +35,9 @@ function Simple(x: number) -> boolean
 (field) frame: Frame<MyTemplate>
 (field) mixed: Frame & {extra: string}
 (field) nested: {cb: fun(x: table<string, number>): void}
+(class) DocWidget {
+  count: number, -- How many there are.
+  label: string?, -- The display label.
+  onDone: fun(ok: boolean), -- Called when finished.
+  plain: number -- The last field has no comma.
+}

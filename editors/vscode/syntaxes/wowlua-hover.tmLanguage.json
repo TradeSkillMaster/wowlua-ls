@@ -202,7 +202,7 @@
         "2": {"name": "keyword.operator.optional.wowlua-hover"},
         "3": {"name": "punctuation.separator.type.wowlua-hover"}
       },
-      "end": "(?=,)|$",
+      "end": "(?=,|--)|$",
       "patterns": [
         {"include": "#type-expression"}
       ]
@@ -227,7 +227,7 @@
       "beginCaptures": {
         "1": {"name": "punctuation.separator.type.wowlua-hover"}
       },
-      "end": "$",
+      "end": "(?=--)|$",
       "patterns": [
         {"include": "#type-expression"}
       ]

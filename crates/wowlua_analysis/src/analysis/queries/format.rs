@@ -852,11 +852,19 @@ impl AnalysisResult {
             ValueType::Function(Some(func_idx)) => {
                 self.format_function_doc(*func_idx)
             }
-            ValueType::Table(Some(table_idx)) => {
-                self.format_see_doc(&self.table(*table_idx).see)
-            }
+            ValueType::Table(Some(table_idx)) => self.format_class_doc(*table_idx),
             _ => None,
         }
+    }
+
+    /// A class table's hover doc: the doc comment above its `@class` line, then
+    /// its `@see` targets.
+    pub(super) fn format_class_doc(&self, table_idx: TableIndex) -> Option<String> {
+        let table = self.table(table_idx);
+        let parts: Vec<String> = table.doc.iter().cloned()
+            .chain(self.format_see_doc(&table.see))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
     /// Render `@see` targets as hover doc lines (one per entry).
@@ -872,6 +880,7 @@ impl AnalysisResult {
     pub(super) fn format_function_doc(&self, func_idx: FunctionIndex) -> Option<String> {
         let func = self.func(func_idx);
         let has_descriptions = func.param_descriptions.iter().any(|d| d.is_some());
+        let has_return_descriptions = func.return_descriptions.iter().any(|d| d.is_some());
         let flavors_mask = func.flavors;
         // Flavor-aware: a WoW-stub `@deprecated` that is still the live API on a
         // flavor the addon targets is not shown as deprecated — mirrors the gate
@@ -880,7 +889,7 @@ impl AnalysisResult {
             && !(self.ir.is_stub_function(func_idx)
                 && crate::flavor::deprecation_suppressed(self.addon_flavors, flavors_mask));
         let secrecy = self.format_secrecy_doc(func, self.ir.is_stub_function(func_idx));
-        if func.doc.is_none() && !has_descriptions && func.see.is_empty()
+        if func.doc.is_none() && !has_descriptions && !has_return_descriptions && func.see.is_empty()
             && flavors_mask == 0 && !show_deprecated && secrecy.is_none()
         {
             return None;
@@ -914,6 +923,19 @@ impl AnalysisResult {
             if !param_lines.is_empty() {
                 parts.push(param_lines.join("\n\n"));
             }
+        }
+        if has_return_descriptions {
+            // Each described return by its name, else its position.
+            let return_lines: Vec<String> = func.return_descriptions.iter().enumerate()
+                .filter_map(|(i, desc)| {
+                    let desc = desc.as_ref()?;
+                    Some(match func.return_labels.get(i).cloned().flatten() {
+                        Some(label) => format!("@*return* `{label}` — {desc}"),
+                        None => format!("@*return* — {desc}"),
+                    })
+                })
+                .collect();
+            parts.push(return_lines.join("\n\n"));
         }
         if let Some(see_block) = self.format_see_doc(&func.see) {
             parts.push(see_block);
@@ -1202,7 +1224,9 @@ impl AnalysisResult {
 
     /// Collect the fields of one or more tables visible from inside the `viewers`
     /// classes (see [`Ir::visible_from`]), deduplicating by name.
-    /// Returns sorted, formatted field lines (e.g. `"  name: type"`).
+    /// Returns sorted, formatted field lines ready to join with `\n` (e.g.
+    /// `"  name: type,"`), each followed by its `@field` description as a
+    /// trailing `-- comment`.
     pub(super) fn collect_accessible_fields(
         &self,
         table_indices: &[TableIndex],
@@ -1210,7 +1234,7 @@ impl AnalysisResult {
     ) -> Vec<String> {
         let indent = "  ";
         let mut seen: HashSet<&str> = HashSet::default();
-        let mut fields: Vec<String> = Vec::new();
+        let mut fields: Vec<(String, Option<&str>)> = Vec::new();
         for &table_idx in table_indices {
             let table = self.table(table_idx);
             let overlay = self.ir.overlay_fields.get(&table_idx);
@@ -1219,20 +1243,38 @@ impl AnalysisResult {
             // This file's overlay first, as a read of the field sees it.
             for (name, field_info) in overlay.into_iter().flatten().chain(&table.fields) {
                 if seen.insert(name.as_str()) && is_accessible(field_info) {
-                    fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
+                    fields.push((self.format_enum_field_line(indent, name, field_info, is_enum, 0), self.field_description(table_idx, name)));
                 }
             }
             for &parent_idx in &table.parent_classes {
                 let parent_table = self.table(parent_idx);
                 for (name, field_info) in &parent_table.fields {
                     if seen.insert(name.as_str()) && is_accessible(field_info) {
-                        fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
+                        fields.push((self.format_enum_field_line(indent, name, field_info, is_enum, 0), self.field_description(parent_idx, name)));
                     }
                 }
             }
         }
         fields.sort();
-        fields
+        let last = fields.len().saturating_sub(1);
+        fields.into_iter().enumerate().map(|(i, (line, desc))| {
+            let comma = if i < last { "," } else { "" };
+            match desc {
+                Some(desc) => format!("{line}{comma} -- {desc}"),
+                None => format!("{line}{comma}"),
+            }
+        }).collect()
+    }
+
+    /// The `@field` description of `table_idx`'s field `name`: the one this
+    /// file's overlay declares, else the table's own. The overlay entry of a field
+    /// re-typed here carries no description of its own, so fall back to the
+    /// table's.
+    pub(super) fn field_description(&self, table_idx: TableIndex, name: &str) -> Option<&str> {
+        self.ir.overlay_fields.get(&table_idx)
+            .and_then(|o| o.get(name))
+            .and_then(|fi| fi.description.as_deref())
+            .or_else(|| self.table(table_idx).fields.get(name).and_then(|fi| fi.description.as_deref()))
     }
 
     /// Format a type for hover display, filtering out the private/protected fields
@@ -1251,7 +1293,7 @@ impl AnalysisResult {
                 if fields.is_empty() {
                     return class_name.clone();
                 }
-                return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
+                return format!("{} {{\n{}\n}}", class_name, fields.join("\n"));
             }
         }
         if let ValueType::Intersection(types) = vt {
@@ -1301,7 +1343,7 @@ impl AnalysisResult {
                 if fields.is_empty() {
                     return header;
                 }
-                return format!("{} {{\n{}\n}}", header, fields.join(",\n"));
+                return format!("{} {{\n{}\n}}", header, fields.join("\n"));
             }
         }
         self.format_type(vt)
@@ -2054,6 +2096,17 @@ impl AnalysisResult {
             ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
         )?;
         Some(crate::annotations::format_annotation_type(fun_ann))
+    }
+
+    /// The `@param` description of the parameter `symbol_idx` declares.
+    pub(super) fn find_param_description(&self, symbol_idx: SymbolIndex) -> Option<String> {
+        if symbol_idx.is_external() {
+            return None;
+        }
+        self.ir.functions.iter().find_map(|func| {
+            let pos = func.args.iter().position(|&s| s == symbol_idx)?;
+            func.param_descriptions.get(pos).cloned().flatten()
+        })
     }
 
     /// Find the annotation text for a param symbol by locating its function.

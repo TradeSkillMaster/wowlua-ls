@@ -26,6 +26,22 @@ The hover renders as:
 
 Doc comments are rendered as Markdown, so you can also use `**bold**`, lists, inline `` `code` ``, and links. The doc block must sit directly above the declaration — a truly blank line (one with no `---`) between them detaches it.
 
+Text after the type of a `@param`, `@return`, or `@field` is that item's description, with or without a leading `#`. A doc comment above `@class` describes the class:
+
+```lua
+---A saved character profile.
+---@class Profile
+---@field name string The character's name.
+---@field level? number # Last seen level.
+
+---Finds a profile.
+---@param name string The character to look up.
+---@return Profile? profile The profile, if one was saved.
+function FindProfile(name) end
+```
+
+Hovering a function lists its parameter and return descriptions; hovering a parameter inside the function shows its own. Hovering a field shows its description, and a class's hover shows the class's doc comment, with each field's description as a trailing `-- comment` in the field list. On `@return`, the first word after the type is the return's name (`profile` above), as in LuaLS; to describe an unnamed return, start the description with `#`: `---@return number # The count.`
+
 ## `@param`: Parameter types
 
 Declare what a function expects:

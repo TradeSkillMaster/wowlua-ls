@@ -1665,6 +1665,11 @@ pub struct TableInfo {
     /// `@see <target>` entries attached to the declaring `@class`.
     #[serde(default)]
     pub see: Vec<String>,
+    /// The doc comment above the declaring `@class` line. Workspace-authored,
+    /// display-only — `#[serde(skip)]` keeps it out of the stub blob, like
+    /// `FieldInfo::description`, so no BLOB_VERSION bump is needed.
+    #[serde(skip)]
+    pub doc: Option<String>,
     /// True when created from explicit `table<K, V>` annotation syntax (not `V[]`).
     /// Controls hover display: explicit maps show `table<K, V>`, arrays show `V[]`.
     /// Skipped in serde: set at runtime during per-file prescan and build_on_stubs,

@@ -832,7 +832,14 @@ pub fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, Option<
     if trailing.starts_with("...") {
         return (AnnotationType::VarArgs(Box::new(parse_type(type_only))), None, description);
     }
+    // LuaLS `<type> [name] [# description]`: whatever follows the name (or the
+    // type, when there's no name) is the description, with or without the `#`.
     let name = extract_trailing_ident(trailing);
+    let rest = match &name {
+        Some(n) => &trailing[n.len()..],
+        None => trailing,
+    };
+    let description = description.or_else(|| trailing_description(rest));
     (parse_type(type_only), name, description)
 }
 

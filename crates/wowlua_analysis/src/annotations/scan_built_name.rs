@@ -387,6 +387,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
                     declared_field_names: HashSet::default(),
                     field_literals: HashMap::default(),
                     field_descriptions: HashMap::default(),
+                    doc: None,
                     bare_inferred_field_names: HashSet::default(),
                     typed_ctor_entries: HashSet::default(),
                     ctor_function_entries: HashSet::default(),

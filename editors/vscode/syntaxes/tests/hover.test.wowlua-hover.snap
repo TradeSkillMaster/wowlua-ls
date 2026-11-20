@@ -421,4 +421,54 @@
 #                                                   ^ source.wowlua-hover
 #                                                    ^^^^ source.wowlua-hover constant.language.wowlua-hover
 #                                                        ^ source.wowlua-hover punctuation.definition.table.end.wowlua-hover
+>(class) DocWidget {
+#^ source.wowlua-hover punctuation.definition.tuple.begin.wowlua-hover
+# ^^^^^ source.wowlua-hover
+#      ^ source.wowlua-hover punctuation.definition.tuple.end.wowlua-hover
+#       ^^^^^^^^^^^^^ source.wowlua-hover
+>  count: number, -- How many there are.
+#^^ source.wowlua-hover
+#  ^^^^^ source.wowlua-hover variable.parameter.wowlua-hover
+#       ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#        ^ source.wowlua-hover
+#         ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#               ^^ source.wowlua-hover
+#                 ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
+#                   ^^^^^^^^^^^^^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>  label: string?, -- The display label.
+#^^ source.wowlua-hover
+#  ^^^^^ source.wowlua-hover variable.parameter.wowlua-hover
+#       ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#        ^ source.wowlua-hover
+#         ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#               ^ source.wowlua-hover keyword.operator.optional.wowlua-hover
+#                ^^ source.wowlua-hover
+#                  ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
+#                    ^^^^^^^^^^^^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>  onDone: fun(ok: boolean), -- Called when finished.
+#^^ source.wowlua-hover
+#  ^^^^^^ source.wowlua-hover variable.parameter.wowlua-hover
+#        ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#         ^ source.wowlua-hover
+#          ^^^ source.wowlua-hover keyword.control.function.wowlua-hover
+#             ^ source.wowlua-hover punctuation.definition.parameters.begin.wowlua-hover
+#              ^^ source.wowlua-hover variable.parameter.wowlua-hover
+#                ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                 ^ source.wowlua-hover
+#                  ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                         ^ source.wowlua-hover punctuation.definition.parameters.end.wowlua-hover
+#                          ^^ source.wowlua-hover
+#                            ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
+#                              ^^^^^^^^^^^^^^^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>  plain: number -- The last field has no comma.
+#^^ source.wowlua-hover
+#  ^^^^^ source.wowlua-hover variable.parameter.wowlua-hover
+#       ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#        ^ source.wowlua-hover
+#         ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#               ^ source.wowlua-hover
+#                ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
+#                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>}
+#^^ source.wowlua-hover
 >

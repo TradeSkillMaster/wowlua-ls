@@ -572,6 +572,10 @@ pub struct ClassDecl {
     /// Not serialized into the precomputed stubs blob — populated at scan time.
     #[serde(skip)]
     pub field_descriptions: HashMap<String, String>,
+    /// The doc comment above the `@class` line (display-only, shown in hover).
+    /// Not serialized into the precomputed stubs blob — populated at scan time.
+    #[serde(skip)]
+    pub doc: Option<String>,
     /// Fields from bare self-field assignments — treated as truthiness-uncertain
     /// since the assignment may not have run yet.
     #[serde(skip)]
@@ -709,6 +713,7 @@ impl ClassDecl {
             declared_field_names: HashSet::default(),
             field_literals: HashMap::default(),
             field_descriptions: HashMap::default(),
+            doc: None,
             bare_inferred_field_names: HashSet::default(),
             typed_ctor_entries: HashSet::default(),
             ctor_function_entries: HashSet::default(),
@@ -1175,7 +1180,13 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
 
     let mut block = parse_annotation_lines(&annotation_lines);
     block.class_comment_start = class_comment_start;
+    block.doc = doc_text(&doc_lines);
 
+    block
+}
+
+/// The hover doc text of plain `---` doc-comment lines (prefix already stripped).
+fn doc_text(doc_lines: &[String]) -> Option<String> {
     // Build the doc string, stripping editor-specific command: links, and
     // preserve the author's line structure so a multi-line doc comment renders
     // as multiple lines in the (Markdown) hover: a blank `---` line becomes a
@@ -1184,10 +1195,16 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     // `  \n` convention already used for `.toc` hovers (toc/queries.rs). The
     // blank-vs-drop decision keys off the *pre-strip* line: an authored blank
     // `---` line is kept (paragraph break), but a line that was *only* a
-    // command: link (stripped to "") drops out instead of leaving a break.
+    // command: link (stripped to "") drops out instead of leaving a break, as
+    // does a dash-only banner line (`----------`), which Markdown would render
+    // as a horizontal rule.
     let doc_text = doc_lines
         .iter()
         .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && trimmed.chars().all(|c| c == '-') {
+                return None;
+            }
             let stripped = strip_command_links(line);
             if stripped.is_empty() {
                 line.trim().is_empty().then(String::new)
@@ -1199,9 +1216,7 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
         .join("\n")
         .trim()
         .to_string();
-    block.doc = if doc_text.is_empty() { None } else { Some(doc_text) };
-
-    block
+    (!doc_text.is_empty()).then_some(doc_text)
 }
 
 /// A Lua line comment past its `---` opener and any spaces or tabs, so it starts
@@ -1292,6 +1307,9 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
     let mut current_alias_range: Option<(u32, u32)> = None;
     let mut current_event_range: Option<(u32, u32)> = None;
     let mut prev_was_newline = false;
+    // Whether no token but whitespace precedes this one on its line: a `---`
+    // comment trailing code is not a doc comment.
+    let mut at_line_start = true;
 
     for event in root.descendants_with_tokens() {
         let NodeOrToken::Token(tok) = event else { continue };
@@ -1303,8 +1321,14 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                     let starts_new_decl = has_annotation_tag(text, "class") || has_annotation_tag(text, "enum") || has_annotation_tag(text, "alias") || has_annotation_tag(text, "event");
                     let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| has_annotation_tag(l, "class") || has_annotation_tag(l, "enum") || has_annotation_tag(l, "alias") || has_annotation_tag(l, "event"));
                     if group_has_decl {
+                        // Plain doc lines right above this declaration document it,
+                        // not the one before.
+                        let doc_start = current_group.iter()
+                            .rposition(|(l, _, _)| is_annotation_comment(l))
+                            .map_or(0, |i| i + 1);
+                        let carried = current_group.split_off(doc_start);
                         flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
-                        current_group.clear();
+                        current_group = carried;
                         current_class_range = None;
                         current_alias_range = None;
                         current_event_range = None;
@@ -1324,11 +1348,12 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                 }
                 let r = tok.text_range();
                 current_group.push((text.to_string(), u32::from(r.start()), u32::from(r.end())));
-            } else if text.starts_with("---") {
+            } else if text.starts_with("---") && at_line_start {
                 let r = tok.text_range();
                 current_group.push((text.to_string(), u32::from(r.start()), u32::from(r.end())));
             }
             prev_was_newline = false;
+            at_line_start = false;
         } else if kind == SyntaxKind::Newline {
             if prev_was_newline && !current_group.is_empty() {
                 flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
@@ -1338,8 +1363,10 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                 current_event_range = None;
             }
             prev_was_newline = true;
+            at_line_start = true;
         } else if kind == SyntaxKind::Whitespace {
         } else {
+            at_line_start = false;
             flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
             current_group.clear();
             current_class_range = None;
@@ -1700,7 +1727,20 @@ fn flush_group(
 ) {
     if lines.is_empty() { return; }
     let line_strs: Vec<String> = lines.iter().map(|(s, _, _)| s.clone()).collect();
-    let block = parse_annotation_lines(&line_strs);
+    let mut block = parse_annotation_lines(&line_strs);
+    // The plain `---` lines above the declaration are its doc comment.
+    let decl_line = line_strs.iter().position(|l| is_annotation_comment(l)
+        && ["class", "enum"].iter().any(|tag| has_annotation_tag(l, tag)));
+    if let Some(decl_line) = decl_line {
+        let doc_lines: Vec<String> = line_strs[..decl_line].iter()
+            .filter(|l| !is_annotation_comment(l))
+            .map(|l| {
+                let content = l.strip_prefix("---").unwrap_or(l);
+                content.strip_prefix(' ').unwrap_or(content).to_string()
+            })
+            .collect();
+        block.doc = doc_text(&doc_lines);
+    }
     if block.meta { result.has_meta = true; }
     if let Some(class_name) = block.class {
         let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
@@ -1713,7 +1753,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), inferred_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect(), onload: Default::default() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, doc: block.doc.clone(), bare_inferred_field_names: HashSet::default(), typed_ctor_entries: HashSet::default(), ctor_function_entries: HashSet::default(), untyped_ctor_entries: HashSet::default(), inferred_ctor_entries: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect(), onload: Default::default() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -2551,6 +2591,23 @@ mod tests {
             .unwrap_or_else(|| panic!("class `{name}` was not scanned")).def_range;
         assert!(class_range("TabClass").is_some(), "tab-separated @class must capture def_range");
         assert!(class_range("SpaceClass").is_some(), "space-separated @class must capture def_range");
+    }
+
+    #[test]
+    fn return_description_forms() {
+        // LuaLS `@return <type> [name] [# description]`, the `#` optional.
+        let block = parse(&[
+            "---@return boolean ok Whether it worked.",
+            "---@return string msg # The message.",
+            "---@return number # Unnamed.",
+            "---@return table|nil result",
+            "---@return integer count @ Legacy marker.",
+        ]);
+        assert_eq!(block.return_names, vec![
+            Some("ok".to_string()), Some("msg".to_string()), None, Some("result".to_string()), Some("count".to_string()),
+        ]);
+        let descs: Vec<_> = block.return_descriptions.iter().map(Option::as_deref).collect();
+        assert_eq!(descs, vec![Some("Whether it worked."), Some("The message."), Some("Unnamed."), None, Some("Legacy marker.")]);
     }
 
     #[test]

@@ -16,6 +16,8 @@ pub use shared_map::SharedMap;
 struct TupleFormReturnData {
     return_annotations: Vec<ValueType>,
     labels: Vec<Option<String>>,
+    /// Per-position `@return` descriptions, kept in step with `labels`.
+    descriptions: Vec<Option<String>>,
     overloads: Vec<ResolvedOverload>,
     raw_override: Option<Vec<AnnotationType>>,
     has_vararg_tail: bool,
@@ -5423,12 +5425,13 @@ impl PreResolvedGlobals {
                     Self::resolve_annotation_gen(at, generic_annotations, ctx)
                 });
             TupleFormReturnData {
-                return_annotations: col_vts, labels, overloads,
+                return_annotations: col_vts, labels, descriptions: Vec::new(), overloads,
                 raw_override: Some(col_raws), has_vararg_tail: vararg_tail,
             }
         } else {
             let mut vts = Vec::new();
             let mut labels = Vec::new();
+            let mut descriptions = Vec::new();
             for (i, rt) in returns.iter().enumerate() {
                 if matches!(rt, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")) {
                     continue;
@@ -5447,6 +5450,7 @@ impl PreResolvedGlobals {
                         if let Some(vt) = Self::resolve_annotation_gen(&class_type, generic_annotations, ctx) {
                             vts.push(vt);
                             labels.push(return_names.get(i).cloned().flatten());
+                            descriptions.push(return_descriptions.get(i).cloned().flatten());
                         }
                     }
                     continue;
@@ -5454,10 +5458,11 @@ impl PreResolvedGlobals {
                 if let Some(vt) = Self::resolve_annotation_gen(rt, generic_annotations, ctx) {
                     vts.push(vt);
                     labels.push(return_names.get(i).cloned().flatten());
+                    descriptions.push(return_descriptions.get(i).cloned().flatten());
                 }
             }
             TupleFormReturnData {
-                return_annotations: vts, labels, overloads: Vec::new(),
+                return_annotations: vts, labels, descriptions, overloads: Vec::new(),
                 raw_override: None, has_vararg_tail: false,
             }
         };
@@ -5604,7 +5609,7 @@ impl PreResolvedGlobals {
             return_annotations_raw: tuple_ret.raw_override
                 .unwrap_or_else(|| non_self_returns.iter().map(|r| (*r).clone()).collect()),
             return_labels: tuple_ret.labels,
-            return_descriptions: return_descriptions.to_vec(),
+            return_descriptions: tuple_ret.descriptions,
             overloads,
             doc,
             deprecated,
@@ -5687,6 +5692,7 @@ mod tests {
             declared_field_names: crate::collections::HashSet::default(),
             field_literals: crate::collections::HashMap::default(),
             field_descriptions: crate::collections::HashMap::default(),
+            doc: None,
             bare_inferred_field_names: crate::collections::HashSet::default(),
             typed_ctor_entries: crate::collections::HashSet::default(),
             ctor_function_entries: crate::collections::HashSet::default(),

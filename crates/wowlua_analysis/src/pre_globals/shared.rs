@@ -104,6 +104,10 @@ pub fn register_classes_and_aliases(
             if !added.is_empty() {
                 reg.tables[prev.val() - EXT_BASE].correlated_groups.extend(added);
             }
+            // Likewise the first doc comment any declaration gives it.
+            if class.doc.is_some() && reg.tables[prev.val() - EXT_BASE].doc.is_none() {
+                reg.tables[prev.val() - EXT_BASE].doc = class.doc.clone();
+            }
             continue;
         }
         let table_idx = TableIndex(EXT_BASE + reg.tables.len());
@@ -127,6 +131,9 @@ pub fn register_classes_and_aliases(
                 correlated_groups.push(group.clone());
             }
         }
+        // And a doc comment, when this declaration has none of its own.
+        let doc = class.doc.clone().or_else(|| reg.classes.get(&class.name)
+            .and_then(|&prev| reg.tables[prev.val() - EXT_BASE].doc.clone()));
         reg.tables.push(TableInfo {
             class_name: Some(class.name.clone()),
             class_type_params: class.type_params.clone(),
@@ -138,6 +145,7 @@ pub fn register_classes_and_aliases(
             is_key_enum: class.is_key_enum,
             correlated_groups,
             see: class.see.clone(),
+            doc,
             secret_when,
             ..Default::default()
         });
