@@ -143,18 +143,13 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-            // The doc comment an earlier declaration of the class gave it, when
-            // this one has none: one earlier in this file, or another file's. Not
-            // the workspace's copy of only this file's declarations, which keeps
-            // a doc from before an edit that removed it.
-            let declared_elsewhere = match &self.ir.file_path {
-                Some(path) => ext.class_locations_for_name(&class.name).iter().any(|loc| &loc.path != path),
-                None => true,
-            };
-            let doc = class.doc.clone().or_else(|| {
-                let &prev = self.ir.classes.get(&class.name)?;
-                (!prev.is_external() || declared_elsewhere).then(|| self.ir.table(prev).doc.clone()).flatten()
-            });
+            // The doc comment another declaration of the class in this file gave
+            // it, when this one has none. One in another file is read where it is
+            // shown (`format_class_doc`), not copied: a display refresh replaces
+            // the cross-file index under this analysis without redoing it.
+            let doc = class.doc.clone().or_else(|| self.ir.classes.get(&class.name)
+                .filter(|prev| !prev.is_external())
+                .and_then(|&prev| self.ir.table(prev).doc.clone()));
             self.ir.tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),

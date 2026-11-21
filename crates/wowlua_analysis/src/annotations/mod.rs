@@ -1148,10 +1148,7 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
                 annotation_lines.push(text.to_string());
                 tok = token.prev_token();
                 continue;
-            } else if text.starts_with("---") {
-                // Plain doc comment line — strip prefix
-                let content = text.strip_prefix("---").unwrap_or("");
-                let content = content.strip_prefix(' ').unwrap_or(content);
+            } else if let Some(content) = doc_line_content(text) {
                 doc_lines.push(content.to_string());
                 tok = token.prev_token();
                 continue;
@@ -1183,6 +1180,14 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     block.doc = doc_text(&doc_lines);
 
     block
+}
+
+/// The text of a plain `---` doc-comment line, past the `---` and one space. A
+/// line of four or more dashes (`--------`, `---- Section ----`) is a banner
+/// separating parts of a file, not documentation.
+fn doc_line_content(text: &str) -> Option<&str> {
+    let content = text.strip_prefix("---").filter(|rest| !rest.starts_with('-'))?;
+    Some(content.strip_prefix(' ').unwrap_or(content))
 }
 
 /// The hover doc text of plain `---` doc-comment lines (prefix already stripped).
@@ -1734,10 +1739,7 @@ fn flush_group(
     if let Some(decl_line) = decl_line {
         let doc_lines: Vec<String> = line_strs[..decl_line].iter()
             .filter(|l| !is_annotation_comment(l))
-            .map(|l| {
-                let content = l.strip_prefix("---").unwrap_or(l);
-                content.strip_prefix(' ').unwrap_or(content).to_string()
-            })
+            .filter_map(|l| doc_line_content(l).map(str::to_string))
             .collect();
         block.doc = doc_text(&doc_lines);
     }
@@ -1772,11 +1774,8 @@ fn flush_group(
     if let Some(event_type) = block.event_type {
         let doc_lines: Vec<&str> = lines.iter()
             .map(|(s, _, _)| s.as_str())
-            .filter(|s| s.starts_with("---") && !is_annotation_comment(s))
-            .map(|s| {
-                let rest = s.strip_prefix("---").unwrap_or("");
-                rest.strip_prefix(' ').unwrap_or(rest)
-            })
+            .filter(|s| !is_annotation_comment(s))
+            .filter_map(doc_line_content)
             .filter(|s| !s.is_empty())
             .collect();
         let documentation = if doc_lines.is_empty() { None } else { Some(doc_lines.join("\n")) };

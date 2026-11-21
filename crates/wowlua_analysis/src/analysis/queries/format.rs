@@ -858,10 +858,22 @@ impl AnalysisResult {
     }
 
     /// A class table's hover doc: the doc comment above its `@class` line, then
-    /// its `@see` targets.
+    /// its `@see` targets. A class this file declares without a doc comment takes
+    /// the one its declarations in other files give it.
     pub(super) fn format_class_doc(&self, table_idx: TableIndex) -> Option<String> {
         let table = self.table(table_idx);
-        let parts: Vec<String> = table.doc.iter().cloned()
+        let doc = table.doc.as_ref().or_else(|| {
+            let name = table.class_name.as_ref().filter(|_| !table_idx.is_external())?;
+            // Only another file's: the workspace's copy of this file's declarations
+            // alone keeps a doc from before an edit that removed it.
+            let declared_elsewhere = match &self.ir.file_path {
+                Some(path) => self.ir.ext.class_locations_for_name(name).iter().any(|loc| &loc.path != path),
+                None => true,
+            };
+            let &ext_idx = self.ir.ext.classes.get(name).filter(|_| declared_elsewhere)?;
+            self.table(ext_idx).doc.as_ref()
+        });
+        let parts: Vec<String> = doc.cloned().into_iter()
             .chain(self.format_see_doc(&table.see))
             .collect();
         (!parts.is_empty()).then(|| parts.join("\n\n"))

@@ -26,3 +26,17 @@ XfDocRecord.Count()
 --          ^ doc: @*return* `count` — The count.
 XfDocRecord.Count()
 --          ^ doc: !The dropped one.
+
+-- A class this file declares too, with no doc comment of its own, shows the one
+-- its declaration in the other file has.
+---@class XfDocShared
+---@field b string
+
+---@type XfDocShared
+--        ^ doc: Declared again in the other file, without a doc comment there.
+local shared = nil
+
+-- A banner line of dashes above a class in the other file isn't its doc comment.
+---@type XfDocBanner
+--        ^ doc: !Banner section
+local banner = nil

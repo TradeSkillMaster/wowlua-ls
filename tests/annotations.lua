@@ -1461,6 +1461,25 @@ local _docTrailing = nil
 --        ^ doc: !---
 local _docBannered = nil
 
+-- A banner line of four or more dashes separates parts of a file; it isn't the
+-- doc comment of the declaration below it.
+-------------------- Banner section --------------------
+--- A class under a banner.
+---@class BannerClass
+local BannerClass = {}
+
+---------------------------------------------------------
+--- Formats a value.
+function BannerClass.Format() end
+
+---@type BannerClass
+--        ^ doc: A class under a banner.
+--        ^ doc: !Banner section
+local _banner = nil
+BannerClass.Format()
+--          ^ doc: Formats a value.
+--          ^ doc: !-----
+
 -- ── Blank line separates annotation blocks ──────────────────────────────
 
 ---@class BlankLineSep

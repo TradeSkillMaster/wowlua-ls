@@ -23,6 +23,11 @@ impl<V> LayeredMap<V> {
         Self { ext, ext_map, local: HashMap::default() }
     }
 
+    /// Read through `ext` from now on (see [`crate::analysis::Ir::replace_ext`]).
+    pub fn replace_ext(&mut self, ext: Arc<PreResolvedGlobals>) {
+        self.ext = ext;
+    }
+
     fn ext_map(&self) -> &HashMap<String, V> {
         (self.ext_map)(&self.ext)
     }

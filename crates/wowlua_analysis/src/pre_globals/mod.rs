@@ -466,11 +466,12 @@ pub struct PreResolvedGlobals {
     /// precise signature bundle (returns + correlated overloads) of every deferred
     /// function, the type of every call-typed global, and the type args of every deferred
     /// constructor self-field; for each workspace class, its harvested fields — all in
-    /// ext-index space. Filled lazily on first read; lives behind the shared `Arc`, so
-    /// a wholesale `Arc` rebuild naturally invalidates it. `#[serde(skip)]`
-    /// (interior-mutable, runtime only).
+    /// ext-index space. Filled lazily on first read; each build starts its own, so a
+    /// rebuild invalidates it, unless the new index takes over the old one's with
+    /// [`Self::share_harvests_from`] (a display refresh, whose index holds the same
+    /// entries). `#[serde(skip)]` (interior-mutable, runtime only).
     #[serde(skip)]
-    pub deferred_harvests: crate::analysis::deferred::DeferredHarvests,
+    pub deferred_harvests: std::sync::Arc<crate::analysis::deferred::DeferredHarvests>,
     /// Method name → the class method of that name annotated `@type-narrows` or
     /// `@returns-class-name` (`None` when classes define different ones), indexed
     /// over every class on first use by [`Self::narrowing_method`]. Runtime only —
@@ -4263,6 +4264,20 @@ impl PreResolvedGlobals {
         self.symbol_locations.share();
         self.function_locations.share();
         self.field_locations.share();
+    }
+
+    /// The length of each arena. Two builds of the same declarations, differing only
+    /// in display text (doc comments, descriptions), are entry-for-entry the same, so
+    /// equal lengths are what a display refresh checks before taking one for the other.
+    pub fn arena_lens(&self) -> [usize; 5] {
+        [self.scopes.len(), self.symbols.len(), self.functions.len(), self.exprs.len(), self.tables.len()]
+    }
+
+    /// Take `other`'s deferred harvests as this index's own, for an index rebuilt from
+    /// the declarations `other` was, display text aside: the harvests are types in
+    /// index space, which the two share.
+    pub fn share_harvests_from(&mut self, other: &PreResolvedGlobals) {
+        self.deferred_harvests = std::sync::Arc::clone(&other.deferred_harvests);
     }
 
     /// How many built-in entries this database copied to edit them, per arena — the

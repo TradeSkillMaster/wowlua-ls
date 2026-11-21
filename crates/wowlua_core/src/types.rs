@@ -1522,6 +1522,17 @@ pub enum ProjectionKind {
 }
 
 impl Function {
+    /// Take `other`'s display text — its doc comment, `@see`, `@param` and `@return`
+    /// descriptions and `@return` names — keeping everything else of this function.
+    pub fn take_display_text(&mut self, other: &Function) {
+        self.doc.clone_from(&other.doc);
+        self.see.clone_from(&other.see);
+        self.param_descriptions.clone_from(&other.param_descriptions);
+        self.vararg_description.clone_from(&other.vararg_description);
+        self.return_labels.clone_from(&other.return_labels);
+        self.return_descriptions.clone_from(&other.return_descriptions);
+    }
+
     /// For vararg returns, clamp `ret_index` to the last declared return slot.
     /// Non-vararg functions return the index unchanged.
     pub fn effective_return_index(&self, ret_index: usize) -> usize {

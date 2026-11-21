@@ -302,6 +302,20 @@ struct WorkspaceState {
     /// watched files, a rescan). The main loop turns it into a refresh of every
     /// kind, code lenses included: a rebuild changes what each open document shows.
     rebuilt_since_refresh: bool,
+    /// Set when a file's display text changed and nothing else other files read
+    /// from it did: its doc comments, `@param` and `@return` descriptions, `@return`
+    /// names, `@see` and `@field` descriptions, a class's or `@event`'s doc comment. The main loop
+    /// then rebuilds the cross-file index on a background thread and swaps it in
+    /// under the open documents' analyses instead of redoing them
+    /// (`install_display_refresh`). A rebuild, which has the new text, clears it.
+    display_refresh_wanted: bool,
+    /// True while that background build runs.
+    display_refresh_in_flight: bool,
+    /// Workspace files whose text changed since the cross-file index was built,
+    /// without a rebuild: the index's positions in them are stale, so what was
+    /// harvested from them since may have missed what it looked for. A display
+    /// refresh, which brings fresh positions, drops those harvests again.
+    changed_since_build: HashSet<PathBuf>,
     /// [`content_hash`] of the disk text the cross-file state last took a closed
     /// file from (on `didClose` or a watched-file change), so a watched-file event
     /// that changes nothing — the save just before a close — is skipped. A full
@@ -870,6 +884,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         xfile_ref_cache: std::sync::Mutex::new(XfileRefCache::default()),
         edited_uris: HashSet::default(),
         rebuilt_since_refresh: false,
+        display_refresh_wanted: false,
+        display_refresh_in_flight: false,
+        changed_since_build: HashSet::default(),
         closed_file_hashes: HashMap::default(),
         rescanned_input_hashes: HashMap::default(),
     };
@@ -1033,6 +1050,9 @@ fn main_loop(
     // Keeping them separate avoids the result being consumed by the wake check.
     let (warm_tx, warm_rx) = crossbeam_channel::unbounded::<WarmResult>();
     let (wake_tx, wake_rx) = crossbeam_channel::unbounded::<()>();
+    // Display refreshes (see `WorkspaceState::display_refresh_wanted`): the
+    // cross-file index rebuilt on a background thread, installed by the drain below.
+    let (display_tx, display_rx) = crossbeam_channel::unbounded::<DisplayRefreshResult>();
     // A second rebuild during a warm stores its scope here instead of spawning a
     // concurrent worker; the pending warm is launched when the in-flight one
     // returns (results coalesce). Successive scopes are merged, so two
@@ -1149,6 +1169,15 @@ fn main_loop(
         // (which no-ops on an existing token) reuses the span without flicker.
         if !ws.warm_in_flight && !ws.pending_lazy_warm {
             end_warm_progress(&connection, &mut warm_progress_token);
+        }
+
+        // Install a finished display refresh, then start one if display text
+        // changed since (one at a time: edits during a build start the next).
+        while let Ok(res) = display_rx.try_recv() {
+            install_display_refresh(res, &mut documents, &mut ws, &client);
+        }
+        if ws.display_refresh_wanted && !ws.display_refresh_in_flight {
+            spawn_display_refresh(&mut ws, display_tx.clone(), wake_tx.clone());
         }
 
         // Spawn a background warm if handle_workspace_diagnostic deferred one.
@@ -1582,6 +1611,7 @@ fn main_loop(
                             // harvested from it (their `deferred_dep_files` contains this
                             // path), instead of every open tab.
                             ws.pre_globals.invalidate_deferred_for_file(&file_path);
+                            ws.changed_since_build.insert(file_path.clone());
                             let mut marked_dependent = false;
                             for (other_uri, other_doc) in documents.iter_mut() {
                                 if other_uri != uri_str
@@ -3351,6 +3381,23 @@ mod tests {
     }
 
     #[test]
+    fn narrowing_annotation_edits_trigger_rebuild() {
+        // `@type-narrows` and `@narrows-arg` narrow at call sites in other files.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: String| {
+            let tree = crate::syntax::parser::parse(&src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+        let guard = |tag: &str| format!("{tag}---@param value any\n---@param kind string\n---@return boolean\nfunction IsKind(value, kind) return true end\n");
+        let _ = rebuild(guard(""));
+        for tag in ["---@type-narrows 1 2\n", "---@type-narrows Widget\n", "---@narrows-arg 1\n"] {
+            assert!(!matches!(rebuild(guard(tag)), RebuildScope::None), "adding {tag:?} must trigger a rebuild");
+            assert!(!matches!(rebuild(guard("")), RebuildScope::None), "removing {tag:?} must trigger a rebuild");
+        }
+    }
+
+    #[test]
     fn noreturn_edits_trigger_rebuild() {
         // Whether a call to the function leaves its block is decided in the
         // calling file, so adding or removing `@noreturn` must rebuild.
@@ -4574,6 +4621,307 @@ mod tests {
         let (before, after) = driver.join().unwrap();
         assert!(before.contains("label: number"), "{before}");
         assert!(after.contains("label: string"), "{after}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A class and a function with every kind of display text: doc comments,
+    /// `@field`, `@param` and `@return` descriptions, a `@return` name, `@see`.
+    const LEDGER_SAVED: &str = "\
+--- Keeps a running total.
+---@class Ledger
+---@field total number The running total.
+Ledger = {}
+
+--- Adds to the total.
+---@param amount number The amount to add.
+---@return number total The new total.
+---@see Ledger.total
+function Ledger.Add(amount)
+    return amount
+end
+
+--- Counts entries.
+---@param n number The entry count.
+function Ledger.Count(n)
+    return n
+end
+";
+    /// Reads [`LEDGER_SAVED`]'s class and functions; `Ledger.Count`'s return comes
+    /// from its body, which another file's analysis harvests.
+    const LEDGER_READER: &str = "---@type Ledger\nlocal ledger = Ledger\nlocal sum = ledger.Add(1)\nlocal total = ledger.total\nlocal count = ledger.Count(2)\n";
+
+    /// [`LEDGER_SAVED`] with every piece of its display text edited.
+    fn ledger_edited() -> String {
+        LEDGER_SAVED
+            .replace("--- Keeps a running total.", "--- Keeps a total.")
+            .replace("The running total.", "The total so far.")
+            .replace("--- Adds to the total.", "--- Adds an amount.")
+            .replace("The amount to add.", "How much to add.")
+            .replace("number total The new total.", "number sum The total after adding.")
+            .replace("--- Counts entries.", "--- Counts the entries.")
+            .replace("The entry count.", "How many entries there are, a longer line than before.")
+    }
+
+    /// The hover of the reader's first `needle` + `at` bytes in, as its open
+    /// document's analysis gives it.
+    fn ledger_hover(documents: &HashMap<String, Document>, reader: &lsp_types::Uri, needle: &str, at: usize) -> String {
+        let doc = &documents[&reader.to_string()];
+        let offset = LEDGER_READER.find(needle).unwrap() + at;
+        let hover = doc.analysis.as_ref().unwrap().hover_at(doc.tree.as_ref().unwrap(), offset as u32).unwrap();
+        format!("{}\n{}", hover.type_str, hover.doc.unwrap_or_default())
+    }
+
+    /// A scanned workspace of `ledger.lua` ([`LEDGER_SAVED`]) and `reader.lua`
+    /// ([`LEDGER_READER`]), with the reader open.
+    fn ledger_workspace(tag: &str) -> (PathBuf, lsp_types::Uri, lsp_types::Uri, WorkspaceState, HashMap<String, Document>) {
+        let dir = std::env::temp_dir().join(format!("wowlua_display_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ledger.lua"), LEDGER_SAVED).unwrap();
+        std::fs::write(dir.join("reader.lua"), LEDGER_READER).unwrap();
+        let mut ws = WorkspaceState::for_test(Some(dir.clone()));
+        let mut documents = HashMap::default();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+        let ledger = abs_path_to_uri(&dir.join("ledger.lua")).unwrap();
+        let reader = abs_path_to_uri(&dir.join("reader.lua")).unwrap();
+        open_text(&mut documents, &mut ws, &reader, LEDGER_READER);
+        (dir, ledger, reader, ws, documents)
+    }
+
+    /// Edits to display text alone ask for a display refresh, not a rebuild. A `@param`
+    /// description is one; a `@deprecated` message, which other files' diagnostics
+    /// show, isn't.
+    #[test]
+    fn display_text_edits_refresh_without_rebuild() {
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/ledger.lua".parse().unwrap();
+        let scan = |src: &str, ws: &mut WorkspaceState| {
+            let tree = crate::syntax::parser::parse(src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), ws)
+        };
+        let _ = scan(LEDGER_SAVED, &mut ws);
+        for (from, to) in [
+            ("--- Keeps a running total.", "--- Keeps a total."),
+            ("The running total.", "The total so far."),
+            ("--- Adds to the total.", "--- Adds an amount."),
+            ("The amount to add.", "How much to add."),
+            ("The new total.", "The total after adding."),
+            ("number total", "number sum"),
+            ("---@see Ledger.total", "---@see Ledger"),
+        ] {
+            let edited = LEDGER_SAVED.replace(from, to);
+            assert_ne!(edited, LEDGER_SAVED, "test setup: {from:?} is in the saved text");
+            ws.display_refresh_wanted = false;
+            let generation = ws.ws_generation;
+            assert!(matches!(scan(&edited, &mut ws), RebuildScope::None), "{from:?} -> {to:?} must not rebuild");
+            assert!(ws.display_refresh_wanted, "{from:?} -> {to:?} must refresh other files' display text");
+            assert_eq!(ws.ws_generation, generation, "{from:?} -> {to:?} must not bump the generation");
+            let _ = scan(LEDGER_SAVED, &mut ws);
+        }
+
+        // A change other files type by rebuilds, and the rebuild has the new text.
+        ws.display_refresh_wanted = true;
+        assert!(scan(&LEDGER_SAVED.replace("amount number", "amount integer"), &mut ws).is_rebuild());
+        assert!(!ws.display_refresh_wanted, "a rebuild supersedes the display refresh");
+
+        // Neither for an edit that changes no declaration.
+        let _ = scan(LEDGER_SAVED, &mut ws);
+        ws.display_refresh_wanted = false;
+        assert!(matches!(scan(&format!("{LEDGER_SAVED}\n-- trailing comment\n"), &mut ws), RebuildScope::None));
+        assert!(!ws.display_refresh_wanted);
+
+        let event = |doc: &str| format!("--- {doc}\n---@event LedgerEvent \"LEDGER_READY\"\n");
+        let _ = scan(&event("Fired when ready."), &mut ws);
+        ws.display_refresh_wanted = false;
+        assert!(matches!(scan(&event("Fired once loaded."), &mut ws), RebuildScope::None));
+        assert!(ws.display_refresh_wanted, "an @event's doc comment must refresh other files' display text");
+
+        let deprecated = |message: &str| format!("---@deprecated {message}\nfunction OldAdd() end\n");
+        let _ = scan(&deprecated("Use Ledger.Add."), &mut ws);
+        assert!(
+            scan(&deprecated("Use Ledger.Add instead."), &mut ws).is_rebuild(),
+            "a @deprecated message must rebuild: other files' diagnostics show it",
+        );
+    }
+
+    /// A display refresh's index replaces the current one under the open documents'
+    /// analyses: they show the new text without being redone, the generation stays,
+    /// and the deferred harvests carry over.
+    #[test]
+    fn display_refresh_swaps_index_under_open_documents() {
+        let (dir, ledger, reader, mut ws, mut documents) = ledger_workspace("swap");
+        assert!(ledger_hover(&documents, &reader, "Add(", 0).contains("Adds to the total."));
+
+        let edited = ledger_edited();
+        let tree = parse_lua(&edited);
+        assert!(matches!(maybe_rebuild_workspace(&ledger, crate::syntax::SyntaxNode::new_root(&tree), &mut ws), RebuildScope::None));
+        assert!(ws.display_refresh_wanted);
+        let generation = ws.ws_generation;
+        let old = Arc::clone(&ws.pre_globals);
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        spawn_display_refresh(&mut ws, tx, crossbeam_channel::unbounded().0);
+        assert!(ws.display_refresh_in_flight && !ws.display_refresh_wanted);
+        let result = rx.recv_timeout(Duration::from_secs(60)).expect("display refresh result");
+        install_display_refresh(result, &mut documents, &mut ws, &ClientSupport::default());
+
+        assert!(!ws.display_refresh_in_flight);
+        assert!(!Arc::ptr_eq(&old, &ws.pre_globals), "the refreshed index is installed");
+        assert_eq!(ws.ws_generation, generation, "a display refresh is not a rebuild");
+        assert!(Arc::ptr_eq(&old.deferred_harvests, &ws.pre_globals.deferred_harvests), "the harvests carry over");
+        let doc = &documents[&reader.to_string()];
+        assert!(!doc.dirty, "the reader isn't re-analyzed");
+        assert!(Arc::ptr_eq(&doc.analysis.as_ref().unwrap().ir.ext, &ws.pre_globals), "the reader reads the new index");
+        assert_eq!(Arc::strong_count(&old), 1, "nothing holds the replaced index");
+
+        let add = ledger_hover(&documents, &reader, "Add(", 0);
+        for text in ["Adds an amount.", "How much to add.", "@*return* `sum` — The total after adding."] {
+            assert!(add.contains(text), "{text:?} missing from {add}");
+        }
+        assert!(ledger_hover(&documents, &reader, "ledger.total", "ledger.".len()).contains("The total so far."));
+        let class = ledger_hover(&documents, &reader, "ledger =", 0);
+        assert!(class.contains("-- The total so far.") && class.contains("Keeps a total."), "{class}");
+        // The reader's own copy of `Ledger.Count`, which it took to give the call
+        // its harvested return, shows the new text too.
+        let count = ledger_hover(&documents, &reader, "Count(", 0);
+        assert!(count.contains("Counts the entries.") && count.contains("a longer line than before."), "{count}");
+        assert!(ledger_hover(&documents, &reader, "count =", 0).contains("number"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The deferred harvests from a file whose text changed since the index was built
+    /// were harvested against the index's stale positions in it: a display refresh,
+    /// which brings fresh ones, drops them and redoes the open documents that read
+    /// them, under a new generation.
+    #[test]
+    fn display_refresh_redoes_readers_of_changed_files() {
+        let (dir, ledger, reader, mut ws, mut documents) = ledger_workspace("changed");
+        let tree = parse_lua(&ledger_edited());
+        let _ = maybe_rebuild_workspace(&ledger, crate::syntax::SyntaxNode::new_root(&tree), &mut ws);
+        let ledger_path = uri_to_abs_path(&ledger).unwrap();
+        assert!(
+            documents[&reader.to_string()].analysis.as_ref().unwrap().deferred_dep_files().contains(&ledger_path),
+            "test setup: the reader harvests from the ledger",
+        );
+        ws.changed_since_build.insert(ledger_path.clone());
+        let generation = ws.ws_generation;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        spawn_display_refresh(&mut ws, tx, crossbeam_channel::unbounded().0);
+        assert!(ws.changed_since_build.is_empty(), "the refresh takes the changed files");
+        let result = rx.recv_timeout(Duration::from_secs(60)).expect("display refresh result");
+        install_display_refresh(result, &mut documents, &mut ws, &ClientSupport::default());
+
+        assert!(documents[&reader.to_string()].dirty, "the reader is redone");
+        assert!(ws.ws_generation > generation, "under a new generation");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A display refresh gives way: to a rebuild that replaced its index after it
+    /// started (which has the new text), and, by rebuilding, to an index that differs
+    /// from the current one in more than display text.
+    #[test]
+    fn display_refresh_yields_to_rebuilds() {
+        let (dir, ledger, reader, mut ws, mut documents) = ledger_workspace("yield");
+        let tree = parse_lua(&ledger_edited());
+        let _ = maybe_rebuild_workspace(&ledger, crate::syntax::SyntaxNode::new_root(&tree), &mut ws);
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        spawn_display_refresh(&mut ws, tx, crossbeam_channel::unbounded().0);
+        let result = rx.recv_timeout(Duration::from_secs(60)).expect("display refresh result");
+        ws.rebuild();
+        let rebuilt = Arc::clone(&ws.pre_globals);
+        install_display_refresh(result, &mut documents, &mut ws, &ClientSupport::default());
+        assert!(Arc::ptr_eq(&rebuilt, &ws.pre_globals), "a refresh superseded by a rebuild is dropped");
+        assert!(!ws.display_refresh_in_flight);
+
+        // An index built with a global the current one lacks.
+        let extra = dir.join("extra.lua");
+        ws.ws_file_globals.insert(extra.clone(), vec![ExternalGlobal::for_test(
+            "LedgerExtra", ExternalGlobalKind::Variable(crate::annotations::FieldValueKind::Boolean),
+        )]);
+        let bigger = ws.pre_globals_inputs().build();
+        ws.ws_file_globals.remove(&extra);
+        for doc in documents.values_mut() {
+            doc.dirty = false;
+        }
+        let generation = ws.ws_generation;
+        let result = DisplayRefreshResult { base: Arc::downgrade(&ws.pre_globals), pre_globals: Some(bigger), changed_files: HashSet::default() };
+        install_display_refresh(result, &mut documents, &mut ws, &ClientSupport::default());
+        assert!(ws.ws_generation > generation, "an index of another shape is rebuilt for real");
+        assert!(documents[&reader.to_string()].dirty, "and the open documents redone");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Through the main loop: an edit to a file's display text alone reaches the
+    /// hovers of another open file.
+    #[test]
+    fn display_text_edit_reaches_other_files_hover() {
+        let (dir, ledger, reader, ws, _) = ledger_workspace("loop");
+        let (server, client) = Connection::memory();
+        let driver = std::thread::spawn(move || {
+            let next_id = std::cell::Cell::new(0);
+            let request = |method: &str, params: serde_json::Value| {
+                next_id.set(next_id.get() + 1);
+                let id = RequestId::from(next_id.get());
+                client.sender.send(Message::Request(Request::new(id.clone(), method.to_string(), params))).unwrap();
+                loop {
+                    match client.receiver.recv_timeout(Duration::from_secs(30)).expect("server response") {
+                        Message::Response(r) if r.id == id => return r.result.unwrap_or_default(),
+                        _ => {}
+                    }
+                }
+            };
+            let notify = |method: &str, params: serde_json::Value| {
+                client.sender.send(Message::Notification(Notification::new(method.to_string(), params))).unwrap();
+            };
+            let open = |uri: &lsp_types::Uri, text: &str| notify("textDocument/didOpen", serde_json::json!({
+                "textDocument": { "uri": uri, "languageId": "lua", "version": 1, "text": text },
+            }));
+            open(&ledger, LEDGER_SAVED);
+            open(&reader, LEDGER_READER);
+            let hover = |needle: &str| {
+                let offset = LEDGER_READER.find(needle).unwrap();
+                let line = LEDGER_READER[..offset].matches('\n').count();
+                let character = offset - LEDGER_READER[..offset].rfind('\n').map_or(0, |i| i + 1);
+                request("textDocument/hover", serde_json::json!({
+                    "textDocument": { "uri": reader }, "position": { "line": line, "character": character },
+                }))["contents"]["value"].as_str().unwrap_or_default().to_string()
+            };
+            let hovers = || [hover("Add("), hover("Count("), hover("count =")];
+            let before = hovers();
+
+            // Display text alone, though the edit moves `Ledger.Count`, whose return
+            // the reader harvests.
+            notify("textDocument/didChange", serde_json::json!({
+                "textDocument": { "uri": ledger, "version": 2 },
+                "contentChanges": [{ "text": ledger_edited() }],
+            }));
+            let settled = |[add, count, local]: &[String; 3]| add.contains("Adds an amount.")
+                && count.contains("Counts the entries.") && local.contains("number");
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut after = hovers();
+            while !settled(&after) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+                after = hovers();
+            }
+            request("shutdown", serde_json::Value::Null);
+            (before, after)
+        });
+        main_loop(server, ws, ClientSupport::default()).unwrap();
+        let ([add_before, count_before, local_before], [add, count, local]) = driver.join().unwrap();
+        assert!(add_before.contains("Adds to the total."), "{add_before}");
+        assert!(count_before.contains("Counts entries."), "{count_before}");
+        assert!(local_before.contains("number"), "{local_before}");
+        for text in ["Adds an amount.", "How much to add.", "@*return* `sum` — The total after adding."] {
+            assert!(add.contains(text), "{text:?} missing from {add}");
+        }
+        assert!(count.contains("Counts the entries.") && count.contains("a longer line than before."), "{count}");
+        assert!(local.contains("number"), "the harvested return survives the edit: {local}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

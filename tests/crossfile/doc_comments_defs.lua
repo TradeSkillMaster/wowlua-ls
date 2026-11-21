@@ -28,3 +28,13 @@ end
 function XfDocRecord.Count()
     return nil, 0
 end
+
+--- Declared again in the other file, without a doc comment there.
+---@class XfDocShared
+---@field a number
+XfDocShared = {}
+
+-------------------- Banner section --------------------
+---@class XfDocBanner
+---@field a number
+XfDocBanner = {}

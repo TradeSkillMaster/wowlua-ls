@@ -150,6 +150,59 @@ pub(super) fn merge_defclass_into_overlays(
     ws_classes
 }
 
+/// What building the cross-file index (`PreResolvedGlobals`) reads, snapshotted
+/// from the workspace state ([`WorkspaceState::pre_globals_inputs`]) as owned data,
+/// so a display refresh can build on a background thread.
+pub(super) struct PreGlobalsInputs {
+    stub_pre_globals: Arc<PreResolvedGlobals>,
+    globals: Vec<ExternalGlobal>,
+    classes: Vec<ClassDecl>,
+    aliases: Vec<AliasDecl>,
+    events: Vec<crate::annotations::EventDecl>,
+    implicit_protected: bool,
+    addon_ns_class: HashMap<PathBuf, String>,
+    callable_classes: HashSet<String>,
+    callback_registries: Vec<crate::annotations::CallbackRegistryDecl>,
+    string_consts: Vec<crate::annotations::StringArrayConstDecl>,
+    /// The globals, stubs' included, that take a callback event name
+    /// (`@callback-event-arg`).
+    callback_consumers: Vec<ExternalGlobal>,
+    /// Set when addon roots are configured.
+    addon_tables: Option<AddonTableInputs>,
+    configs: Arc<crate::config::ProjectConfigs>,
+    document_overrides: Arc<std::sync::RwLock<HashMap<PathBuf, String>>>,
+}
+
+/// What the per-addon namespace tables are built from.
+struct AddonTableInputs {
+    /// Each source file's addon root.
+    file_roots: HashMap<PathBuf, PathBuf>,
+    /// Each addon root's namespace classes.
+    class_names: HashMap<PathBuf, HashSet<String>>,
+}
+
+impl PreGlobalsInputs {
+    /// Build the cross-file index.
+    pub(super) fn build(self) -> PreResolvedGlobals {
+        let mut pg = PreResolvedGlobals::build_on_stubs(
+            &self.stub_pre_globals, &self.globals, &self.classes, &self.aliases,
+            self.implicit_protected, &self.addon_ns_class, &self.callable_classes,
+        );
+        pg.merge_events(&self.events);
+        pg.merge_callback_registries(&self.callback_registries, &self.string_consts);
+        pg.register_callback_consumer_methods(&self.callback_consumers);
+        if let Some(addon) = &self.addon_tables {
+            pg.build_per_addon_tables(&addon.file_roots, &addon.class_names, &self.globals);
+        }
+        // Inject project configs so the deferred harvester can build the
+        // correct AnalysisConfig for each file it re-analyzes, and the open
+        // documents' text it reads in preference to disk.
+        pg.set_project_configs(self.configs);
+        pg.set_document_overrides(self.document_overrides);
+        pg
+    }
+}
+
 impl WorkspaceState {
     /// Seed the stub prefix of the merged caches. The only way to set it: the two
     /// lengths and their vectors must agree, and `rebuild_caches` keeps the prefix
@@ -247,7 +300,9 @@ impl WorkspaceState {
         self.cached_callable_classes = self.ws_file_callable_classes.values().flatten().cloned().collect();
     }
 
-    pub(super) fn rebuild(&mut self) {
+    /// Snapshot what building the cross-file index reads, as owned data a
+    /// background thread can build from ([`PreGlobalsInputs::build`]).
+    pub(super) fn pre_globals_inputs(&self) -> PreGlobalsInputs {
         // Collect only workspace data (stubs are already in stub_pre_globals)
         let mut ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
             .cloned()
@@ -291,41 +346,45 @@ impl WorkspaceState {
         let implicit_protected = self.root.as_ref()
             .map(|r| self.configs.implicit_protected_prefix_for(r))
             .unwrap_or(false);
-        let mut pg = PreResolvedGlobals::build_on_stubs(
-            &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
-            implicit_protected, &self.ws_file_addon_ns_class, &self.cached_callable_classes,
-        );
-        pg.merge_events(&ws_events);
 
-        let ws_callback_registries: Vec<crate::annotations::CallbackRegistryDecl> =
-            self.ws_file_callback_registries.values().flatten().cloned().collect();
-        let ws_string_consts: Vec<crate::annotations::StringArrayConstDecl> =
-            self.ws_file_string_consts.values().flatten().cloned().collect();
-        pg.merge_callback_registries(&ws_callback_registries, &ws_string_consts);
-        pg.register_callback_consumer_methods(&self.cached_all_globals);
+        // Per-addon namespace tables, if addon roots are configured: each source
+        // file's addon root, and each root's namespace classes.
+        let addon_tables = (!self.configs.addon_roots().is_empty()).then(|| AddonTableInputs {
+            file_roots: self.ws_file_globals.keys()
+                .filter_map(|file_path| Some((file_path.clone(), self.configs.addon_root_for(file_path)?.to_path_buf())))
+                .collect(),
+            class_names: self.configs.group_addon_ns_classes_by_root(&self.ws_file_addon_ns_class),
+        });
 
-        // Build per-addon namespace tables if addon roots are configured.
-        let addon_roots = self.configs.addon_roots();
-        if !addon_roots.is_empty() {
-            // Map each source file to its addon root
-            let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::default();
-            for file_path in self.ws_file_globals.keys() {
-                if let Some(root) = self.configs.addon_root_for(file_path) {
-                    file_addon_roots.insert(file_path.clone(), root.to_path_buf());
-                }
-            }
-            let per_addon_class_names = self.configs.group_addon_ns_classes_by_root(&self.ws_file_addon_ns_class);
-            pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names, &ws_globals);
+        PreGlobalsInputs {
+            stub_pre_globals: Arc::clone(&self.stub_pre_globals),
+            globals: ws_globals,
+            classes: ws_classes,
+            aliases: ws_aliases,
+            events: ws_events,
+            implicit_protected,
+            addon_ns_class: self.ws_file_addon_ns_class.clone(),
+            callable_classes: self.cached_callable_classes.clone(),
+            callback_registries: self.ws_file_callback_registries.values().flatten().cloned().collect(),
+            string_consts: self.ws_file_string_consts.values().flatten().cloned().collect(),
+            callback_consumers: self.cached_all_globals.iter()
+                .filter(|g| g.callback_event_arg.is_some())
+                .cloned()
+                .collect(),
+            addon_tables,
+            configs: Arc::clone(&self.configs),
+            document_overrides: Arc::clone(&self.document_overrides),
         }
+    }
 
-        // Inject project configs so the deferred harvester can build the
-        // correct AnalysisConfig for each file it re-analyzes, and the open
-        // documents' text it reads in preference to disk.
-        pg.set_project_configs(Arc::clone(&self.configs));
-        pg.set_document_overrides(Arc::clone(&self.document_overrides));
+    pub(super) fn rebuild(&mut self) {
+        let pg = self.pre_globals_inputs().build();
         log::debug!("Workspace globals built; {}", pg.arena_edit_summary());
         self.pre_globals = Arc::new(pg);
         self.rebuilt_since_refresh = true;
+        // The rebuilt index has every file's current display text and positions.
+        self.display_refresh_wanted = false;
+        self.changed_since_build.clear();
         self.bump_generation();
         // Intentionally retain `cached_ws_diagnostics` (now stale: its stored
         // generation no longer matches `ws_generation`). The generation mismatch
@@ -453,6 +512,9 @@ impl WorkspaceState {
             xfile_ref_cache: std::sync::Mutex::new(super::XfileRefCache::default()),
             edited_uris: HashSet::default(),
             rebuilt_since_refresh: false,
+            display_refresh_wanted: false,
+            display_refresh_in_flight: false,
+            changed_since_build: HashSet::default(),
             closed_file_hashes: HashMap::default(),
             rescanned_input_hashes: HashMap::default(),
         }

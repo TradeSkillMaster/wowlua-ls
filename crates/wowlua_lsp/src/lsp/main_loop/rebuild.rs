@@ -1,8 +1,8 @@
 use super::*;
 
 /// Compare two globals on the fields that affect analysis results (excludes
-/// positional fields like doc, source_path, def_start, def_end which only affect
-/// hover/go-to-definition display, not type resolution or diagnostics).
+/// positional fields like source_path, def_start, def_end which only affect
+/// go-to-definition, and the display text [`global_display_eq`] compares).
 //
 // `source_path` also feeds the deferred `@class`-field harvest index (a `TableField`
 // global's assigning file, see `build_on_stubs::finish`), but ignoring it here stays
@@ -18,8 +18,11 @@ use super::*;
 pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
     x.name == y.name
         && x.kind == y.kind
-        && x.params == y.params
-        && x.self_param == y.self_param
+        && params_semantic_eq(&x.params, &y.params)
+        && match (&x.self_param, &y.self_param) {
+            (Some(a), Some(b)) => param_semantic_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        }
         && x.returns == y.returns
         && x.overloads == y.overloads
         && x.deprecated == y.deprecated
@@ -45,6 +48,9 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.returns_class_name == y.returns_class_name
         && x.returns_enum == y.returns_enum
         && x.stores_into == y.stores_into
+        && x.type_narrows == y.type_narrows
+        && x.type_narrows_class == y.type_narrows_class
+        && x.narrows_arg == y.narrows_arg
         && x.secret == y.secret
         && x.inferred_guard == y.inferred_guard
         && x.declares_class == y.declares_class
@@ -71,9 +77,40 @@ pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool 
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| global_semantic_eq(x, y))
 }
 
+/// A `@param` apart from its description, which only hover and signature help show.
+fn param_semantic_eq(x: &crate::annotations::ParamInfo, y: &crate::annotations::ParamInfo) -> bool {
+    x.name == y.name && x.typ == y.typ && x.optional == y.optional
+}
+
+fn params_semantic_eq(x: &[crate::annotations::ParamInfo], y: &[crate::annotations::ParamInfo]) -> bool {
+    x.len() == y.len() && x.iter().zip(y).all(|(a, b)| param_semantic_eq(a, b))
+}
+
+/// Compare two globals on the text other files show for them in hover, signature
+/// help and completion, and nothing else reads: the doc comment, `@param` and
+/// `@return` descriptions, `@return` names, `@see`. Globals equal on
+/// [`global_semantic_eq`] that differ here need no rebuild, only a display refresh.
+// IMPORTANT: Update this function when adding display-only fields to ExternalGlobal.
+// `deprecated_message` isn't one: other files' `deprecated` diagnostics show it.
+pub(super) fn global_display_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
+    let descriptions = |g: &ExternalGlobal| -> Vec<Option<String>> {
+        g.self_param.iter().chain(&g.params).map(|p| p.description.clone()).collect()
+    };
+    x.doc == y.doc
+        && x.see == y.see
+        && x.return_names == y.return_names
+        && x.return_descriptions == y.return_descriptions
+        && descriptions(x) == descriptions(y)
+}
+
+pub(super) fn globals_display_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| global_display_eq(x, y))
+}
+
 /// Compare two class declarations on the fields that affect analysis results,
 /// ignoring positional fields (def_range, def_path, field_ranges, field_paths,
-/// deferred_field_call_ranges) and display-only fields (see, field_literals).
+/// deferred_field_call_ranges) and display-only fields (field_literals, and the
+/// text [`class_display_eq`] compares).
 /// `declared_field_names`, `typed_ctor_entries`, `ctor_function_entries` and
 /// `untyped_ctor_entries` decide which fields are scan-inferred placeholders —
 /// editing `{}` into `---@type table` + `{}` leaves `fields` unchanged — so they
@@ -112,6 +149,18 @@ pub(super) fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
 
 pub(super) fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| class_semantic_eq(x, y))
+}
+
+/// Compare two class declarations on the text other files' hovers show for them:
+/// the doc comment above `@class`, `@see`, and `@field` descriptions. Classes equal
+/// on [`class_semantic_eq`] that differ here need only a display refresh.
+// IMPORTANT: Update this function when adding display-only fields to ClassDecl.
+pub(super) fn class_display_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
+    x.doc == y.doc && x.see == y.see && x.field_descriptions == y.field_descriptions
+}
+
+pub(super) fn classes_display_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| class_display_eq(x, y))
 }
 
 /// Compare two alias declarations ignoring positional fields (def_range, def_path).
@@ -263,6 +312,12 @@ pub(super) fn events_match(a: &[EventDecl], b: &[EventDecl]) -> bool {
     })
 }
 
+/// Compare two files' events on the doc comment above each `@event`, which only
+/// event-string hover and completion show (see [`global_display_eq`]).
+pub(super) fn events_display_match(a: &[EventDecl], b: &[EventDecl]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.documentation == y.documentation)
+}
+
 /// Compare self-field declarations ignoring positional field (byte_range).
 // IMPORTANT: Update this function when adding semantic fields to TypedSelfField.
 pub(super) fn self_fields_match(a: &[TypedSelfField], b: &[TypedSelfField]) -> bool {
@@ -370,6 +425,18 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
     // Events are removed from ws_file_events when empty, so None + empty = unchanged.
     let events_changed = ws.ws_file_events.get(&file_path)
         .map_or(!scan.events.is_empty(), |old| !events_match(old, &scan.events));
+
+    // Text only hover shows (doc comments, descriptions) is refreshed in the cross-
+    // file index without a rebuild. A rebuild, which has it too, cancels the refresh.
+    let display_changed = (!globals_changed && ws.ws_file_globals.get(&file_path)
+            .is_some_and(|old| !globals_display_match(old, &new_globals)))
+        || (!classes_changed && ws.ws_file_classes.get(&file_path)
+            .is_some_and(|old| !classes_display_match(old, &scan.classes)))
+        || (!events_changed && ws.ws_file_events.get(&file_path)
+            .is_some_and(|old| !events_display_match(old, &scan.events)));
+    if display_changed {
+        ws.display_refresh_wanted = true;
+    }
 
     // Compute the set of declaration names that changed (added/removed/modified),
     // for the incremental warm scope. For a brand-new file (no prior entry) every
@@ -607,18 +674,123 @@ pub(super) fn reconcile_closed_files(
         ws.closed_file_hashes.insert(path.clone(), content_hash(tree.source()));
     }
     if scope.is_rebuild() {
-        ws.rebuild();
-        for doc in documents.values_mut() {
-            if doc.analysis.is_some() {
-                doc.dirty = true;
-            }
-        }
-        if client.diagnostic_refresh {
-            ws.pending_lazy_warm = true;
-        }
+        rebuild_and_redirty(documents, ws, client);
     } else {
         let paths: Vec<&Path> = files.iter().map(|(_, path, _)| path.as_path()).collect();
         drop_harvests_from(&paths, documents, ws, client);
+    }
+}
+
+/// Rebuild the cross-file index outside Phase 4: re-dirty the open documents, which
+/// read the old one, and have closed files' diagnostics re-warmed.
+pub(super) fn rebuild_and_redirty(
+    documents: &mut HashMap<String, Document>,
+    ws: &mut WorkspaceState,
+    client: &ClientSupport,
+) {
+    ws.rebuild();
+    for doc in documents.values_mut() {
+        if doc.analysis.is_some() {
+            doc.dirty = true;
+        }
+    }
+    if client.diagnostic_refresh {
+        ws.pending_lazy_warm = true;
+    }
+}
+
+/// A cross-file index a display refresh built on a background thread.
+pub(super) struct DisplayRefreshResult {
+    /// The index it was built to replace: one a rebuild has since replaced
+    /// already has the new display text.
+    pub(super) base: std::sync::Weak<PreResolvedGlobals>,
+    /// `None` when the build panicked.
+    pub(super) pre_globals: Option<PreResolvedGlobals>,
+    /// `WorkspaceState::changed_since_build` when it was built: the files whose
+    /// positions it refreshes.
+    pub(super) changed_files: HashSet<PathBuf>,
+}
+
+/// Build the cross-file index for a display refresh (see
+/// `WorkspaceState::display_refresh_wanted`) on a background thread, sending it
+/// over `tx`, then waking the main loop over `wake_tx`, to install it.
+pub(super) fn spawn_display_refresh(
+    ws: &mut WorkspaceState,
+    tx: crossbeam_channel::Sender<DisplayRefreshResult>,
+    wake_tx: crossbeam_channel::Sender<()>,
+) {
+    ws.display_refresh_wanted = false;
+    ws.display_refresh_in_flight = true;
+    let started = Instant::now();
+    let inputs = ws.pre_globals_inputs();
+    let snapshot = started.elapsed();
+    let base = Arc::downgrade(&ws.pre_globals);
+    let changed_files = std::mem::take(&mut ws.changed_since_build);
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let pre_globals = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inputs.build()))
+            .inspect_err(|_| log::error!("Display refresh: building the cross-file index panicked"))
+            .ok();
+        log::debug!("Display refresh: inputs snapshotted in {snapshot:.1?}, cross-file index built in {:.1?}", started.elapsed());
+        let _ = tx.send(DisplayRefreshResult { base, pre_globals, changed_files });
+        let _ = wake_tx.send(());
+    });
+}
+
+/// Take a display refresh's index in place of the one it was built to replace,
+/// unless a rebuild has replaced that already. The two differ only in display text
+/// and positions, so the open documents' analyses are pointed at the new one rather
+/// than redone, and its deferred harvests carry over — except those from files whose
+/// positions it refreshes, harvested against stale ones: they are dropped, and the
+/// open documents that read them redone. An index of another shape differs in more
+/// than that — a declaration the comparators miss — so it is rebuilt for real.
+pub(super) fn install_display_refresh(
+    result: DisplayRefreshResult,
+    documents: &mut HashMap<String, Document>,
+    ws: &mut WorkspaceState,
+    client: &ClientSupport,
+) {
+    ws.display_refresh_in_flight = false;
+    let Some(mut pg) = result.pre_globals else {
+        ws.changed_since_build.extend(result.changed_files);
+        return;
+    };
+    let old = Arc::clone(&ws.pre_globals);
+    if !std::ptr::eq(result.base.as_ptr(), Arc::as_ptr(&old)) {
+        log::debug!("Display refresh: discarded, a rebuild replaced its index");
+        return;
+    }
+    if pg.arena_lens() != old.arena_lens() {
+        log::warn!(
+            "Display refresh: rebuilt index differs from the current one beyond display text ({:?} vs {:?} entries); rebuilding",
+            pg.arena_lens(), old.arena_lens(),
+        );
+        rebuild_and_redirty(documents, ws, client);
+        return;
+    }
+    pg.share_harvests_from(&old);
+    let new = Arc::new(pg);
+    for doc in documents.values_mut() {
+        if let Some(analysis) = doc.analysis.as_mut()
+            && Arc::ptr_eq(&analysis.ir.ext, &old)
+        {
+            analysis.ir.replace_ext(&new);
+        }
+    }
+    let mut redone = false;
+    for path in &result.changed_files {
+        new.invalidate_deferred_for_file(path);
+    }
+    for doc in documents.values_mut() {
+        if doc.analysis.as_ref().is_some_and(|a| a.deferred_dep_files().iter().any(|p| result.changed_files.contains(p))) {
+            doc.dirty = true;
+            redone = true;
+        }
+    }
+    ws.pre_globals = new;
+    // As after an edit (Phase 4): the redone documents re-run only for a new generation.
+    if redone {
+        ws.bump_generation();
     }
 }
 
@@ -634,6 +806,7 @@ pub(super) fn drop_harvests_from(
 ) {
     for path in paths {
         ws.pre_globals.invalidate_deferred_for_file(path);
+        ws.changed_since_build.insert(path.to_path_buf());
     }
     for doc in documents.values_mut() {
         if doc.analysis.as_ref().is_some_and(|a| paths.iter().any(|p| a.deferred_dep_files().contains(*p))) {

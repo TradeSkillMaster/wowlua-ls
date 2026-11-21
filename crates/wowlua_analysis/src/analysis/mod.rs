@@ -1188,6 +1188,37 @@ pub(super) fn table_indices_from_type(vt: &ValueType) -> Vec<TableIndex> {
 }
 
 impl Ir {
+    /// Read the cross-file index through `ext` in place of the one this IR was built
+    /// against, display text included. `ext` must hold the same entries at the same
+    /// indices: a rebuild of the same declarations that differs only in display text
+    /// (doc comments, descriptions), as the LSP's display refresh makes. Anything
+    /// else needs a new analysis.
+    pub fn replace_ext(&mut self, ext: &Arc<PreResolvedGlobals>) {
+        debug_assert_eq!(self.ext.arena_lens(), ext.arena_lens(), "replace_ext with an index of another shape");
+        // This file's copies of the index's functions and fields (the harvest
+        // overlays) carry the display text they were copied with.
+        for (&idx, func) in &mut self.overlay {
+            if idx.is_external() {
+                func.take_display_text(ext.func(idx));
+            }
+        }
+        for (&table_idx, fields) in &mut self.overlay_fields {
+            if !table_idx.is_external() {
+                continue;
+            }
+            let table = ext.table(table_idx);
+            for (name, field) in fields.iter_mut() {
+                if let Some(own) = table.fields.get(name) {
+                    field.description.clone_from(&own.description);
+                }
+            }
+        }
+        self.classes.replace_ext(Arc::clone(ext));
+        self.aliases.replace_ext(Arc::clone(ext));
+        self.alias_string_literals.replace_ext(Arc::clone(ext));
+        self.ext = Arc::clone(ext);
+    }
+
     /// Record a condition expression for `redundant-condition` diagnostics.
     pub fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, kind: ConditionKind, exit_else: ExitElse) {
         self.condition_sites.push(ConditionSite {
