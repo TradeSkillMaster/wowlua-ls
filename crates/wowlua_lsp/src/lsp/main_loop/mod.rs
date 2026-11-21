@@ -18,7 +18,7 @@ pub(super) use lsp_types::{
     DocumentHighlight, DocumentHighlightKind,
     DocumentSymbol, DocumentSymbolResponse, SymbolTag,
     FoldingRange, FoldingRangeProviderCapability,
-    SelectionRange, SelectionRangeProviderCapability,
+    SelectionRangeProviderCapability,
     LinkedEditingRangeServerCapabilities, LinkedEditingRanges,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
@@ -61,6 +61,7 @@ mod memory;
 mod rebuild;
 mod refactor;
 mod scan;
+mod selection_thread;
 mod semantic_token_encoding;
 mod state;
 mod stub_loading;
@@ -988,15 +989,22 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 /// is doing. The main loop reads from the buffer instead; the real (rendezvous)
 /// sender is kept as-is so outbound responses — including the shutdown reply —
 /// remain synchronously flushed.
+///
+/// The pump also routes selectionRange requests to their own thread (see
+/// `selection_thread`), which answers them while the main loop is busy. Handing
+/// that thread the work, rather than answering here, keeps the pump from ever
+/// waiting on the outbound channel: it must never stop draining stdin.
 fn buffered_input_connection(connection: Connection) -> Connection {
     let Connection { sender, receiver: real_rx } = connection;
     let (in_tx, in_rx) = crossbeam_channel::unbounded::<Message>();
+    let selection = selection_thread::SelectionThread::spawn(sender.clone());
     std::thread::Builder::new()
         .name("lsp-in-pump".to_string())
         .spawn(move || {
             // Ends when the real reader disconnects (stdin EOF on shutdown) or
             // the main loop drops the buffered receiver.
             for msg in real_rx {
+                let Some(msg) = selection.route(msg) else { continue };
                 if in_tx.send(msg).is_err() {
                     break;
                 }
