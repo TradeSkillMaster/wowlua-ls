@@ -22,6 +22,16 @@ generic brackets, etc. render in the flat type color, which is close to
 what IntelliJ's scope->color mapping shows anyway). VS Code's engine
 handles the construct correctly, so the VS Code grammar keeps the richer
 form.
+
+The transform also drops the `punctuation.definition.comment*` scope from
+comment delimiters (`--`, `---`, `--[[`, `]]`, `#!`), leaving them only the
+enclosing comment scope. IntelliJ colors a token by layering the colors of
+all its scopes, and maps `punctuation` to the "dot" color: in a scheme that
+gives that color a value (the New UI "Dark" and 2025.2's "Island Dark" do), it
+overrides the comment color, so every comment's `--` showed in the
+punctuation color while its text was comment grey, in the editor and in
+hovers alike. VS Code themes color a comment's delimiter as the comment, so
+the VS Code grammar keeps the scope.
 """
 
 import json
@@ -58,6 +68,30 @@ def flatten(node) -> int:
     return count
 
 
+COMMENT_PUNCTUATION = "punctuation.definition.comment"
+
+
+def drop_comment_punctuation(node) -> int:
+    count = 0
+    if isinstance(node, dict):
+        for capkey in ("captures", "beginCaptures", "endCaptures"):
+            caps = node.get(capkey)
+            if isinstance(caps, dict):
+                for k in [k for k, v in caps.items()
+                          if isinstance(v, dict) and set(v) == {"name"}
+                          and v["name"].startswith(COMMENT_PUNCTUATION)]:
+                    del caps[k]
+                    count += 1
+                if not caps:
+                    del node[capkey]
+        for v in node.values():
+            count += drop_comment_punctuation(v)
+    elif isinstance(node, list):
+        for v in node:
+            count += drop_comment_punctuation(v)
+    return count
+
+
 def main() -> None:
     here = Path(__file__).resolve().parent
     vscode_syntaxes = here.parent.parent / "vscode" / "syntaxes"
@@ -66,11 +100,13 @@ def main() -> None:
         dst = here / lang / "syntaxes" / f"{lang}.tmLanguage.json"
         grammar = json.loads(src.read_text(encoding="utf-8"))
         flattened = flatten(grammar)
+        delimiters = drop_comment_punctuation(grammar)
         dst.write_text(
             json.dumps(grammar, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        print(f"{lang}: wrote {dst.relative_to(here.parent)} ({flattened} captures flattened)")
+        print(f"{lang}: wrote {dst.relative_to(here.parent)} "
+              f"({flattened} captures flattened, {delimiters} comment delimiter scopes dropped)")
 
 
 if __name__ == "__main__":

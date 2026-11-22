@@ -54,6 +54,10 @@
         <gotoDeclarationHandler
                 order="last"
                 implementation="com.tradeskillmaster.wowluals.lsp4ij.WowLuaGotoDeclarationHandler"/>
+        <!-- A type WowLuaHoverFeature links in a hover's signature opens that
+             type's own hover in the popup. See HoverTypeLinks. -->
+        <platform.backend.documentation.linkHandler
+                implementation="com.tradeskillmaster.wowluals.lsp4ij.WowLuaTypeLinkHandler"/>
     </extensions>
 
     <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">

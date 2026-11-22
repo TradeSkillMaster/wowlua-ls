@@ -2265,6 +2265,41 @@ mod tests {
         assert_eq!(line.split_whitespace().take(2).collect::<Vec<_>>(), ["---@class", "Frame"], "range must cover the declaration, got {line:?}");
     }
 
+    /// A hover's link to a built-in type opens the materialized stub file at the
+    /// type's declaration, as go-to-definition does.
+    #[test]
+    fn hover_links_reach_stub_declarations() {
+        let Some(stubs) = load_precomputed_stubs() else { return };
+        let mut ws = WorkspaceState::for_test(None);
+        ws.pre_globals = Arc::new(stubs.pre_globals);
+        ws.set_stubs(stubs.stub_globals, stubs.stub_classes);
+
+        let uri = lsp_types::Uri::from_str("file:///tmp/wowlua-hover-links-test/Frame.lua").unwrap();
+        for (class, text) in [
+            ("Frame", "local frame = CreateFrame(\"Frame\")\n"),
+            ("GameTooltip", "---@type GameTooltip\nlocal frame = nil\n"),
+        ] {
+            let (tree, analysis) = analyze_lua(&uri, text, &ws.pre_globals, &ws.configs);
+            let hover = analysis.hover_at(&tree, text.find("frame").unwrap() as u32).expect("hover on the local");
+            let documents = HashMap::default();
+            let value = match lua_hover(&hover, &analysis, &uri, text, &documents).contents {
+                HoverContents::Markup(markup) => markup.value,
+                other => panic!("expected markdown, got {other:?}"),
+            };
+
+            let links = value.rsplit_once("Go to: ").expect("the hover has links").1;
+            let (_, url) = links.split_once(&format!("[`{class}`](")).unwrap_or_else(|| panic!("{class} is linked: {links}"));
+            let (url, _) = url.split_once(')').unwrap();
+            let (file, line) = url.rsplit_once("#L").unwrap();
+            let path = uri_to_abs_path(&lsp_types::Uri::from_str(file).unwrap()).expect("a file URI");
+            assert!(path.starts_with(stub_materialize_dir()), "{class} must link into the materialized stubs, got {path:?}");
+            let stub_text = std::fs::read_to_string(&path).unwrap();
+            let line: usize = line.parse().unwrap();
+            let declaration = stub_text.lines().nth(line - 1).unwrap_or_default();
+            assert_eq!(declaration.split_whitespace().take(2).collect::<Vec<_>>(), ["---@class", class], "got {declaration:?}");
+        }
+    }
+
     /// Call hierarchy from a prepared item: the incoming/outgoing requests find the
     /// function again from the offset the item stores, which was the definition's
     /// start (where nothing resolves), so both always came back empty. An outgoing
@@ -5640,6 +5675,101 @@ end
             pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
         };
         (uri, doc)
+    }
+
+    /// Sends one request through `handle_request` and returns its result.
+    fn request_result(
+        documents: &mut HashMap<String, Document>,
+        ws: &mut WorkspaceState,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let (server, client) = Connection::memory();
+        let req = Request::new(RequestId::from(1), method.to_string(), params);
+        handle_request(&server, documents, ws, req, &ClientSupport::default());
+        match client.receiver.try_recv().expect("a response") {
+            Message::Response(r) => r.result.unwrap_or_default(),
+            other => panic!("expected a response, got {other:?}"),
+        }
+    }
+
+    /// A hover's types link to the lines that declare them, in this file or
+    /// another, under a `Go to:` line the JetBrains plugin parses back out; and
+    /// `wowlua/typeHover` returns a named type's own hover (with its links, not
+    /// one to itself) as the plugin shows it when a linked type is clicked.
+    #[test]
+    fn hover_links_types_to_their_declarations() {
+        let tmp = std::env::temp_dir().join(format!("wowlua_hover_links_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Parentheses in the path must not end the markdown link.
+        let addon = tmp.join("My (Addon)");
+        std::fs::create_dir_all(&addon).unwrap();
+        std::fs::write(tmp.join("defs.lua"), "-- Shared types.\n\n---@class HoverLinkRange\n---@field min number\n").unwrap();
+        // A class declared in two files links to the one declaring its members,
+        // whichever the scan records last.
+        std::fs::write(tmp.join("parts_a.lua"), "---@class HoverLinkParts\n---@field a number\n---@field b number\n").unwrap();
+        std::fs::write(tmp.join("parts_b.lua"), "\n---@class HoverLinkParts\n").unwrap();
+        std::fs::write(tmp.join("parts_c.lua"), "---@class HoverLinkParts\n").unwrap();
+        let user = addon.join("user.lua");
+        std::fs::write(&user, "---@class HoverLinkData\n---@field range HoverLinkRange\nlocal data = {}\n---@type HoverLinkParts\nlocal parts = nil\n").unwrap();
+        let mut ws = build_ws_for_dir(&tmp);
+        let (user_uri, user_doc) = open_doc(&ws, &user);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(user_uri.to_string(), user_doc);
+        let user_link = format!("{}#L1", user_uri.as_str().replace('(', "%28").replace(')', "%29"));
+        assert!(user_link.contains("My%20%28Addon%29"), "{user_link}");
+        let defs_link = format!("{}#L3", abs_path_to_uri(&tmp.join("defs.lua")).unwrap().as_str());
+
+        let hover = request_result(&mut documents, &mut ws, "textDocument/hover", serde_json::json!({
+            "textDocument": { "uri": user_uri }, "position": { "line": 2, "character": 6 },
+        }));
+        let value = hover["contents"]["value"].as_str().unwrap();
+        assert!(value.starts_with("```wowlua-hover\n(local) data: HoverLinkData {"), "{value}");
+        assert!(
+            value.ends_with(&format!("```\n\n---\n\nGo to: [`HoverLinkData`]({user_link}) · [`HoverLinkRange`]({defs_link})")),
+            "{value}",
+        );
+
+        let hover = request_result(&mut documents, &mut ws, "textDocument/hover", serde_json::json!({
+            "textDocument": { "uri": user_uri }, "position": { "line": 4, "character": 6 },
+        }));
+        let value = hover["contents"]["value"].as_str().unwrap();
+        let parts_link = format!("{}#L1", abs_path_to_uri(&tmp.join("parts_a.lua")).unwrap().as_str());
+        assert!(value.ends_with(&format!("Go to: [`HoverLinkParts`]({parts_link})")), "{value}");
+
+        let type_hover = request_result(&mut documents, &mut ws, "wowlua/typeHover", serde_json::json!({
+            "textDocument": { "uri": user_uri }, "name": "HoverLinkData",
+        }));
+        let value = type_hover["contents"]["value"].as_str().unwrap();
+        assert!(value.starts_with("```wowlua-hover\n(class) HoverLinkData {"), "{value}");
+        assert!(value.ends_with(&format!("Go to: [`HoverLinkRange`]({defs_link})")), "{value}");
+
+        // A class with nothing to link has no `Go to:` line.
+        let type_hover = request_result(&mut documents, &mut ws, "wowlua/typeHover", serde_json::json!({
+            "textDocument": { "uri": user_uri }, "name": "HoverLinkRange",
+        }));
+        let value = type_hover["contents"]["value"].as_str().unwrap();
+        assert!(value.starts_with("```wowlua-hover\n(class) HoverLinkRange {") && !value.contains("Go to:"), "{value}");
+
+        // A name that is no type has no hover.
+        let none = request_result(&mut documents, &mut ws, "wowlua/typeHover", serde_json::json!({
+            "textDocument": { "uri": user_uri }, "name": "NotAType",
+        }));
+        assert!(none.is_null(), "{none}");
+        // A hover can outlive its file: once closed, an open file reads the type.
+        let closed = abs_path_to_uri(&tmp.join("defs.lua")).unwrap();
+        let type_hover = request_result(&mut documents, &mut ws, "wowlua/typeHover", serde_json::json!({
+            "textDocument": { "uri": closed }, "name": "HoverLinkRange",
+        }));
+        let value = type_hover["contents"]["value"].as_str().unwrap_or_default();
+        assert!(value.starts_with("```wowlua-hover\n(class) HoverLinkRange {"), "{type_hover}");
+        // With no file open there is nothing to read it in.
+        let none = request_result(&mut HashMap::default(), &mut ws, "wowlua/typeHover", serde_json::json!({
+            "textDocument": { "uri": closed }, "name": "HoverLinkRange",
+        }));
+        assert!(none.is_null(), "{none}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

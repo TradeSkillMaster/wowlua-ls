@@ -100,11 +100,6 @@
       "include": "#string"
     },
     {
-      "captures": {
-        "1": {
-          "name": "punctuation.definition.comment.lua"
-        }
-      },
       "match": "\\A(#!).*$\\n?",
       "name": "comment.line.shebang.lua"
     },
@@ -286,17 +281,7 @@
       "patterns": [
         {
           "begin": "--\\[(=*)\\[",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.comment.begin.lua"
-            }
-          },
           "end": "(--)?\\]\\1\\]",
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.comment.end.lua"
-            }
-          },
           "name": "comment.block.lua",
           "patterns": [
             {
@@ -306,21 +291,11 @@
         },
         {
           "begin": "----",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.comment.lua"
-            }
-          },
           "end": "\\n",
           "name": "comment.line.double-dash.lua"
         },
         {
           "begin": "---",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.comment.lua"
-            }
-          },
           "end": "\\n",
           "name": "comment.line.double-dash.documentation.lua",
           "patterns": [
@@ -331,11 +306,6 @@
         },
         {
           "begin": "--",
-          "beginCaptures": {
-            "0": {
-              "name": "punctuation.definition.comment.lua"
-            }
-          },
           "end": "\\n",
           "name": "comment.line.double-dash.lua"
         }

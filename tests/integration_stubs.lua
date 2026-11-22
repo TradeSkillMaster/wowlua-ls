@@ -1843,3 +1843,16 @@ end
 -- local it declares
 local rawequal = _g_indirect.rawequal
 --    ^ hover: (local) function rawequal(v1: any, v2: any)
+
+-- A stub method's hover links its class and the stub aliases its signature
+-- names, not its parameter names or the built-in types.
+_cfNoTpl:SetPoint("CENTER")
+--       ^ links: Frame, FramePoint, uiUnit
+
+-- Untyped parameters named like stub types (`frame`, `button`) don't link, nor
+-- do enum members named like them (`Line`).
+local function SkinButton(frame, button) end
+--             ^ links: none
+---@type Enum.BreakType
+local breakType = nil
+--    ^ links: Enum.BreakType

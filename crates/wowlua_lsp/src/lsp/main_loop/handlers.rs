@@ -110,6 +110,84 @@ fn definition_results_to_response(
     }
 }
 
+/// `wowlua/typeHover`: the hover for a class or alias name, as hovering the
+/// name in an annotation of an open document shows it (the given one, else, once
+/// it is closed, another). The JetBrains plugin sends it when a type in a hover
+/// is clicked, to show that type's hover in the same popup
+/// (`WowLuaTypeDocumentationTarget.kt`).
+pub(super) enum TypeHoverRequest {}
+
+impl request::Request for TypeHoverRequest {
+    type Params = TypeHoverParams;
+    type Result = Option<Hover>;
+    const METHOD: &'static str = "wowlua/typeHover";
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TypeHoverParams {
+    /// The document whose analysis resolves the name.
+    pub text_document: lsp_types::TextDocumentIdentifier,
+    pub name: String,
+}
+
+/// What precedes a hover's type links. The JetBrains plugin finds the links by
+/// it (`HoverTypeLinks.kt`).
+pub(super) const HOVER_TYPE_LINKS_LABEL: &str = "Go to: ";
+
+/// A Lua hover: the signature as a `wowlua-hover` code block, its doc below a
+/// rule, and, below another, a [`HOVER_TYPE_LINKS_LABEL`] line linking each
+/// class and alias the signature names to its declaration. The JetBrains plugin
+/// moves those links onto the names in the code block and drops the line, so
+/// keep its parser (`HoverTypeLinks.kt`) in sync with this format.
+pub(super) fn lua_hover(
+    hover: &crate::types::HoverResult,
+    analysis: &AnalysisResult,
+    uri: &lsp_types::Uri,
+    text: &str,
+    documents: &HashMap<String, Document>,
+) -> Hover {
+    let mut value = format!("```wowlua-hover\n{}\n```", hover.type_str);
+    if let Some(doc) = &hover.doc {
+        value.push_str("\n---\n");
+        value.push_str(doc);
+    }
+    // Reads each file the links lead into once, however many types it declares.
+    let mut resolver = LocationResolver::with_documents(documents);
+    let links: Vec<String> = analysis.hover_type_links(&hover.type_str).iter().filter_map(|link| {
+        let (target, line) = match &link.definition {
+            DefinitionResult::Local(range) => {
+                let start = (u32::from(range.start()) as usize).min(text.len());
+                (uri.clone(), text.as_bytes()[..start].iter().filter(|&&b| b == b'\n').count() as u32)
+            }
+            DefinitionResult::External(loc) => {
+                let location = resolver.resolve(loc)?;
+                (location.uri, location.range.start.line)
+            }
+        };
+        Some(format!("[`{}`]({})", link.name, hover_link_url(&target, line)))
+    }).collect();
+    if !links.is_empty() {
+        // A blank line first: a `---` right under a paragraph would make that
+        // paragraph a heading.
+        value.push_str("\n\n---\n\n");
+        value.push_str(HOVER_TYPE_LINKS_LABEL);
+        value.push_str(&links.join(" · "));
+    }
+    Hover {
+        contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
+        range: None,
+    }
+}
+
+/// A link to a (0-based) line of a file. VS Code and LSP4IJ both open a
+/// `file://` URI at the 1-based line a `#L<line>` fragment names. Parentheses,
+/// which file URIs leave unencoded, are encoded so a path's `)` can't end the
+/// markdown link.
+fn hover_link_url(uri: &lsp_types::Uri, line: u32) -> String {
+    format!("{}#L{}", uri.as_str().replace('(', "%28").replace(')', "%29"), line + 1)
+}
+
 /// The identifier/word token range at `offset`, used as a `LocationLink`'s
 /// `originSelectionRange` (the underlined source span for go-to-definition).
 /// Prefers a `Name` over adjacent punctuation when the caret sits on a token
@@ -476,19 +554,31 @@ pub(super) fn handle_request(
                 // Stub files opened via go-to-definition are analyzed
                 // synchronously on demand at the top of `handle_request`
                 // (`ensure_stub_doc_analyzed`), so `analysis` is ready here.
-                let result = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
+                let docs: &HashMap<String, Document> = documents;
+                let result = with_doc_at_position(docs, &uri, position, |doc, tree, analysis, offset| {
                     let hover = analysis.hover_at(tree, offset)?;
-                    let value = match &hover.doc {
-                        Some(doc) => format!("```wowlua-hover\n{}\n```\n---\n{}", hover.type_str, doc),
-                        None => format!("```wowlua-hover\n{}\n```", hover.type_str),
-                    };
-                    Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value,
-                        }),
-                        range: None,
-                    })
+                    Some(lua_hover(&hover, analysis, &uri, &doc.text, docs))
+                });
+                send_response(connection, id, &result);
+            }
+        }
+        "wowlua/typeHover" => {
+            if let Ok((id, params)) = cast_req::<TypeHoverRequest>(req) {
+                let docs: &HashMap<String, Document> = documents;
+                // The hover the type was clicked in can outlive its file (pinned in
+                // IntelliJ's documentation window): once the file closes, its types
+                // are workspace types, which any open file's analysis reads.
+                let context = Some(params.text_document.uri)
+                    .filter(|uri| docs.get(&uri.to_string()).is_some_and(|doc| doc.analysis.is_some()))
+                    .or_else(|| docs.iter()
+                        .filter(|(_, doc)| doc.analysis.is_some())
+                        .min_by_key(|(uri, _)| uri.as_str())
+                        .and_then(|(uri, _)| lsp_types::Uri::from_str(uri).ok()));
+                let result = context.and_then(|uri| {
+                    let doc = docs.get(&uri.to_string())?;
+                    let analysis = doc.analysis.as_ref()?;
+                    let hover = analysis.type_name_hover(&params.name)?;
+                    Some(lua_hover(&hover, analysis, &uri, &doc.text, docs))
                 });
                 send_response(connection, id, &result);
             }

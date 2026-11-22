@@ -54,6 +54,8 @@ enum Globals {
 ///                       Use \n escapes in the assertion to write a full multi-line expectation.
 ///   doc: TEXT         — expected substring in the hover doc payload
 ///                       (`doc: !TEXT` asserts the doc does NOT contain TEXT)
+///   links: A, B       — the hover's clickable types (`hover_type_links`), exactly
+///                       and in order; `links: none` asserts it has none
 ///   def: local|external|None — expected definition location
 ///   sig: LABEL        — expected active signature label (prefix match)
 ///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
@@ -253,6 +255,7 @@ fn run_annotation_tests_against(config: &TestConfig, globals: Globals) {
         let annotation = after_dashes[caret_end..].trim();
         let expected_hover = extract_field(annotation, "hover:");
         let expected_doc = extract_field(annotation, "doc:");
+        let expected_links = extract_field(annotation, "links:");
         let expected_def = extract_field(annotation, "def:");
         let expected_defs = extract_field(annotation, "defs:");
         let expected_typedef = extract_field(annotation, "typedef:");
@@ -267,7 +270,7 @@ fn run_annotation_tests_against(config: &TestConfig, globals: Globals) {
         let expected_hint = extract_field(annotation, "hint:");
         let expected_lens = extract_field(annotation, "lens:");
 
-        if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
+        if expected_hover.is_none() && expected_doc.is_none() && expected_links.is_none() && expected_def.is_none()
             && expected_defs.is_none()
             && expected_typedef.is_none() && expected_typedefs.is_none() && expected_sig.is_none()
             && expected_diag.is_none()
@@ -283,7 +286,7 @@ fn run_annotation_tests_against(config: &TestConfig, globals: Globals) {
 
         // For diag-only annotations, we don't need to query at a specific offset
         if let Some(expected_diag) = &expected_diag
-            && expected_hover.is_none()
+            && expected_hover.is_none() && expected_links.is_none()
             && expected_def.is_none() && expected_typedef.is_none() && expected_sig.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_highlight.is_none()
@@ -362,6 +365,24 @@ fn run_annotation_tests_against(config: &TestConfig, globals: Globals) {
             } else if !actual.contains(expected) {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    doc expected: {}\n    doc actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check the hover's clickable types (exact list, in order)
+        if let Some(expected) = &expected_links {
+            let actual = match result.hover_at(&tree, offset) {
+                Some(hover) => {
+                    let names: Vec<String> = result.hover_type_links(&hover.type_str)
+                        .into_iter().map(|link| link.name).collect();
+                    if names.is_empty() { "none".to_string() } else { names.join(", ") }
+                }
+                None => "<missing>".to_string(),
+            };
+            if actual != *expected {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    links expected: {}\n    links actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
             }
@@ -766,7 +787,7 @@ fn normalize_tok(s: &str) -> Vec<String> {
 /// Keep in sync with the `extract_field` call sites above and the annotation
 /// format documented in CLAUDE.md ("Supported fields: hover:, def:, …").
 const FIELD_PREFIXES: &[&str] = &[
-    "hover:", "doc:", "def:", "defs:", "typedef:", "typedefs:", "sig:", "diag:", "refs:",
+    "hover:", "doc:", "links:", "def:", "defs:", "typedef:", "typedefs:", "sig:", "diag:", "refs:",
     "linked:", "comp:", "tok:", "highlight:", "hint:", "lens:",
 ];
 
@@ -2217,6 +2238,17 @@ fn crossfile_doc_comments() {
     // `@param`/`@return` descriptions show in hover from another file.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/doc_comments_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+/// A hover's clickable types (`links:`): the classes and aliases, declared in
+/// this file or another, its signature names in type position.
+#[test]
+fn hover_type_links() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/hover_links_user.lua",
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
     });

@@ -15,6 +15,7 @@ import com.redhat.devtools.lsp4ij.server.StreamConnectionProvider
 import com.tradeskillmaster.wowluals.WowLuaServerPath
 import com.tradeskillmaster.wowluals.WowLuaSettings
 import com.tradeskillmaster.wowluals.WowLuaStubDir
+import org.eclipse.lsp4j.services.LanguageServer
 
 /**
  * The plugin's LSP client. LSP4IJ is a required dependency, so this is the sole
@@ -37,6 +38,10 @@ class WowLuaLanguageServerFactory : LanguageServerFactory, LanguageServerEnablem
             env,
         ) {}
     }
+
+    // Adds the server's own requests (`wowlua/typeHover`) to the proxy LSP4IJ
+    // hands out as `LanguageServerItem.server`.
+    override fun getServerInterface(): Class<out LanguageServer> = WowLuaLanguageServerApi::class.java
 
     override fun createClientFeatures(): LSPClientFeatures =
         LSPClientFeatures().setSelectionRangeFeature(object : LSPSelectionRangeFeature() {
@@ -64,7 +69,7 @@ class WowLuaLanguageServerFactory : LanguageServerFactory, LanguageServerEnablem
             ): TextAttributesKey? =
                 if (tokenType == "builtinConstant") DefaultLanguageHighlighterColors.CONSTANT
                 else super.getTextAttributesKey(tokenType, tokenModifiers, file)
-        })
+        }).setHoverFeature(WowLuaHoverFeature())
 
     // LSP4IJ's "Language Servers" UI drives these, letting the user turn the
     // server off without uninstalling the plugin. Persisted in WowLuaSettings so

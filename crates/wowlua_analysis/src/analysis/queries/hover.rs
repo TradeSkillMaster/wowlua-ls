@@ -446,8 +446,15 @@ impl AnalysisResult {
     /// Hover on a class or alias name inside an annotation comment.
     pub(super) fn annotation_name_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
         let word = self.annotation_word_at(tree, offset)?;
+        self.type_name_hover(&word)
+    }
+
+    /// The hover for a class or alias name, as hovering it in an annotation
+    /// (`---@type Name`) shows it. Serves the JetBrains plugin's clickable hover
+    /// types (`wowlua/typeHover`), which open a type's hover from another's.
+    pub fn type_name_hover(&self, word: &str) -> Option<HoverResult> {
         // Check classes (local + external)
-        if let Some(&table_idx) = self.ir.classes.get(&word) {
+        if let Some(&table_idx) = self.ir.classes.get(word) {
             let table = self.table(table_idx);
             let has_fields = !table.fields.is_empty() || !table.parent_classes.is_empty();
             let prefix = if table.is_key_enum { "(enum key)" } else if table.enum_kind.is_enum() { "(enum)" } else { "(class)" };
@@ -460,20 +467,20 @@ impl AnalysisResult {
             return Some(HoverResult { type_str, doc });
         }
         // Check aliases (local + external)
-        if let Some(vt) = self.ir.aliases.get(&word).or_else(|| self.ir.ext.aliases.get(&word)) {
+        if let Some(vt) = self.ir.aliases.get(word).or_else(|| self.ir.ext.aliases.get(word)) {
             // Prefer the raw `fun(...)` form from `alias_fun_types` over the resolved
             // `ValueType::Function(None)` which renders as the bare word "function".
             // `expand_alias_fun_signature` walks `alias A = B` chains for us.
-            let body = self.ir.alias_fun_types.get(&word)
-                .or_else(|| self.ir.ext.alias_fun_types.get(&word))
+            let body = self.ir.alias_fun_types.get(word)
+                .or_else(|| self.ir.ext.alias_fun_types.get(word))
                 .and_then(|raw| self.expand_alias_fun_signature(raw))
                 .unwrap_or_else(|| self.format_type(vt));
             let type_str = format!("(alias) {} = {}", word, body);
             return Some(HoverResult { type_str, doc: None });
         }
         // Check parameterized aliases (local + external)
-        if let Some((type_params, body)) = self.ir.parameterized_aliases.get(&word)
-            .or_else(|| self.ir.ext.parameterized_aliases.get(&word))
+        if let Some((type_params, body)) = self.ir.parameterized_aliases.get(word)
+            .or_else(|| self.ir.ext.parameterized_aliases.get(word))
         {
             let params_str = type_params.join(", ");
             let body_str = crate::annotations::format_annotation_type(body);
@@ -481,6 +488,68 @@ impl AnalysisResult {
             return Some(HoverResult { type_str, doc: None });
         }
         None
+    }
+
+    /// The classes and aliases a hover's signature (`HoverResult::type_str`)
+    /// names in type position, each once in order of first appearance, with
+    /// where each is declared: the hover's clickable types. A type hover's own
+    /// subject (`(class) Name {`) is left out. See [`signature_type_words`].
+    pub fn hover_type_links(&self, signature: &str) -> Vec<HoverTypeLink> {
+        let subject = hover_subject(signature);
+        let mut seen: HashSet<&str> = HashSet::default();
+        let mut links = Vec::new();
+        for word in signature_type_words(signature) {
+            if Some(word) == subject || !seen.insert(word) {
+                continue;
+            }
+            if let Some(definition) = self.type_name_definition(word) {
+                links.push(HoverTypeLink { name: word.to_string(), definition });
+            }
+        }
+        links
+    }
+
+    /// Where the class or alias `name` is declared (its primary declaration),
+    /// or `None` when it names neither (or a built-in Lua type).
+    fn type_name_definition(&self, name: &str) -> Option<DefinitionResult> {
+        if BUILTIN_TYPE_NAMES.contains(&name) {
+            return None;
+        }
+        if let Some(&table_idx) = self.ir.classes.get(name) {
+            return self.main_class_declaration(table_idx, self.class_definitions_by_name(name));
+        }
+        let is_alias = self.ir.aliases.contains_key(name)
+            || self.ir.ext.aliases.contains_key(name)
+            || self.ir.parameterized_aliases.contains_key(name)
+            || self.ir.ext.parameterized_aliases.contains_key(name);
+        if is_alias {
+            return self.alias_definitions_by_name(name).into_iter().next();
+        }
+        None
+    }
+
+    /// Which of a class's declarations [`Self::class_definitions_by_name`] found a
+    /// link leads to: this file's own, else the one in the file declaring most of
+    /// the class's members. The primary declaration is just the last one scanned,
+    /// which for a stub class can be an override file redeclaring it to patch one
+    /// method (`---@class Frame` above `SetScript`'s overloads), not where the
+    /// class is.
+    fn main_class_declaration(&self, table_idx: TableIndex, definitions: Vec<DefinitionResult>) -> Option<DefinitionResult> {
+        if definitions.len() < 2 || matches!(definitions.first(), Some(DefinitionResult::Local(_))) {
+            return definitions.into_iter().next();
+        }
+        let members = self.ir.ext.field_locations.get(&table_idx);
+        let members_in = |path: &std::path::Path| members.map_or(0, |fields| fields.values().filter(|loc| loc.path == path).count());
+        // The earliest of the declarations with the most members, so a tie keeps
+        // the primary.
+        let (_, main) = definitions.into_iter().enumerate().max_by_key(|(i, definition)| {
+            let count = match definition {
+                DefinitionResult::External(loc) => members_in(&loc.path),
+                DefinitionResult::Local(_) => 0,
+            };
+            (count, std::cmp::Reverse(*i))
+        })?;
+        Some(main)
     }
 
     /// Find the CallResolution and argument index for a token inside a function/method call.
@@ -705,10 +774,187 @@ impl AnalysisResult {
     }
 }
 
+/// A class or alias a hover's signature names, and its declaration: one of the
+/// hover's clickable types (see [`AnalysisResult::hover_type_links`]).
+#[derive(Debug, Clone)]
+pub struct HoverTypeLink {
+    pub name: String,
+    pub definition: DefinitionResult,
+}
+
+/// Lua's own type names, which stubs may declare as classes (`string` for its
+/// library methods) but a hover doesn't link.
+const BUILTIN_TYPE_NAMES: &[&str] = &[
+    "any", "boolean", "function", "integer", "lightuserdata", "nil", "number",
+    "self", "string", "table", "thread", "unknown", "userdata",
+];
+
+/// The name a type hover is about: the word after its `(class)` / `(enum)` /
+/// `(enum key)` / `(alias)` label.
+fn hover_subject(signature: &str) -> Option<&str> {
+    let rest = ["(class) ", "(enum) ", "(enum key) ", "(alias) "]
+        .iter()
+        .find_map(|label| signature.strip_prefix(label))?;
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The words a hover signature uses where a type can stand, in order. A word
+/// is an identifier, with `.` and `-` joining word characters
+/// (`Lib-2.0.Column`); words in `--` comments and string literals don't count,
+/// nor do a parameter list's names (`fun(self, frame)`, typed or not), field
+/// labels (`name:` / `name?:` before a space or line end), a table's keys
+/// (`Line = 3` inside `{}`, as an enum's members show), method names (right
+/// after `:`, as in `Frame:SetPoint`) or function names (right before `(`).
+/// Whether a word names a type is the caller's check.
+///
+/// The JetBrains plugin finds the words to make clickable in the rendered hover
+/// by these same rules (`HoverTypeLinks.kt`); keep the two in sync.
+pub fn signature_type_words(signature: &str) -> Vec<&str> {
+    /// What [`open`] records for a parameter list's `(`: one right after a name
+    /// (`fun(`, `Frame:SetPoint(`), unlike a grouping `(` or a `(local)` label.
+    const PARAMS: u8 = 0;
+    let b = signature.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut words = Vec::new();
+    // The brackets open at `i`, innermost last.
+    let mut open: Vec<u8> = Vec::new();
+    // At the start of a parameter: after a parameter list's `(` or its `,`.
+    let mut parameter_start = false;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'-' && b.get(i + 1) == Some(&b'-') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+        } else if c == b'-' && b.get(i + 1) == Some(&b'>') {
+            // A return arrow, whose `>` closes nothing.
+            i += 2;
+        } else if matches!(c, b'"' | b'\'' | b'`') {
+            i += 1;
+            while i < b.len() && b[i] != c && b[i] != b'\n' {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+        } else if c.is_ascii_digit() {
+            // A number literal (`0xFF`, `1.5`), whose letters aren't a word.
+            while i < b.len() && (is_word(b[i]) || b[i] == b'.') {
+                i += 1;
+            }
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            loop {
+                while i < b.len() && is_word(b[i]) {
+                    i += 1;
+                }
+                if i + 1 < b.len() && matches!(b[i], b'.' | b'-') && is_word(b[i + 1]) {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            let parameter = std::mem::take(&mut parameter_start);
+            let method_name = start > 0 && b[start - 1] == b':';
+            let colon = if b.get(i) == Some(&b'?') { i + 1 } else { i };
+            let label = b.get(colon) == Some(&b':')
+                && b.get(colon + 1).is_none_or(|c| c.is_ascii_whitespace());
+            let function_name = b.get(i) == Some(&b'(');
+            let after = signature[i..].trim_start_matches([' ', '\t']).as_bytes();
+            let key = open.last() == Some(&b'{') && after.first() == Some(&b'=') && after.get(1) != Some(&b'=');
+            if !parameter && !method_name && !label && !function_name && !key {
+                words.push(&signature[start..i]);
+            }
+        } else {
+            match c {
+                b'(' => {
+                    let params = i > 0 && is_word(b[i - 1]);
+                    open.push(if params { PARAMS } else { c });
+                    parameter_start = params;
+                }
+                b'<' | b'{' | b'[' => {
+                    open.push(c);
+                    parameter_start = false;
+                }
+                b')' | b'>' | b'}' | b']' => {
+                    open.pop();
+                    parameter_start = false;
+                }
+                b',' => parameter_start = open.last() == Some(&PARAMS),
+                _ if c.is_ascii_whitespace() => {}
+                _ => parameter_start = false,
+            }
+            i += 1;
+        }
+    }
+    words
+}
+
 /// Two hover doc sections, separated by a blank line when both are present.
 fn join_docs(first: Option<String>, second: Option<String>) -> Option<String> {
     match (first, second) {
         (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
         (a, b) => a.or(b),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hover_subject, signature_type_words};
+
+    #[test]
+    fn signature_type_words_skips_labels_names_comments_and_literals() {
+        let sig = "(class) Record {\n  Range: Range[]?, -- Deprecated, use Other\n  cb: fun(r: Range, mode?: Mode): Record,\n  kind: \"Kind\" | 'Kind2' | `T`,\n  count: 0xFF | -1 | 1.5,\n  map: table<string, Lib-2.0.Column>\n}";
+        assert_eq!(
+            signature_type_words(sig),
+            ["class", "Record", "Range", "Range", "Mode", "Record", "table", "string", "Lib-2.0.Column"],
+        );
+    }
+
+    #[test]
+    fn signature_type_words_skips_function_and_method_names() {
+        let sig = "(method) function Frame:SetPoint(point: FramePoint)\n  -> ...Frame";
+        assert_eq!(signature_type_words(sig), ["method", "function", "Frame", "FramePoint", "Frame"]);
+        // A name followed by `:` and more name characters qualifies a method; one
+        // followed by `:` and a space (or nothing) is a label.
+        assert_eq!(signature_type_words("(field) x: Frame"), ["field", "Frame"]);
+        assert_eq!(signature_type_words("Name:"), Vec::<&str>::new());
+        assert_eq!(signature_type_words("(local) function Make(a: A)"), ["local", "function", "A"]);
+    }
+
+    #[test]
+    fn signature_type_words_skips_parameter_names_typed_or_not() {
+        assert_eq!(
+            signature_type_words("(local) function Skin(frame, button: Frame, size)\n  -> Result, Other"),
+            ["local", "function", "Frame", "Result", "Other"],
+        );
+        assert_eq!(
+            signature_type_words("  Apply: fun(self: Helper, frame, map: table<string, Entry>): Result, Extra,"),
+            ["Helper", "table", "string", "Entry", "Result", "Extra"],
+        );
+    }
+
+    #[test]
+    fn signature_type_words_skips_table_keys_but_not_a_typed_value() {
+        assert_eq!(signature_type_words("(enum) Mode {\n  Line = 3,\n  Frame = 4\n}"), ["enum", "Mode"]);
+        assert_eq!(signature_type_words("(local) mode: Mode = \"fast\""), ["local", "Mode"]);
+        assert_eq!(signature_type_words("(alias) Mode = Kind"), ["alias", "Mode", "Kind"]);
+    }
+
+    #[test]
+    fn signature_type_words_handles_escapes_and_unterminated_strings() {
+        assert_eq!(signature_type_words(r#"x: "a\"Foo" | Bar"#), ["Bar"]);
+        assert_eq!(signature_type_words("x: \"Foo"), Vec::<&str>::new());
+        assert_eq!(signature_type_words("x: \"Foo\ny: Bar"), ["Bar"]);
+    }
+
+    #[test]
+    fn hover_subject_is_the_name_a_type_hover_is_about() {
+        assert_eq!(hover_subject("(class) Lib-2.0.Column {\n}"), Some("Lib-2.0.Column"));
+        assert_eq!(hover_subject("(enum key) Mode"), Some("Mode"));
+        assert_eq!(hover_subject("(alias) Map<K, V> = table<K, V>"), Some("Map"));
+        assert_eq!(hover_subject("(local) x: Frame"), None);
     }
 }

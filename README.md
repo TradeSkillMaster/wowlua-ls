@@ -108,7 +108,7 @@ Beyond the WoW-specific intelligence above, wowlua-ls is a complete language ser
 
 ### IDE features
 
-Hover, go-to-definition (lists every site when a global or type is defined across multiple files), find references, rename, completions, signature help, semantic tokens, inlay hints (6 categories), code lens (usages, implementations, overrides), and call hierarchy.
+Hover (with clickable types), go-to-definition (lists every site when a global or type is defined across multiple files), find references, rename, completions, signature help, semantic tokens, inlay hints (6 categories), code lens (usages, implementations, overrides), and call hierarchy.
 
 ### Type system
 

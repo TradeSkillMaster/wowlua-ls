@@ -42,6 +42,8 @@ function FindProfile(name) end
 
 Hovering a function lists its parameter and return descriptions; hovering a parameter inside the function shows its own. Hovering a field shows its description, and a class's hover shows the class's doc comment, with each field's description as a trailing `-- comment` in the field list. The list follows the order the class defines its fields in: its `@field`s as written, then the fields and methods its code adds, then the ones it inherits. On `@return`, the first word after the type is the return's name (`profile` above), as in LuaLS; to describe an unnamed return, start the description with `#`: `---@return number # The count.`
 
+A hover links the classes and aliases it names, so you can follow `Profile` from `FindProfile`'s hover. In JetBrains IDEs the type names in the hover are links: clicking one shows that type's own hover in the same popup (Back returns to the first), and **Jump to Source** (<kbd>F4</kbd>) opens its declaration. Other editors list the types on a **Go to:** line at the bottom of the hover, and clicking one opens its declaration.
+
 ## `@param`: Parameter types
 
 Declare what a function expects:
