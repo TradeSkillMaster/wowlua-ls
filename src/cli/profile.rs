@@ -21,8 +21,7 @@ pub fn run(dir: PathBuf) -> CliResult {
 
     // Phase 1: Load precomputed WoW API stubs
     let t = std::time::Instant::now();
-    let stubs = lsp::load_precomputed_stubs()
-        .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+    let stubs = lsp::load_precomputed_stubs_or_exit();
     let stub_classes = stubs.stub_classes;
     let stub_globals = stubs.stub_globals;
     let stubs_load_dur = t.elapsed();

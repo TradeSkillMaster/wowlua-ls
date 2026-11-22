@@ -54,7 +54,7 @@ Zed gets its languages from extensions, so install the **Lua** extension too (Ze
 
 ### Neovim
 
-Neovim has built-in LSP support - no plugin required. Get the binary (download from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release`), then add to your config:
+Neovim has built-in LSP support - no plugin required. Get the binary (download from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or [build it from source](#other-editors)), then add to your config:
 
 ```lua
 vim.filetype.add({ extension = { toc = 'toc' } })
@@ -76,11 +76,15 @@ See the [Getting Started guide](https://tradeskillmaster.github.io/wowlua-ls/gui
 
 ### Other editors
 
+Building from source needs [Git LFS](https://git-lfs.com), which stores the WoW API stubs; install it before you clone:
+
 ```bash
 git clone https://github.com/TradeSkillMaster/wowlua-ls.git
 cd wowlua-ls
 cargo build --release
 ```
+
+If you cloned without Git LFS, the build stops and says so: run `git lfs install` and `git lfs pull` in the checkout, then build again. `cargo install --git` and source archives don't fetch LFS files, so build from a clone.
 
 The binary is at `target/release/wowlua_ls`. Run it as an LSP server over stdio for Lua files.
 

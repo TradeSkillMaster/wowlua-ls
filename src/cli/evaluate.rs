@@ -55,8 +55,7 @@ pub fn run(file: PathBuf, with_stubs: bool, rest: &[String]) -> CliResult {
 
     // Optionally load stubs with --with-stubs flag
     let pre_globals = if with_stubs {
-        let stubs = lsp::load_precomputed_stubs()
-            .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let stubs = lsp::load_precomputed_stubs_or_exit();
         Arc::new(stubs.pre_globals)
     } else {
         Arc::new(PreResolvedGlobals::empty())

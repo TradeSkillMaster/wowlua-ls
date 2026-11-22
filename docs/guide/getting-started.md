@@ -57,7 +57,7 @@ Inlay hints are off by default in Zed; turn them on with `"inlay_hints": { "enab
 
 Neovim has built-in LSP client support - no plugin required, just configuration.
 
-**1. Get the binary.** Either download a release from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases), or build from source:
+**1. Get the binary.** Either download a release from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases), or build from source. Building needs [Git LFS](https://git-lfs.com), which stores the WoW API stubs; install it before you clone:
 
 ```bash
 git clone https://github.com/TradeSkillMaster/wowlua-ls.git
@@ -65,6 +65,8 @@ cd wowlua-ls
 cargo build --release
 # Binary is at target/release/wowlua_ls
 ```
+
+If you cloned without Git LFS, the build stops and says so: run `git lfs install` and `git lfs pull` in the checkout, then build again. `cargo install --git` and source archives don't fetch LFS files, so build from a clone.
 
 **2. Configure the LSP client.** Add this to your Neovim config (requires Neovim 0.11+):
 
@@ -144,13 +146,15 @@ If you also use a general-purpose Lua language server (e.g. lua_ls), you may wan
 
 ### Other editors
 
-Build the language server from source:
+Build the language server from source. Building needs [Git LFS](https://git-lfs.com), which stores the WoW API stubs; install it before you clone:
 
 ```bash
 git clone https://github.com/TradeSkillMaster/wowlua-ls.git
 cd wowlua-ls
 cargo build --release
 ```
+
+If you cloned without Git LFS, the build stops and says so: run `git lfs install` and `git lfs pull` in the checkout, then build again. `cargo install --git` and source archives don't fetch LFS files, so build from a clone.
 
 The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua and TOC files. The server picks the file kind from the language ID the editor sends: `lua` for Lua files and `toc` for TOC files.
 

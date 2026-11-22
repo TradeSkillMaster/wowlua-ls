@@ -81,7 +81,7 @@ use state::*;
 use stub_loading::*;
 
 pub use scan::{scan_workspace, scan_workspace_with_stubs, scan_paths_with_overrides};
-pub use stub_loading::{load_precomputed_stubs, stub_materialize_dir};
+pub use stub_loading::{load_precomputed_stubs, load_precomputed_stubs_or_exit, stub_materialize_dir, StubLoadError};
 pub use hierarchy::{search_workspace_symbols};
 pub use memory::set_release_memory_hook;
 pub use code_actions::{compute_quick_fixes, compute_code_actions, make_generate_annotation_stubs_source_action, ConfigEditContext};
@@ -2301,8 +2301,8 @@ mod tests {
     #[test]
     fn frame_event_definition_resolves_through_embedded_blob() {
         let stubs = match load_precomputed_stubs() {
-            Some(s) => s,
-            None => return, // No embedded stubs in this build configuration — skip.
+            Ok(s) => s,
+            Err(_) => return, // No embedded stubs in this build configuration — skip.
         };
         let pre = &stubs.pre_globals;
         let contents = stub_file_contents();
@@ -2333,7 +2333,7 @@ mod tests {
     /// keys, not files on disk, so reading them directly found nothing.
     #[test]
     fn stub_class_type_hierarchy_item_resolves_through_embedded_blob() {
-        let Some(stubs) = load_precomputed_stubs() else { return };
+        let Ok(stubs) = load_precomputed_stubs() else { return };
         let mut ws = WorkspaceState::for_test(None);
         ws.pre_globals = Arc::new(stubs.pre_globals);
         ws.set_stubs(stubs.stub_globals, stubs.stub_classes);
@@ -2351,7 +2351,7 @@ mod tests {
     /// type's declaration, as go-to-definition does.
     #[test]
     fn hover_links_reach_stub_declarations() {
-        let Some(stubs) = load_precomputed_stubs() else { return };
+        let Ok(stubs) = load_precomputed_stubs() else { return };
         let mut ws = WorkspaceState::for_test(None);
         ws.pre_globals = Arc::new(stubs.pre_globals);
         ws.set_stubs(stubs.stub_globals, stubs.stub_classes);
@@ -2389,7 +2389,7 @@ mod tests {
     /// embedded blob, like go-to-definition.
     #[test]
     fn call_hierarchy_expands_local_and_stub_calls() {
-        let Some(stubs) = load_precomputed_stubs() else { return };
+        let Ok(stubs) = load_precomputed_stubs() else { return };
         let mut ws = WorkspaceState::for_test(None);
         ws.pre_globals = Arc::new(stubs.pre_globals);
         ws.set_stubs(stubs.stub_globals, stubs.stub_classes);

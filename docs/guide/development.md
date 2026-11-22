@@ -2,11 +2,15 @@
 
 ## Building from source
 
+Install [Git LFS](https://git-lfs.com) before you clone. The precomputed WoW API stubs (`stubs/precomputed.bin.zst` and `stubs/precomputed-files.bin.zst`) are LFS objects, and a checkout made without Git LFS holds small pointer files in their place.
+
 ```bash
 git clone https://github.com/TradeSkillMaster/wowlua-ls.git
 cd wowlua-ls
 cargo build --release
 ```
+
+If you cloned without Git LFS, the build stops with an error naming the pointer files: run `git lfs install` and `git lfs pull` in the checkout, then build again. `cargo install --git` and source archives don't fetch LFS files, so build from a clone (`cargo install --locked --path .` installs from one).
 
 The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua files.
 

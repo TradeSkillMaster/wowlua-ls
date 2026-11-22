@@ -125,42 +125,132 @@ fn remove_stale_version_dirs(current: &std::path::Path) {
     }
 }
 
-/// Try to load the precomputed stubs blob.
+// The stubs/ dir lives at the workspace root, two levels up from this crate.
+#[cfg(feature = "embedded-stubs")]
+static PRECOMPUTED_BLOB: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../stubs/precomputed.bin.zst"));
+#[cfg(feature = "embedded-stubs")]
+static PRECOMPUTED_FILES_BLOB: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../stubs/precomputed-files.bin.zst"));
+
+// Both blobs are Git LFS objects (`.gitattributes`). A checkout made without Git
+// LFS (no LFS installed, `cargo install --git`, a source archive) holds pointer
+// files in their place, and embedding those built a binary that could only exit
+// at startup, so stop the build and say why.
+#[cfg(feature = "embedded-stubs")]
+const _: () = assert!(
+    !is_lfs_pointer(PRECOMPUTED_BLOB) && !is_lfs_pointer(PRECOMPUTED_FILES_BLOB),
+    "stubs/precomputed.bin.zst and stubs/precomputed-files.bin.zst are Git LFS pointer files, \
+     not the WoW API stub data: this checkout was made without Git LFS. Install Git LFS \
+     (https://git-lfs.com), run `git lfs install` and then `git lfs pull` in the checkout, \
+     and build again. `cargo install --git` and source archives can't fetch LFS files: \
+     build from a clone instead.",
+);
+
+/// The start of a Git LFS pointer file: its first line is the spec `version` key.
+const LFS_POINTER_PREFIX: &[u8] = b"version https://git-lfs.github.com/spec/";
+
+/// Whether `bytes` is a Git LFS pointer file, which a checkout made without Git
+/// LFS holds in place of each LFS-tracked file. `const` so the embedded blobs can
+/// be checked at compile time.
+const fn is_lfs_pointer(bytes: &[u8]) -> bool {
+    if bytes.len() < LFS_POINTER_PREFIX.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < LFS_POINTER_PREFIX.len() {
+        if bytes[i] != LFS_POINTER_PREFIX[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Why [`load_precomputed_stubs`] couldn't load the stub database. `Display`
+/// names the cause and the fix, for the fatal startup error.
+#[derive(Debug)]
+pub enum StubLoadError {
+    /// A build without `embedded-stubs` couldn't read the blob from the `stubs/`
+    /// directory next to the executable.
+    NotFound(String),
+    /// The blob at this path is a Git LFS pointer file. Only reachable without
+    /// `embedded-stubs`: an embedded pointer fails the build.
+    LfsPointer(std::path::PathBuf),
+    /// The blob header names another format version (or isn't a stub blob).
+    VersionMismatch { magic: u32, version: u32 },
+    /// The blob is truncated or doesn't decode.
+    Corrupt(String),
+}
+
+impl std::fmt::Display for StubLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::pre_globals::{BLOB_MAGIC, BLOB_VERSION};
+        match self {
+            Self::NotFound(why) => write!(f, "precomputed stubs not found: {why}"),
+            Self::LfsPointer(path) => write!(
+                f,
+                "{} is a Git LFS pointer file, not the WoW API stub data: it comes from a checkout \
+                 made without Git LFS. Install Git LFS (https://git-lfs.com) and run `git lfs install` \
+                 and then `git lfs pull` in that checkout",
+                path.display(),
+            ),
+            Self::VersionMismatch { magic, version } => write!(
+                f,
+                "precomputed stubs blob version mismatch (got {magic:#x}/v{version}, expected \
+                 {BLOB_MAGIC:#x}/v{BLOB_VERSION}) — run `cargo run -- regenerate-stubs`",
+            ),
+            Self::Corrupt(why) => write!(f, "precomputed stubs blob is corrupt ({why}) — run `cargo run -- regenerate-stubs`"),
+        }
+    }
+}
+
+impl std::error::Error for StubLoadError {}
+
+/// Check a precomputed stubs blob before decoding it: a Git LFS pointer in its
+/// place, a file too short for the header, or another format version. `source`
+/// names the blob in the error.
+fn check_blob_header(bytes: &[u8], source: &std::path::Path) -> Result<(), StubLoadError> {
+    use crate::pre_globals::{BLOB_MAGIC, BLOB_VERSION};
+    // Before the header check: a pointer's first bytes read as a bogus version.
+    if is_lfs_pointer(bytes) {
+        return Err(StubLoadError::LfsPointer(source.to_path_buf()));
+    }
+    if bytes.len() < 8 {
+        return Err(StubLoadError::Corrupt(format!("{} bytes", bytes.len())));
+    }
+    // Magic + version header (first 8 bytes, before the zstd payload).
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if magic != BLOB_MAGIC || version != BLOB_VERSION {
+        return Err(StubLoadError::VersionMismatch { magic, version });
+    }
+    Ok(())
+}
+
+/// Load the precomputed stubs blob.
 ///
 /// With `embedded-stubs` (default): reads from data baked into the binary.
 /// Without: reads from a `stubs/` directory next to the executable.
-/// Returns None if the blob is not available, empty, or version-mismatched.
-pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> {
-    use crate::pre_globals::{BLOB_MAGIC, BLOB_VERSION};
-
-    // The stubs/ dir lives at the workspace root, two levels up from this crate.
+pub fn load_precomputed_stubs() -> Result<crate::pre_globals::PrecomputedStubs, StubLoadError> {
     #[cfg(feature = "embedded-stubs")]
-    let compressed: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../stubs/precomputed.bin.zst"));
+    let (compressed, source) = (PRECOMPUTED_BLOB, std::path::PathBuf::from("stubs/precomputed.bin.zst"));
 
     #[cfg(not(feature = "embedded-stubs"))]
-    let compressed_owned;
-    #[cfg(not(feature = "embedded-stubs"))]
-    let compressed: &[u8] = {
-        let dir = stubs_dir().or_else(|| {
-            log::warn!("Stubs directory not found next to executable");
-            None
-        })?;
-        compressed_owned = std::fs::read(dir.join("precomputed.bin.zst")).ok()?;
-        &compressed_owned
+    let (compressed_owned, source) = {
+        let dir = stubs_dir()
+            .ok_or_else(|| StubLoadError::NotFound("no `stubs/` directory next to the executable".into()))?;
+        let path = dir.join("precomputed.bin.zst");
+        match std::fs::read(&path) {
+            Ok(data) => (data, path),
+            Err(e) => return Err(StubLoadError::NotFound(format!("can't read {}: {e}", path.display()))),
+        }
     };
+    #[cfg(not(feature = "embedded-stubs"))]
+    let compressed: &[u8] = &compressed_owned;
 
-    if compressed.len() < 8 {
-        return None;
-    }
-    // Check magic + version header (first 8 bytes, before zstd payload)
-    let magic = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
-    let version = u32::from_le_bytes([compressed[4], compressed[5], compressed[6], compressed[7]]);
-    if magic != BLOB_MAGIC || version != BLOB_VERSION {
-        log::warn!("Precomputed stubs blob version mismatch (got {magic:#x}/v{version}, expected {BLOB_MAGIC:#x}/v{BLOB_VERSION})");
-        return None;
-    }
-    let decompressed = zstd::decode_all(&compressed[8..]).ok()?;
-    let mut stubs: crate::pre_globals::PrecomputedStubs = bincode::deserialize(&decompressed).ok()?;
+    check_blob_header(compressed, &source)?;
+    let decompressed = zstd::decode_all(&compressed[8..]).map_err(|e| StubLoadError::Corrupt(e.to_string()))?;
+    let mut stubs: crate::pre_globals::PrecomputedStubs =
+        bincode::deserialize(&decompressed).map_err(|e| StubLoadError::Corrupt(e.to_string()))?;
     // Record the boundary so we can tell stub symbols from workspace ones added
     // later via `build_on_stubs`. Needed for the `defaultLibrary` semantic token
     // modifier, which should only apply to actual WoW API stubs.
@@ -175,7 +265,7 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     // FrameXML files use the addon namespace pattern internally; clear any
     // stale addon table from the blob so it doesn't leak into user addons.
     stubs.pre_globals.addon_table_idx = None;
-    Some(stubs)
+    Ok(stubs)
 }
 
 /// Lazily load stub file contents for go-to-definition.
@@ -185,13 +275,17 @@ pub(super) fn stub_file_contents() -> &'static HashMap<String, String> {
     static CONTENTS: OnceLock<HashMap<String, String>> = OnceLock::new();
     CONTENTS.get_or_init(|| {
         #[cfg(feature = "embedded-stubs")]
-        let compressed: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../stubs/precomputed-files.bin.zst"));
+        let compressed: &[u8] = PRECOMPUTED_FILES_BLOB;
 
         #[cfg(not(feature = "embedded-stubs"))]
         let compressed_owned;
         #[cfg(not(feature = "embedded-stubs"))]
         let compressed: &[u8] = match stubs_dir() {
             Some(dir) => match std::fs::read(dir.join("precomputed-files.bin.zst")) {
+                Ok(data) if is_lfs_pointer(&data) => {
+                    log::error!("{}", StubLoadError::LfsPointer(dir.join("precomputed-files.bin.zst")));
+                    return HashMap::default();
+                }
                 Ok(data) => { compressed_owned = data; &compressed_owned }
                 Err(e) => {
                     log::error!("Failed to read stub file contents from disk: {e}");
@@ -229,17 +323,20 @@ pub(super) fn stub_file_contents() -> &'static HashMap<String, String> {
     })
 }
 
+/// [`load_precomputed_stubs`], for a caller that can't run without them: on
+/// failure, logs the reason and exits.
+pub fn load_precomputed_stubs_or_exit() -> crate::pre_globals::PrecomputedStubs {
+    load_precomputed_stubs().unwrap_or_else(|e| {
+        log::error!("Fatal: {e}");
+        std::process::exit(1);
+    })
+}
+
 /// Load precomputed stubs blob.
 /// Returns (stub_classes, stub_globals, stub_pre_globals, has_defclass, has_built_name).
 pub(super) fn load_stubs() -> (Vec<ClassDecl>, Vec<ExternalGlobal>, Arc<PreResolvedGlobals>, bool, bool) {
     let t = std::time::Instant::now();
-    let stubs = match load_precomputed_stubs() {
-        Some(s) => s,
-        None => {
-            log::error!("Fatal: precomputed stubs not found or version mismatch — run `cargo run -- regenerate-stubs`");
-            std::process::exit(1);
-        }
-    };
+    let stubs = load_precomputed_stubs_or_exit();
     log::debug!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
         t.elapsed(), stubs.pre_globals.symbols_len(), stubs.pre_globals.functions_len(), stubs.pre_globals.tables_len());
     let has_defclass = stubs.stub_globals.iter().any(|g| g.defclass.is_some());
@@ -330,7 +427,7 @@ pub(super) fn text_has_meta(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pre_globals::BLOB_VERSION;
+    use crate::pre_globals::{BLOB_MAGIC, BLOB_VERSION};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -365,7 +462,7 @@ mod tests {
     /// path it serializes must be a key of the embedded file-contents blob.
     #[test]
     fn stub_blob_paths_are_embedded_file_keys() {
-        let Some(mut stubs) = load_precomputed_stubs() else { return };
+        let Ok(mut stubs) = load_precomputed_stubs() else { return };
         let contents = stub_file_contents();
         let mut bad = std::collections::BTreeSet::new();
         stubs.for_each_path_mut(|path| {
@@ -374,6 +471,37 @@ mod tests {
             }
         });
         assert!(bad.is_empty(), "{} blob path(s) are not embedded-file keys, e.g. {:?}", bad.len(), bad.iter().take(5).collect::<Vec<_>>());
+    }
+
+    /// A checkout made without Git LFS holds pointer files in place of the stub
+    /// blobs. Embedding one now fails the build; loading one from disk (a build
+    /// without `embedded-stubs`) must name LFS as the cause, not a version mismatch.
+    #[test]
+    fn lfs_pointer_is_detected() {
+        let pointer = b"version https://git-lfs.github.com/spec/v1\n\
+            oid sha256:78789fbd24b58fb47e834efc7d2e7d4df9d89e7890e3a2f0197c6892e5bae86d\n\
+            size 15749935\n";
+        assert!(is_lfs_pointer(pointer));
+        // A real blob starts with its magic + version header.
+        let mut blob = BLOB_MAGIC.to_le_bytes().to_vec();
+        blob.extend(BLOB_VERSION.to_le_bytes());
+        assert!(!is_lfs_pointer(&blob));
+        assert!(!is_lfs_pointer(b""));
+        assert!(!is_lfs_pointer(b"version https://git-lfs"));
+
+        // The loader reports a pointer as one, not as the version mismatch its
+        // first bytes would otherwise read as.
+        let source = std::path::Path::new("stubs/precomputed.bin.zst");
+        assert!(matches!(check_blob_header(pointer, source), Err(StubLoadError::LfsPointer(p)) if p == source));
+        assert!(check_blob_header(&blob, source).is_ok());
+        assert!(matches!(check_blob_header(&blob[..4], source), Err(StubLoadError::Corrupt(_))));
+        let mut stale = BLOB_MAGIC.to_le_bytes().to_vec();
+        stale.extend((BLOB_VERSION - 1).to_le_bytes());
+        assert!(matches!(check_blob_header(&stale, source), Err(StubLoadError::VersionMismatch { .. })));
+
+        let msg = StubLoadError::LfsPointer(PathBuf::from("stubs/precomputed.bin.zst")).to_string();
+        assert!(msg.starts_with("stubs/precomputed.bin.zst is a Git LFS pointer file"), "{msg}");
+        assert!(msg.contains("git lfs pull"), "{msg}");
     }
 
     #[test]

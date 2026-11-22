@@ -27,7 +27,7 @@ The plugin adds:
 
 - A JetBrains IDE 2025.2 or newer, with the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin. LSP4IJ is a required dependency, so installing from the Marketplace pulls it in automatically.
 - JDK 21+ (for building)
-- `wowlua_ls` binary ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root)
+- `wowlua_ls` binary ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root, which needs [Git LFS](https://git-lfs.com))
 
 ## LSP backend
 
@@ -37,12 +37,14 @@ The plugin drives the language server through Red Hat's [LSP4IJ](https://plugins
 
 ### 1. Install the `wowlua_ls` binary
 
-Either download a release binary or build from source:
+Either download a release binary or build from source. Building needs [Git LFS](https://git-lfs.com), which stores the WoW API stubs; install it before you clone:
 
 ```bash
 cd /path/to/wowlua-ls
 cargo build --release
 ```
+
+If you cloned without Git LFS, the build stops and says so: run `git lfs install` and `git lfs pull` in the checkout, then build again.
 
 Then add the binary to your PATH.
 

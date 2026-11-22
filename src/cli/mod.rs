@@ -267,8 +267,7 @@ pub(crate) fn load_workspace(
     store_project_configs: bool,
 ) -> WorkspaceData {
     let stubs = if with_stubs {
-        Some(lsp::load_precomputed_stubs()
-            .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first"))
+        Some(lsp::load_precomputed_stubs_or_exit())
     } else {
         None
     };

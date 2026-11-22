@@ -7,8 +7,7 @@ use wowlua_ls::{doc_gen, lsp};
 use super::CliResult;
 
 pub fn run() -> CliResult {
-    let stubs = lsp::load_precomputed_stubs()
-        .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+    let stubs = lsp::load_precomputed_stubs_or_exit();
     let entries = doc_gen::dump_stub_globals(&stubs.pre_globals);
     for (name, ty) in &entries {
         println!("{name}\t{ty}");

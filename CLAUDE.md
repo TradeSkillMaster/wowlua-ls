@@ -284,7 +284,7 @@ The `embedded-stubs` Cargo feature (default on) controls how the binary loads pr
 - **With feature (default):** Stubs are baked into the binary via `include_bytes!`. Produces a self-contained executable for standalone release downloads.
 - **Without feature (`--no-default-features`):** Stubs are loaded at runtime from a `stubs/` directory next to the executable (resolved via `std::env::current_exe()`). Used for universal editor plugin packages that share one copy of the stubs across per-platform binaries.
 
-Both modes use the same version-checking logic (`BLOB_MAGIC`/`BLOB_VERSION`). The implementation is in `src/lsp/main_loop/stub_loading.rs` (`load_precomputed_stubs()`, `stub_file_contents()`, `stubs_dir()`).
+Both modes use the same version-checking logic (`BLOB_MAGIC`/`BLOB_VERSION`). The implementation is in `src/lsp/main_loop/stub_loading.rs` (`load_precomputed_stubs()`, `stub_file_contents()`, `stubs_dir()`). Both blobs are Git LFS objects: a `const` assertion there fails an embedded build whose checkout holds LFS pointer files instead, and `load_precomputed_stubs` returns a `StubLoadError` whose message names the cause (`LfsPointer` for a disk-loaded pointer).
 
 ## Fuzzing
 
