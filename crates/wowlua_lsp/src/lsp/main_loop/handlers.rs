@@ -400,42 +400,29 @@ pub(super) fn ensure_stub_doc_analyzed(
             && let Some(path) = uri_to_abs_path(uri)
             && let Ok(text) = crate::syntax::read_source_file(&path)
         {
-            // Kept even if analyzing it panics, so later requests don't retry.
-            let doc = match contain(Some(&path), Task::Analysis, || analyze_lua(uri, &text, &ws.pre_globals, &ws.configs)) {
-                Some((tree, analysis)) => Document {
-                    text,
-                    pending_text: None,
-                    analysis: Some(analysis),
-                    tree: Some(tree),
-                    toc: None,
-                    plugin_diags: Vec::new(),
-                    dirty: false,
-                    ws_generation: ws.ws_generation,
-                    pending_line_delta: None,
-                    pending_edit_map: None,
-                    cached_diagnostics: None,
-                    stub_open_seq: SYNTHETIC_STUB_OPEN_SEQ,
-                    failure: None,
-                },
-                None => Document::failed(text, ws.ws_generation),
-            };
-            documents.insert(uri_key, doc);
+            let (tree, analysis) = analyze_lua(uri, &text, &ws.pre_globals, &ws.configs);
+            documents.insert(uri_key, Document {
+                text,
+                pending_text: None,
+                analysis: Some(analysis),
+                tree: Some(tree),
+                toc: None,
+                plugin_diags: Vec::new(),
+                dirty: false,
+                ws_generation: ws.ws_generation,
+                pending_line_delta: None,
+                pending_edit_map: None,
+                cached_diagnostics: None,
+                stub_open_seq: SYNTHETIC_STUB_OPEN_SEQ,
+            });
         }
         return;
     };
-    if doc.analysis.is_some() || doc.stub_open_seq == 0 || doc.failure.is_some() {
+    if doc.analysis.is_some() || doc.stub_open_seq == 0 {
         return;
     }
     let text = doc.text.clone();
-    let path = uri_to_abs_path(uri);
-    let Some((tree, analysis)) = contain(path.as_deref(), Task::Analysis, || analyze_lua(uri, &text, &ws.pre_globals, &ws.configs)) else {
-        // Not retried by every request on it: the background analysis it raced
-        // panics too, and the drain ignores a failed document.
-        if let Some(doc) = documents.get_mut(&uri_key) {
-            doc.failure = Some(Failure::Analysis);
-        }
-        return;
-    };
+    let (tree, analysis) = analyze_lua(uri, &text, &ws.pre_globals, &ws.configs);
     let is_meta = analysis.is_meta();
     if let Some(doc) = documents.get_mut(&uri_key) {
         doc.tree = Some(tree);
@@ -569,7 +556,6 @@ pub(super) fn handle_request(
                 // (`ensure_stub_doc_analyzed`), so `analysis` is ready here.
                 let docs: &HashMap<String, Document> = documents;
                 let result = with_doc_at_position(docs, &uri, position, |doc, tree, analysis, offset| {
-                    crate::panics::inject("hover", &doc.text);
                     let hover = analysis.hover_at(tree, offset)?;
                     Some(lua_hover(&hover, analysis, &uri, &doc.text, docs))
                 });
@@ -805,7 +791,7 @@ pub(super) fn handle_request(
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
                 let new_name = params.new_name;
-                let refs: Option<WorkspaceReferences> = (|| {
+                let result: Option<lsp_types::WorkspaceEdit> = (|| {
                     // Validate the rename target exists before collecting references.
                     with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
                         analysis.prepare_rename_at(tree, offset)
@@ -813,27 +799,14 @@ pub(super) fn handle_request(
                     // Rename passes strict_shadow: a truly-local `local X = 5` in a
                     // file that also has a workspace-wide `X` global must not be
                     // rewritten just because its name matches.
-                    search_references_across_workspace(&uri, position, true, true, documents, ws)
-                })();
-                // A file that couldn't be searched may use the name: renaming the
-                // rest would leave it behind, so nothing is renamed.
-                if let Some(refs) = &refs
-                    && !refs.unsearched.is_empty()
-                {
-                    let files: Vec<String> = refs.unsearched.iter().map(|path| path.display().to_string()).collect();
-                    let message = format!(
-                        "Can't rename: wowlua_ls hit an internal error analyzing {}, so it can't tell what there uses the name.",
-                        files.join(", "),
-                    );
-                    let _ = connection.sender.send(Message::Response(Response::new_err(id, lsp_server::ErrorCode::RequestFailed as i32, message)));
-                    return;
-                }
-                let result: Option<lsp_types::WorkspaceEdit> = refs.map(|refs| {
-                    workspace_edit(refs.locations.into_iter().map(|loc| (loc.uri, lsp_types::TextEdit {
+                    let locations = find_references_across_workspace(
+                        &uri, position, true, true, documents, ws,
+                    )?;
+                    Some(workspace_edit(locations.into_iter().map(|loc| (loc.uri, lsp_types::TextEdit {
                         range: loc.range,
                         new_text: new_name.clone(),
-                    })))
-                });
+                    }))))
+                })();
                 send_response(connection, id, &result);
             }
         }
@@ -850,7 +823,6 @@ pub(super) fn handle_request(
                     .then(|| build_config_edit_context(documents, ws, &uri))
                     .flatten();
                 let result: Option<Vec<CodeActionOrCommand>> = documents.get(&uri.to_string())
-                    .filter(|doc| doc.has_editor_text())
                     .map(|doc| {
                         let ta = doc.tree.as_ref().zip(doc.analysis.as_ref());
                         compute_code_actions(&uri, &doc.text, params.range, &params.context.diagnostics, ta, config_ctx.as_ref())
@@ -1230,7 +1202,6 @@ pub(super) fn handle_request(
                 let utf8 = use_utf8();
                 let result: Option<Vec<lsp_types::TextEdit>> = documents
                     .get(&uri.to_string())
-                    .filter(|doc| doc.has_editor_text())
                     .and_then(|doc| {
                         let text = doc.pending_text.as_deref().unwrap_or(&doc.text);
                         crate::lsp::on_type::on_type_formatting(text, position, utf8)
@@ -1267,7 +1238,8 @@ pub(super) fn handle_notification(
                 // A document whose background analysis (see didOpen) hasn't landed
                 // yet (`stub_open_seq != 0`) is Lua too: dropping an edit typed the
                 // moment it opened would apply the next incremental edit to stale text.
-                let is_lua = documents.get(&uri_str).is_some_and(Document::follows_lua_edits);
+                let is_lua = documents.get(&uri_str)
+                    .is_some_and(|d| d.analysis.is_some() || d.stub_open_seq != 0);
                 let is_toc = documents.get(&uri_str)
                     .and_then(|d| d.toc.as_ref())
                     .is_some();
@@ -1278,79 +1250,65 @@ pub(super) fn handle_notification(
                     // serving non-interactive requests (semanticTokens, codeLens,
                     // etc.) from cache without position mismatches.
                     if let Some(doc) = documents.get_mut(&uri_str) {
-                        // An edit that can't be applied leaves text the editor doesn't
-                        // show, which the next edit would be applied to.
-                        let path = isolation::uri_path(&uri_str);
-                        let applied = contain(path.as_deref(), Task::Edit, || {
-                            let mut text = doc.pending_text.take().unwrap_or_else(|| doc.text.clone());
-                            // Track the cumulative line delta and edit zone from
-                            // pending edits so that stale diagnostic positions can be
-                            // shifted to stay aligned. The edit zone (min_line..=max_line)
-                            // marks the region where diagnostics can't be accurately
-                            // shifted and are dropped instead.
-                            let (mut min_line, mut max_line, mut line_delta) = doc.pending_line_delta.unwrap_or((u32::MAX, 0, 0));
-                            // Build a byte-level edit map so inlay hints can remap
-                            // stale offsets into pending_text coordinates.
-                            let mut edit_map = doc.pending_edit_map.take();
-                            let mut edit_count = 0usize;
-                            for change in params.content_changes {
-                                crate::panics::inject("edit", &change.text);
-                                if let Some(range) = change.range {
-                                    let start = crate::lsp::lsp_position_to_offset(&text, range.start.line, range.start.character, use_utf8()) as usize;
-                                    let end = crate::lsp::lsp_position_to_offset(&text, range.end.line, range.end.character, use_utf8()) as usize;
-                                    let old_newlines = text[start..end].matches('\n').count() as i32;
-                                    let new_newlines = change.text.matches('\n').count() as i32;
-                                    let change_delta = new_newlines - old_newlines;
-                                    line_delta += change_delta;
-                                    // Note: in multi-edit batches, later edits' line
-                                    // coordinates are in the post-edit space of earlier
-                                    // edits, not the original analysis coordinates.
-                                    // The resulting edit zone is an approximation —
-                                    // Phase 4 will re-publish correct diagnostics.
-                                    min_line = min_line.min(range.start.line);
-                                    // When end.character == 0 and end.line > start.line,
-                                    // the end position is at the start of the next line —
-                                    // an exclusive boundary. That line isn't modified, so
-                                    // exclude it from the drop zone. Otherwise diagnostics
-                                    // on the line below a deleted line get dropped instead
-                                    // of shifted.
-                                    let edit_end_line = if range.end.character == 0 && range.end.line > range.start.line {
-                                        range.end.line - 1
-                                    } else {
-                                        range.end.line
-                                    };
-                                    max_line = max_line.max(range.start.line).max(edit_end_line);
-                                    let delta = change.text.len() as isize - (end - start) as isize;
-                                    edit_map = Some(match edit_map {
-                                        // First edit with no prior pending: exact Single.
-                                        None if edit_count == 0 => PendingEditMap::Single { start, old_end: end, delta },
-                                        // Second+ edit in this batch with no prior pending:
-                                        // downgrade to conservative prefix.
-                                        None => PendingEditMap::Prefix(start),
-                                        Some(PendingEditMap::Single { start: s, old_end: oe, delta: d }) => {
-                                            PendingEditMap::compose_single(s, oe, d, start, end, change.text.len())
-                                        }
-                                        Some(PendingEditMap::Prefix(p)) => PendingEditMap::Prefix(p.min(start)),
-                                    });
-                                    edit_count += 1;
-                                    text.replace_range(start..end, &change.text);
+                        let mut text = doc.pending_text.take().unwrap_or_else(|| doc.text.clone());
+                        // Track the cumulative line delta and edit zone from
+                        // pending edits so that stale diagnostic positions can be
+                        // shifted to stay aligned. The edit zone (min_line..=max_line)
+                        // marks the region where diagnostics can't be accurately
+                        // shifted and are dropped instead.
+                        let (mut min_line, mut max_line, mut line_delta) = doc.pending_line_delta.unwrap_or((u32::MAX, 0, 0));
+                        // Build a byte-level edit map so inlay hints can remap
+                        // stale offsets into pending_text coordinates.
+                        let mut edit_map = doc.pending_edit_map.take();
+                        let mut edit_count = 0usize;
+                        for change in params.content_changes {
+                            if let Some(range) = change.range {
+                                let start = crate::lsp::lsp_position_to_offset(&text, range.start.line, range.start.character, use_utf8()) as usize;
+                                let end = crate::lsp::lsp_position_to_offset(&text, range.end.line, range.end.character, use_utf8()) as usize;
+                                let old_newlines = text[start..end].matches('\n').count() as i32;
+                                let new_newlines = change.text.matches('\n').count() as i32;
+                                let change_delta = new_newlines - old_newlines;
+                                line_delta += change_delta;
+                                // Note: in multi-edit batches, later edits' line
+                                // coordinates are in the post-edit space of earlier
+                                // edits, not the original analysis coordinates.
+                                // The resulting edit zone is an approximation —
+                                // Phase 4 will re-publish correct diagnostics.
+                                min_line = min_line.min(range.start.line);
+                                // When end.character == 0 and end.line > start.line,
+                                // the end position is at the start of the next line —
+                                // an exclusive boundary. That line isn't modified, so
+                                // exclude it from the drop zone. Otherwise diagnostics
+                                // on the line below a deleted line get dropped instead
+                                // of shifted.
+                                let edit_end_line = if range.end.character == 0 && range.end.line > range.start.line {
+                                    range.end.line - 1
                                 } else {
-                                    text = change.text;
-                                    line_delta = 0;
-                                    min_line = 0;
-                                    max_line = u32::MAX;
-                                    edit_map = Some(PendingEditMap::Prefix(0));
-                                }
+                                    range.end.line
+                                };
+                                max_line = max_line.max(range.start.line).max(edit_end_line);
+                                let delta = change.text.len() as isize - (end - start) as isize;
+                                edit_map = Some(match edit_map {
+                                    // First edit with no prior pending: exact Single.
+                                    None if edit_count == 0 => PendingEditMap::Single { start, old_end: end, delta },
+                                    // Second+ edit in this batch with no prior pending:
+                                    // downgrade to conservative prefix.
+                                    None => PendingEditMap::Prefix(start),
+                                    Some(PendingEditMap::Single { start: s, old_end: oe, delta: d }) => {
+                                        PendingEditMap::compose_single(s, oe, d, start, end, change.text.len())
+                                    }
+                                    Some(PendingEditMap::Prefix(p)) => PendingEditMap::Prefix(p.min(start)),
+                                });
+                                edit_count += 1;
+                                text.replace_range(start..end, &change.text);
+                            } else {
+                                text = change.text;
+                                line_delta = 0;
+                                min_line = 0;
+                                max_line = u32::MAX;
+                                edit_map = Some(PendingEditMap::Prefix(0));
                             }
-                            (text, min_line, max_line, line_delta, edit_map)
-                        });
-                        let Some((text, min_line, max_line, line_delta, edit_map)) = applied else {
-                            doc.lose_track();
-                            if !client.diagnostic_refresh {
-                                publish_diagnostics(connection, &params.text_document.uri, Vec::new());
-                            }
-                            return;
-                        };
+                        }
                         doc.pending_line_delta = Some((min_line, max_line, line_delta));
                         doc.pending_edit_map = edit_map;
                         doc.pending_text = Some(text);
@@ -1431,7 +1389,7 @@ pub(super) fn handle_notification(
                 if params.text_document.language_id == "lua" {
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         return;
                     }
                     // Stubs, and `@meta` files the workspace doesn't read (a stub
@@ -1449,26 +1407,22 @@ pub(super) fn handle_notification(
                     {
                         let uri_key = uri.to_string();
                         let seq = bg.stub_open_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                        documents.insert(uri_key.clone(), Document { text: text.clone(), pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: seq, failure: None });
+                        documents.insert(uri_key.clone(), Document { text: text.clone(), pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: seq });
                         let pre_globals = Arc::clone(&ws.pre_globals);
                         let configs = Arc::clone(&ws.configs);
                         let uri_clone = uri.clone();
                         let tx = bg.stub_tx.clone();
                         let wtx = bg.wake_tx.clone();
                         std::thread::spawn(move || {
-                            let path = uri_to_abs_path(&uri_clone);
-                            let analyzed = contain(path.as_deref(), Task::Analysis, || {
-                                let tree = parse_lua(&text);
-                                let analysis = analyze_lua_parsed(&uri_clone, &pre_globals, &configs, &tree);
-                                (tree, analysis)
-                            });
-                            let _ = tx.send(StubAnalysisResult { uri_key, open_seq: seq, analyzed });
+                            let tree = parse_lua(&text);
+                            let analysis = analyze_lua_parsed(&uri_clone, &pre_globals, &configs, &tree);
+                            let _ = tx.send(StubAnalysisResult { uri_key, open_seq: seq, tree, analysis });
                             let _ = wtx.send(());
                         });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
@@ -1493,6 +1447,8 @@ pub(super) fn handle_notification(
                         None
                     };
 
+                    // Parse once, reuse for both workspace check and analysis
+                    let tree = parse_lua(&text);
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     // Keep the deferred harvest's in-memory document override
                     // in sync so the harvester sees the editor's text, not disk.
@@ -1502,44 +1458,31 @@ pub(super) fn handle_notification(
                         overrides.insert(file_path.clone(), text.clone());
                     }
 
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
                     // didOpen only marks other docs dirty for the next Phase 4 cycle,
                     // which performs the actual (possibly incremental) warm. We just
                     // need the boolean "did anything rebuild" here.
-                    let mut rebuilt = false;
-                    // A panic costs the document its analysis: it is kept with its text,
-                    // analyzed again when it changes.
-                    let path = (!file_path.as_os_str().is_empty()).then_some(file_path.as_path());
-                    let analyzed = contain(path, Task::Analysis, || {
-                        // Parse once, reuse for both workspace check and analysis
-                        let tree = parse_lua(&text);
-                        let root = crate::syntax::SyntaxNode::new_root(&tree);
-                        rebuilt = maybe_rebuild_workspace(&uri, root, ws).is_rebuild();
-                        // Other files took this file from its saved content, or from the
-                        // disk a close reverted them to (IntelliJ reopens a closed tab's
-                        // unsaved edits): a buffer that differs replaces what they harvested.
-                        let seen = ws.closed_file_hashes.remove(&file_path);
-                        if !rebuilt
-                            && ws.ws_file_globals.contains_key(&file_path)
-                            && seen.unwrap_or_else(|| content_hash(&saved_text(&file_path))) != content_hash(&text)
-                        {
-                            drop_harvests_from(&[&file_path], documents, ws, client);
-                        }
-                        let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        result.plugin_diag_codes = ws.plugin_codes();
-                        let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                        (tree, result, plugin_diags)
-                    });
+                    let rebuilt = maybe_rebuild_workspace(&uri, root, ws).is_rebuild();
+                    // Other files took this file from its saved content, or from the
+                    // disk a close reverted them to (IntelliJ reopens a closed tab's
+                    // unsaved edits): a buffer that differs replaces what they harvested.
+                    let seen = ws.closed_file_hashes.remove(&file_path);
+                    if !rebuilt
+                        && ws.ws_file_globals.contains_key(&file_path)
+                        && seen.unwrap_or_else(|| content_hash(&saved_text(&file_path))) != content_hash(&text)
+                    {
+                        drop_harvests_from(&[&file_path], documents, ws, client);
+                    }
+                    let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                    result.plugin_diag_codes = ws.plugin_codes();
                     // A freshly (re)opened doc is reconciled — drop any stale edited
                     // flag (e.g. an edit-then-reopen with no intervening didClose) so
                     // it doesn't keep this doc off the batch-warm fast-path.
                     if !file_path.as_os_str().is_empty() {
                         ws.edited_uris.remove(&file_path);
                     }
-                    let doc = match analyzed {
-                        Some((tree, result, plugin_diags)) => Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None },
-                        None => Document::failed(text, ws.ws_generation),
-                    };
-                    documents.insert(uri.to_string(), doc);
+                    let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -1584,10 +1527,10 @@ pub(super) fn handle_notification(
                 }
                 if params.text_document.language_id == "toc" {
                     let toc = crate::toc::parse_toc(&text);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
             }
         }
         "textDocument/didSave" => {
@@ -1675,7 +1618,7 @@ pub(super) fn handle_notification(
                 // reconciled — take the file from disk.
                 let reconciled = match (&doc, &path) {
                     (Some(doc), Some(path))
-                        if !is_stub && (doc.analysis.is_some() || doc.failure.is_some()) && ws.ws_file_globals.contains_key(path) =>
+                        if !is_stub && doc.analysis.is_some() && ws.ws_file_globals.contains_key(path) =>
                     {
                         let saved = saved_text(path);
                         let hash = content_hash(&saved);
@@ -1707,13 +1650,10 @@ pub(super) fn handle_notification(
                 // on disk so the cache reflects the saved content. Otherwise use cached
                 // diagnostics to preserve plugin results that disk re-analysis can't
                 // reproduce.
-                // A file whose analysis panics has no diagnostics.
                 let doc_diags = if let Some(tree) = &reconciled {
-                    Some(contain(path.as_deref(), Task::Analysis, || {
-                        let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, tree);
-                        result.plugin_diag_codes = ws.plugin_codes();
-                        build_file_diagnostics(&uri, tree, &result, tree.source(), &[], ws)
-                    }).unwrap_or_default())
+                    let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, tree);
+                    result.plugin_diag_codes = ws.plugin_codes();
+                    Some(build_file_diagnostics(&uri, tree, &result, tree.source(), &[], ws))
                 } else if doc.as_ref().is_some_and(|d| d.dirty) {
                     // Re-analyze from disk to pick up the saved changes.
                     path.as_ref()
@@ -1728,14 +1668,14 @@ pub(super) fn handle_notification(
                             if crate::has_shebang(&text) || is_ignored_uri(&uri, &ws.configs) {
                                 return Some(Vec::new());
                             }
-                            Some(contain(Some(path), Task::Analysis, || {
-                                let tree = parse_lua(&text);
-                                let mut result = analyze_lua_parsed(
-                                    &uri, &ws.pre_globals, &ws.configs, &tree,
-                                );
-                                result.plugin_diag_codes = ws.plugin_codes();
-                                build_file_diagnostics(&uri, &tree, &result, &text, &[], ws)
-                            }).unwrap_or_default())
+                            let tree = parse_lua(&text);
+                            let mut result = analyze_lua_parsed(
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
+                            );
+                            result.plugin_diag_codes = ws.plugin_codes();
+                            Some(build_file_diagnostics(
+                                &uri, &tree, &result, &text, &[], ws,
+                            ))
                         })
                 } else {
                     doc.as_ref().and_then(|doc| {
@@ -2007,15 +1947,11 @@ pub(super) fn reanalyze_open_documents(
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
             continue;
         }
-        let path = uri_to_abs_path(&uri);
-        let doc = match contain(path.as_deref(), Task::Analysis, || analyze_lua(&uri, &text, pre_globals, configs)) {
-            Some((tree, result)) => Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None },
-            None => Document::failed(text, ws_generation),
-        };
-        documents.insert(uri_str, doc);
+        let (tree, result) = analyze_lua(&uri, &text, pre_globals, configs);
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
     }
 }
 
@@ -2085,11 +2021,7 @@ pub(super) fn try_batch_analyze(
             parsed.push(ParsedFile { uri_str: uri_str.clone(), text, tree: parse_lua(""), ignored: true });
             continue;
         }
-        // A file whose parse or scan panics is left to the sequential path, which
-        // contains the panic to that file.
-        let Some(tree) = contain(file_path.as_deref(), Task::Analysis, || parse_lua(&text)) else {
-            return false;
-        };
+        let tree = parse_lua(&text);
 
         // Check if this file would trigger workspace rebuild (file_path resolved above)
         let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -2099,12 +2031,8 @@ pub(super) fn try_batch_analyze(
         let ipp = file_path.as_ref()
             .map(|fp| ws.configs.implicit_protected_prefix_for(fp))
             .unwrap_or(false);
-        let Some((mut new_globals, scan)) = contain(file_path.as_deref(), Task::Scan, || {
-            let (globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
-            (globals, scan_all_annotations(root))
-        }) else {
-            return false;
-        };
+        let (mut new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
+        let scan = scan_all_annotations(root);
         // Mark `@meta` globals to match the stored (marked) globals — otherwise the
         // `globals_match` below always mismatches for a `@meta` file, spuriously
         // forcing `would_rebuild` and defeating batch parallelism for the batch.
@@ -2135,7 +2063,7 @@ pub(super) fn try_batch_analyze(
 
     struct AnalyzedFile {
         uri_str: String,
-        result: Option<AnalysisResult>,
+        result: AnalysisResult,
     }
 
     let analysis_indices: Vec<usize> = parsed.iter().enumerate()
@@ -2143,39 +2071,49 @@ pub(super) fn try_batch_analyze(
         .map(|(i, _)| i)
         .collect();
 
-    // Each file's analysis is contained: one that panics is kept with its text and
-    // no analysis (`None`), analyzed again when it changes.
     let results: Vec<AnalyzedFile> = analysis_indices.par_iter()
         .filter_map(|&idx| {
             let f = &parsed[idx];
             let uri = lsp_types::Uri::from_str(&f.uri_str).ok()?;
             let file_path = uri_to_abs_path(&uri).unwrap_or_default();
-            let path = (!file_path.as_os_str().is_empty()).then_some(file_path.as_path());
-            let result = contain(path, Task::Analysis, || {
-                let mut result = analyze_path_parsed(&file_path, &pre_globals, configs, &f.tree);
-                result.plugin_diag_codes = ws.plugin_codes();
-                result
-            });
+            let addon_table_override = pre_globals.addon_table_for_root(configs.addon_root_for(&file_path));
+            let mut analysis = Analysis::new_with_tree(
+                &f.tree, Arc::clone(&pre_globals), AnalysisConfig {
+                    framexml_enabled: configs.framexml_enabled_for(&file_path),
+                    allowed_read_globals: configs.allowed_read_globals_for(&file_path),
+                    allowed_write_globals: configs.allowed_write_globals_for(&file_path),
+                    allow_slash_commands: configs.allow_slash_commands_for(&file_path),
+                    allow_binding_globals: configs.allow_binding_globals_for(&file_path),
+                    project_flavors: configs.flavors_for(&file_path),
+                    addon_flavors: configs.addon_flavors_for(&file_path),
+                    backward_param_types: configs.backward_param_types_for(&file_path),
+                    correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
+                    implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
+                    addon_table_override,
+                    addon_folder_name: configs.addon_name_for(&file_path),
+                    file_path: Some(file_path.clone()),
+                },
+            );
+            analysis.resolve_types();
+            let mut result = analysis.into_result();
+            result.plugin_diag_codes = ws.plugin_codes();
             Some(AnalyzedFile { uri_str: f.uri_str.clone(), result })
         })
         .collect();
 
     // Phase 3: Collect results for document insertion.
     // Pull-model handlers serve diagnostics from cached analysis on demand.
-    let mut result_map: HashMap<String, Option<AnalysisResult>> = HashMap::default();
+    let mut result_map: HashMap<String, AnalysisResult> = HashMap::default();
     for af in results {
         result_map.insert(af.uri_str, af.result);
     }
 
     for f in parsed {
         if f.ignored {
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
         } else {
-            let doc = match result_map.remove(&f.uri_str) {
-                Some(None) => Document::failed(f.text, ws.ws_generation),
-                analysis => Document { text: f.text, pending_text: None, analysis: analysis.flatten(), tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None },
-            };
-            documents.insert(f.uri_str, doc);
+            let analysis = result_map.remove(&f.uri_str);
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
         }
     }
 

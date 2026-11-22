@@ -110,10 +110,9 @@ codegen-units = 16
 # (~3.8 MB), and these binaries are distributed, not debugged.
 strip = true
 # NOTE: deliberately NOT setting `panic = "abort"`. The LSP server relies on
-# std::panic::catch_unwind (crates/wowlua_lsp/src/lsp/main_loop/isolation.rs,
-# and the check/profile/dump-types subcommands in src/cli/) to contain a panic to
-# the file or request it came from without taking down the whole server;
-# aborting would break that resilience.
+# std::panic::catch_unwind (src/lsp/main_loop.rs warm-diagnostics thread and
+# the profile/check subcommands in src/main.rs) to recover from analysis panics
+# without taking down the whole server; aborting would break that resilience.
 
 # Optimized builds for local runs: corpus `check`/`dump-types`/`crossfile-types`,
 # before/after comparisons, stub regen. Without LTO and with incremental

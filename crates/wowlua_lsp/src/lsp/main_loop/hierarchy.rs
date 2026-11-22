@@ -27,27 +27,6 @@ pub(super) fn find_references_across_workspace(
     documents: &HashMap<String, Document>,
     ws: &WorkspaceState,
 ) -> Option<Vec<Location>> {
-    search_references_across_workspace(current_uri, position, include_declaration, strict_shadow, documents, ws)
-        .map(|refs| refs.locations)
-}
-
-/// What [`search_references_across_workspace`] found.
-pub(super) struct WorkspaceReferences {
-    pub(super) locations: Vec<Location>,
-    /// The files that may reference the target but couldn't be searched, because a
-    /// panic cost them their analysis: a rename would miss whatever they hold.
-    pub(super) unsearched: Vec<PathBuf>,
-}
-
-/// [`find_references_across_workspace`], with the files it couldn't search.
-pub(super) fn search_references_across_workspace(
-    current_uri: &lsp_types::Uri,
-    position: Position,
-    include_declaration: bool,
-    strict_shadow: bool,
-    documents: &HashMap<String, Document>,
-    ws: &WorkspaceState,
-) -> Option<WorkspaceReferences> {
     let current_doc = documents.get(&current_uri.to_string())?;
     let tree = current_doc.tree.as_ref()?;
     let analysis = current_doc.analysis.as_ref()?;
@@ -80,7 +59,7 @@ pub(super) fn search_references_across_workspace(
         analysis.promote_to_cross_file(&target)
     };
     let Some(xfile_target) = xfile_target else {
-        return Some(WorkspaceReferences { locations, unsearched: Vec::new() });
+        return Some(locations);
     };
 
     // Track paths we've already searched (by canonical path, not URI string) so the
@@ -91,24 +70,12 @@ pub(super) fn search_references_across_workspace(
     }
 
     // Open documents other than the current one.
-    let mut unsearched: Vec<PathBuf> = Vec::new();
     let current_uri_str = current_uri.to_string();
     for (uri_str, doc) in documents {
         if uri_str == &current_uri_str { continue; }
         let Ok(other_uri) = lsp_types::Uri::from_str(uri_str) else { continue; };
-        let path = uri_to_path_lax(&other_uri);
-        if let Some(path) = &path {
-            searched_paths.insert(path.clone());
-        }
-        // One whose edit couldn't be applied may name it in text the server lost.
-        let unsearchable = match doc.failure {
-            Some(Failure::Analysis) => doc.text.contains(xfile_target.name()),
-            Some(Failure::Edit) => true,
-            None => false,
-        };
-        if unsearchable {
-            unsearched.extend(path);
-            continue;
+        if let Some(path) = uri_to_path_lax(&other_uri) {
+            searched_paths.insert(path);
         }
         let Some(other_tree) = doc.tree.as_ref() else { continue; };
         let Some(other_analysis) = doc.analysis.as_ref() else { continue; };
@@ -127,9 +94,8 @@ pub(super) fn search_references_across_workspace(
             locations.extend(file_locations.iter().cloned());
         }
     }
-    unsearched.extend(refs.unsearched.iter().filter(|path| !searched_paths.contains(*path)).cloned());
 
-    Some(WorkspaceReferences { locations, unsearched })
+    Some(locations)
 }
 
 /// The cross-file reference query `find_references_across_workspace` runs for the
@@ -232,36 +198,29 @@ fn search_unopened_files(keys: &[XfileRefKey], open_paths: &HashSet<PathBuf>, ws
     }
     let utf8 = use_utf8();
     let analyzed_any = std::sync::atomic::AtomicBool::new(false);
-    // Each file's matches by key, or `Err` with the keys it names when analyzing it
-    // panicked.
-    type FileMatches = Result<Vec<(usize, Vec<Location>)>, Vec<usize>>;
-    let per_file: Vec<FileMatches> = unopened
+    let per_file: Vec<Vec<(usize, Vec<Location>)>> = unopened
         .par_iter()
         .map(|&path| {
-            let Ok(text) = crate::syntax::read_source_file(path) else { return Ok(Vec::new()) };
-            if crate::has_shebang(&text) { return Ok(Vec::new()); }
+            let Ok(text) = crate::syntax::read_source_file(path) else { return Vec::new() };
+            if crate::has_shebang(&text) { return Vec::new(); }
             // Files lacking every name can't match; skip them without parsing.
             let wanted = keys_named_in(&text, &keys_by_name);
-            if wanted.is_empty() { return Ok(Vec::new()); }
-            let Some(uri) = abs_path_to_uri(path) else { return Ok(Vec::new()) };
+            if wanted.is_empty() { return Vec::new(); }
+            let Some(uri) = abs_path_to_uri(path) else { return Vec::new() };
             analyzed_any.store(true, Ordering::Relaxed);
-            // A file whose analysis panics is left out of the search, not the
-            // search out of the response.
-            contain(Some(path), Task::Analysis, || {
-                let tree = crate::syntax::parser::parse(&text);
-                let analysis = analyze_path_parsed(path, &ws.pre_globals, &ws.configs, &tree);
-                let numbers = crate::lsp::SafeLinePositions::new(&text);
-                wanted.iter().copied()
-                    .filter_map(|i| {
-                        let key = &keys[i];
-                        let refs = analysis.references_for_target(&tree, &key.target, key.include_declaration, key.strict_shadow);
-                        (!refs.is_empty()).then(|| (i, refs.iter().map(|r| Location {
-                            uri: uri.clone(),
-                            range: numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, utf8),
-                        }).collect()))
-                    })
-                    .collect()
-            }).ok_or(wanted)
+            let tree = crate::syntax::parser::parse(&text);
+            let analysis = analyze_path_parsed(path, &ws.pre_globals, &ws.configs, &tree);
+            let numbers = crate::lsp::SafeLinePositions::new(&text);
+            wanted.into_iter()
+                .filter_map(|i| {
+                    let key = &keys[i];
+                    let refs = analysis.references_for_target(&tree, &key.target, key.include_declaration, key.strict_shadow);
+                    (!refs.is_empty()).then(|| (i, refs.iter().map(|r| Location {
+                        uri: uri.clone(),
+                        range: numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, utf8),
+                    }).collect()))
+                })
+                .collect()
         })
         .collect();
     if analyzed_any.into_inner() {
@@ -269,15 +228,10 @@ fn search_unopened_files(keys: &[XfileRefKey], open_paths: &HashSet<PathBuf>, ws
         memory::release_memory(None);
     }
 
-    let mut results: Vec<XfileRefs> = keys.iter().map(|_| XfileRefs { files: Vec::new(), unsearched: Vec::new() }).collect();
+    let mut results: Vec<XfileRefs> = keys.iter().map(|_| XfileRefs { files: Vec::new() }).collect();
     for (path, hits) in unopened.into_iter().zip(per_file) {
-        match hits {
-            Ok(hits) => for (i, file_locations) in hits {
-                results[i].files.push((path.clone(), file_locations));
-            },
-            Err(wanted) => for i in wanted {
-                results[i].unsearched.push(path.clone());
-            },
+        for (i, file_locations) in hits {
+            results[i].files.push((path.clone(), file_locations));
         }
     }
     results

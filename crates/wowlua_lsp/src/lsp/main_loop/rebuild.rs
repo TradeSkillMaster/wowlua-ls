@@ -373,14 +373,7 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);
     let ipp = ws.configs.implicit_protected_prefix_for(&file_path);
-    // Scan before changing anything, so a scan that panics leaves the workspace
-    // with what the file was last scanned as.
-    let Some((mut new_globals, addon_ns_class, new_prefixes, mut scan)) = contain(Some(&file_path), Task::Scan, || {
-        let (globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
-        (globals, addon_ns_class, crate::annotations::scan_dynamic_global_prefixes(root), scan_all_annotations(root))
-    }) else {
-        return RebuildScope::None;
-    };
+    let (mut new_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
     if let Some(name) = addon_ns_class {
         ws.ws_file_addon_ns_class.insert(file_path.clone(), name);
     } else {
@@ -388,6 +381,7 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
     }
 
     // Re-scan dynamic global prefixes for this file and update configs if changed.
+    let new_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     let old_prefixes = ws.ws_file_dynamic_prefixes.get(&file_path);
     let prefixes_changed = old_prefixes.map_or(!new_prefixes.is_empty(), |old| *old != new_prefixes);
     if prefixes_changed {
@@ -400,6 +394,7 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
         Arc::make_mut(&mut ws.configs).set_dynamic_global_prefixes(all_prefixes);
     }
 
+    let mut scan = scan_all_annotations(root);
     // Mark `@meta`-declaration globals (matches what scan_lua_file does) so an
     // annotated method in an edited `@meta` file keeps overriding the built-in stub.
     super::scan::mark_meta_globals(&mut new_globals, scan.has_meta);
@@ -500,145 +495,132 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
         ws.rebuild_caches();
     }
 
-    // The scans of calls and method bodies read the declarations just stored. Each
-    // stores its own results once it has them, so if one panics the workspace keeps
-    // what the file was last scanned as for it and those after it. `late_changed`
-    // records whether one stored before it changed anything.
-    let mut late_changed = false;
-    let late = contain(Some(&file_path), Task::Scan, || {
-        // Re-scan for defclass/built-name discoveries. Builder chain changes
-        // (e.g. AddOptionalClassField → AddDeferredClassField) change the discovered
-        // fields without changing any exported globals/classes/aliases. Without this,
-        // stale built class fields persist in PreResolvedGlobals until full reload.
-        // Use cached merged vectors instead of cloning ~100K items per keystroke.
-        //
-        // Optimizations to avoid the ~25ms defclass scan cost on every keystroke:
-        // 1. Quick text check: skip if the file doesn't contain any defclass/built-name
-        //    function names as substrings. This eliminates the scan for ~90% of files.
-        // 2. Skip if the file has syntax errors and declarations didn't change
-        //    (prevents phantom rebuilds from broken ASTs).
-        let declarations_changed = globals_changed || classes_changed || aliases_changed;
-        let has_syntax_errors = !root.tree.errors.is_empty();
+    // Re-scan for defclass/built-name discoveries. Builder chain changes
+    // (e.g. AddOptionalClassField → AddDeferredClassField) change the discovered
+    // fields without changing any exported globals/classes/aliases. Without this,
+    // stale built class fields persist in PreResolvedGlobals until full reload.
+    // Use cached merged vectors instead of cloning ~100K items per keystroke.
+    //
+    // Optimizations to avoid the ~25ms defclass scan cost on every keystroke:
+    // 1. Quick text check: skip if the file doesn't contain any defclass/built-name
+    //    function names as substrings. This eliminates the scan for ~90% of files.
+    // 2. Skip if the file has syntax errors and declarations didn't change
+    //    (prevents phantom rebuilds from broken ASTs).
+    let declarations_changed = globals_changed || classes_changed || aliases_changed;
+    let has_syntax_errors = !root.tree.errors.is_empty();
 
-        // Quick substring check: does the file text contain any defclass/built-name func names?
-        let source = root.tree.source();
-        let text_has_defclass = ws.cached_needs_defclass
-            && ws.cached_defclass_func_names.iter().any(|name| source.contains(name.as_str()));
-        let text_has_built_name = ws.cached_needs_built_name
-            && ws.cached_built_name_func_names.iter().any(|name| source.contains(name.as_str()));
-        let might_have_calls = text_has_defclass || text_has_built_name;
+    // Quick substring check: does the file text contain any defclass/built-name func names?
+    let source = root.tree.source();
+    let text_has_defclass = ws.cached_needs_defclass
+        && ws.cached_defclass_func_names.iter().any(|name| source.contains(name.as_str()));
+    let text_has_built_name = ws.cached_needs_built_name
+        && ws.cached_built_name_func_names.iter().any(|name| source.contains(name.as_str()));
+    let might_have_calls = text_has_defclass || text_has_built_name;
 
-        // Skip the expensive scan when:
-        // - File text doesn't contain any relevant function names, OR
-        // - Declarations didn't change AND file has syntax errors (prevents phantom rebuilds)
-        let skip_scan = !might_have_calls
-            || (!declarations_changed && has_syntax_errors);
+    // Skip the expensive scan when:
+    // - File text doesn't contain any relevant function names, OR
+    // - Declarations didn't change AND file has syntax errors (prevents phantom rebuilds)
+    let skip_scan = !might_have_calls
+        || (!declarations_changed && has_syntax_errors);
 
-        let defclasses_changed = if skip_scan {
-            // If we previously had results but the file no longer contains relevant calls,
-            // clear the cache and trigger a rebuild.
-            let had_results = ws.ws_file_defclasses.get(&file_path)
-                .is_some_and(|old| !old.is_empty());
-            if had_results && !might_have_calls {
-                ws.ws_file_defclasses.insert(file_path.clone(), Vec::new());
-                true
-            } else {
-                false
-            }
+    let defclasses_changed = if skip_scan {
+        // If we previously had results but the file no longer contains relevant calls,
+        // clear the cache and trigger a rebuild.
+        let had_results = ws.ws_file_defclasses.get(&file_path)
+            .is_some_and(|old| !old.is_empty());
+        if had_results && !might_have_calls {
+            ws.ws_file_defclasses.insert(file_path.clone(), Vec::new());
+            true
         } else {
-            let mut discovered = Vec::new();
-            if text_has_defclass {
-                let addon_name = ws.configs.addon_name_for(&file_path);
-                discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes, ipp, addon_name.as_deref()));
+            false
+        }
+    } else {
+        let mut discovered = Vec::new();
+        if text_has_defclass {
+            let addon_name = ws.configs.addon_name_for(&file_path);
+            discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes, ipp, addon_name.as_deref()));
+        }
+        if text_has_built_name {
+            discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals, ipp));
+        }
+        for decl in &mut discovered {
+            if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                decl.def_path = Some(file_path.clone());
             }
-            if text_has_built_name {
-                discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals, ipp));
-            }
-            for decl in &mut discovered {
-                if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
-                    decl.def_path = Some(file_path.clone());
-                }
-            }
-            let changed = ws.ws_file_defclasses.get(&file_path)
-                .map_or(!discovered.is_empty(), |old| !classes_match(old, &discovered));
-            ws.ws_file_defclasses.insert(file_path.clone(), discovered);
-            changed
-        };
-        late_changed |= defclasses_changed;
+        }
+        let changed = ws.ws_file_defclasses.get(&file_path)
+            .map_or(!discovered.is_empty(), |old| !classes_match(old, &discovered));
+        ws.ws_file_defclasses.insert(file_path.clone(), discovered);
+        changed
+    };
 
-        // Re-scan for instance-field assignments (self.field = expr in methods, writes
-        // on `setmetatable` instances). Quick text check: only scan a file that has either.
-        let self_fields_changed = if !has_syntax_errors && (source.contains("self.") || source.contains("setmetatable")) {
-            use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
-            let known_classes: HashSet<String> = ws.cached_all_classes.iter().map(|c| c.name.clone()).collect();
-            if known_classes.is_empty() {
-                false
-            } else {
-                let typed_field_names = collect_typed_field_names(ws.cached_all_classes.iter());
-                let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
-                let funcall = scan_method_funcall_self_fields(
-                    root, &known_classes, ipp, &typed_field_names, Some(file_path.clone()),
-                );
-                let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
-
-                let new_self_fields = merge_self_field_results(typed, &funcall, bare);
-
-                let sf_changed = ws.ws_file_self_fields.get(&file_path)
-                    .map_or(!new_self_fields.is_empty(), |old| !self_fields_match(old, &new_self_fields));
-                let sfg_changed = ws.ws_file_self_field_globals.get(&file_path)
-                    .map_or(!funcall.is_empty(), |old| !globals_match(old, &funcall));
-                if new_self_fields.is_empty() {
-                    ws.ws_file_self_fields.remove(&file_path);
-                } else {
-                    ws.ws_file_self_fields.insert(file_path.clone(), new_self_fields);
-                }
-                if funcall.is_empty() {
-                    ws.ws_file_self_field_globals.remove(&file_path);
-                } else {
-                    ws.ws_file_self_field_globals.insert(file_path.clone(), funcall);
-                }
-                sf_changed || sfg_changed
-            }
-        } else {
-            // If the file no longer has either, clear any previous results
-            let had_sf = ws.ws_file_self_fields.remove(&file_path).is_some();
-            let had_sfg = ws.ws_file_self_field_globals.remove(&file_path).is_some();
-            had_sf || had_sfg
-        };
-        late_changed |= self_fields_changed;
-
-        // Re-scan callback registries + string-array event constants (annotation-driven
-        // via @generates-events). Gate on the file containing a generates-events method
-        // name OR previously contributing registries/constants (so editing a constants
-        // file with no GenerateCallbackEvents call still refreshes its array).
-
-        let callbacks_changed = if has_syntax_errors || ws.cached_generates_events_methods.is_empty() {
+    // Re-scan for instance-field assignments (self.field = expr in methods, writes
+    // on `setmetatable` instances). Quick text check: only scan a file that has either.
+    let self_fields_changed = if !has_syntax_errors && (source.contains("self.") || source.contains("setmetatable")) {
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
+        let known_classes: HashSet<String> = ws.cached_all_classes.iter().map(|c| c.name.clone()).collect();
+        if known_classes.is_empty() {
             false
         } else {
-            let text_has_cb = ws.cached_generates_events_methods.keys().any(|m| source.contains(m.as_str()));
-            let had_cb = ws.ws_file_callback_registries.contains_key(&file_path)
-                || ws.ws_file_string_consts.contains_key(&file_path);
-            if !text_has_cb && !had_cb {
-                false
+            let typed_field_names = collect_typed_field_names(ws.cached_all_classes.iter());
+            let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+            let funcall = scan_method_funcall_self_fields(
+                root, &known_classes, ipp, &typed_field_names, Some(file_path.clone()),
+            );
+            let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
+
+            let new_self_fields = merge_self_field_results(typed, &funcall, bare);
+
+            let sf_changed = ws.ws_file_self_fields.get(&file_path)
+                .map_or(!new_self_fields.is_empty(), |old| !self_fields_match(old, &new_self_fields));
+            let sfg_changed = ws.ws_file_self_field_globals.get(&file_path)
+                .map_or(!funcall.is_empty(), |old| !globals_match(old, &funcall));
+            if new_self_fields.is_empty() {
+                ws.ws_file_self_fields.remove(&file_path);
             } else {
-                let scope = ws.configs.addon_name_for(&file_path);
-                let (regs, consts) = crate::annotations::scan_callback_registries(
-                    root, &ws.cached_generates_events_methods, scope.as_deref());
-                let r_changed = ws.ws_file_callback_registries.get(&file_path)
-                    .map_or(!regs.is_empty(), |old| old != &regs);
-                let c_changed = ws.ws_file_string_consts.get(&file_path)
-                    .map_or(!consts.is_empty(), |old| old != &consts);
-                if regs.is_empty() { ws.ws_file_callback_registries.remove(&file_path); }
-                else { ws.ws_file_callback_registries.insert(file_path.clone(), regs); }
-                if consts.is_empty() { ws.ws_file_string_consts.remove(&file_path); }
-                else { ws.ws_file_string_consts.insert(file_path.clone(), consts); }
-                r_changed || c_changed
+                ws.ws_file_self_fields.insert(file_path.clone(), new_self_fields);
             }
-        };
-        (defclasses_changed, self_fields_changed, callbacks_changed)
-    });
-    // A change stored before the panic is rebuilt in full, as a defclass change is.
-    let (defclasses_changed, self_fields_changed, callbacks_changed) = late.unwrap_or((late_changed, false, false));
+            if funcall.is_empty() {
+                ws.ws_file_self_field_globals.remove(&file_path);
+            } else {
+                ws.ws_file_self_field_globals.insert(file_path.clone(), funcall);
+            }
+            sf_changed || sfg_changed
+        }
+    } else {
+        // If the file no longer has either, clear any previous results
+        let had_sf = ws.ws_file_self_fields.remove(&file_path).is_some();
+        let had_sfg = ws.ws_file_self_field_globals.remove(&file_path).is_some();
+        had_sf || had_sfg
+    };
+
+    // Re-scan callback registries + string-array event constants (annotation-driven
+    // via @generates-events). Gate on the file containing a generates-events method
+    // name OR previously contributing registries/constants (so editing a constants
+    // file with no GenerateCallbackEvents call still refreshes its array).
+    let callbacks_changed = if has_syntax_errors || ws.cached_generates_events_methods.is_empty() {
+        false
+    } else {
+        let text_has_cb = ws.cached_generates_events_methods.keys().any(|m| source.contains(m.as_str()));
+        let had_cb = ws.ws_file_callback_registries.contains_key(&file_path)
+            || ws.ws_file_string_consts.contains_key(&file_path);
+        if !text_has_cb && !had_cb {
+            false
+        } else {
+            let scope = ws.configs.addon_name_for(&file_path);
+            let (regs, consts) = crate::annotations::scan_callback_registries(
+                root, &ws.cached_generates_events_methods, scope.as_deref());
+            let r_changed = ws.ws_file_callback_registries.get(&file_path)
+                .map_or(!regs.is_empty(), |old| old != &regs);
+            let c_changed = ws.ws_file_string_consts.get(&file_path)
+                .map_or(!consts.is_empty(), |old| old != &consts);
+            if regs.is_empty() { ws.ws_file_callback_registries.remove(&file_path); }
+            else { ws.ws_file_callback_registries.insert(file_path.clone(), regs); }
+            if consts.is_empty() { ws.ws_file_string_consts.remove(&file_path); }
+            else { ws.ws_file_string_consts.insert(file_path.clone(), consts); }
+            r_changed || c_changed
+        }
+    };
 
     if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed || events_changed || callbacks_changed {
         log::info!(

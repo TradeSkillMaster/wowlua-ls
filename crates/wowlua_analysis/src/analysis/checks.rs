@@ -16,7 +16,6 @@ impl AnalysisResult {
         &self,
         tree: &SyntaxTree,
     ) -> Vec<crate::diagnostics::WowDiagnostic> {
-        crate::panics::inject("diagnostics", tree.source());
         crate::diagnostics::run_all(self, tree)
     }
 

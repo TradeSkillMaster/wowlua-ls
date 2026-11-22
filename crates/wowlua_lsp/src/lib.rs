@@ -6,7 +6,7 @@
 //! paths keep resolving inside the moved code.
 
 pub use wowlua_analysis::{
-    analysis, annotations, ast, collections, config, diagnostics, flavor, panics, pre_globals, secrets, syntax,
+    analysis, annotations, ast, collections, config, diagnostics, flavor, pre_globals, secrets, syntax,
     types, xml_scan,
     MAX_COMPLETIONS,
 };

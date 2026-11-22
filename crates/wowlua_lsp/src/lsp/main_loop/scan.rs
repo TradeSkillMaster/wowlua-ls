@@ -80,13 +80,7 @@ pub(super) fn compute_ws_diagnostics(
 
     // Per-file analysis (parallel): diagnostics, and the references of a file
     // analyzed (an incremental warm reuses the others' diagnostics).
-    enum Refs {
-        Reused,
-        Collected(PathBuf, FileReferences),
-        /// Its analysis panicked: the references recorded for it stay.
-        Failed(PathBuf),
-    }
-    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Refs);
+    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Option<(PathBuf, FileReferences)>);
     let per_file: Vec<PerFileEntry> = files.paths
         .par_iter()
         .filter_map(|path| {
@@ -123,24 +117,17 @@ pub(super) fn compute_ws_diagnostics(
                 && file_unaffected_by(&text, names)
                 && let Some(diags) = prior.get(uri_s.as_str())
             {
-                return Some((uri_s, (*diags).clone(), Refs::Reused));
+                return Some((uri_s, (*diags).clone(), None));
             }
-            // A file whose analysis panics costs only its own diagnostics.
-            let analyzed = contain(Some(path), Task::Analysis, || {
-                let tree = parse_lua(&text);
-                let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
-                result.plugin_diag_codes = plugin_codes.to_vec();
-                let own = files.own_functions.get(path).unwrap_or(&no_functions);
-                let references = unused_function::collect_file_references(&result, own);
-                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let suppressions = scan_diagnostic_directives(root);
-                let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
-                (diag_items, references)
-            });
-            Some(match analyzed {
-                Some((diag_items, references)) => (uri_s, diag_items, Refs::Collected(path.clone(), references)),
-                None => (uri_s, Vec::new(), Refs::Failed(path.clone())),
-            })
+            let tree = parse_lua(&text);
+            let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
+            result.plugin_diag_codes = plugin_codes.to_vec();
+            let own = files.own_functions.get(path).unwrap_or(&no_functions);
+            let references = unused_function::collect_file_references(&result, own);
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            let suppressions = scan_diagnostic_directives(root);
+            let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
+            Some((uri_s, diag_items, Some((path.clone(), references))))
         })
         .collect();
 
@@ -149,16 +136,11 @@ pub(super) fn compute_ws_diagnostics(
     let mut references = (!should_cancel()).then(|| WarmReferences {
         full: affected.is_none() || prior_map.is_none(),
         files: Vec::new(),
-        kept: Vec::new(),
     });
     let mut output = Vec::with_capacity(per_file.len());
     for (uri, diags, file_refs) in per_file {
-        if let Some(references) = references.as_mut() {
-            match file_refs {
-                Refs::Reused => {}
-                Refs::Collected(path, refs) => references.files.push((path, refs)),
-                Refs::Failed(path) => references.kept.push(path),
-            }
+        if let (Some(references), Some(file_refs)) = (references.as_mut(), file_refs) {
+            references.files.push(file_refs);
         }
         output.push((uri, diags));
     }
@@ -218,7 +200,7 @@ pub(super) fn spawn_warm(
             if should_cancel() {
                 let _ = warm_tx.send(WarmResult {
                     generation: target_gen,
-                    diagnostics: Some(Vec::new()),
+                    diagnostics: Vec::new(),
                     references: None,
                 });
                 return;
@@ -262,15 +244,12 @@ pub(super) fn spawn_warm(
         }));
         match result {
             Ok((diagnostics, references)) => {
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Some(diagnostics), references });
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics, references });
             }
             Err(_) => {
-                // Each file's analysis is contained (`compute_ws_diagnostics`), so
-                // this panicked outside them. No diagnostics or references (`None`):
-                // the main loop keeps the ones it has rather than emptying the
-                // Problems panel.
-                log::error!("Background warm panicked; keeping the diagnostics from before");
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: None, references: None });
+                // No references (`None`): the main loop keeps the ones it has.
+                log::error!("Background warm panicked; sending empty result to unblock main loop");
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new(), references: None });
             }
         }
         // _guard drops here, sending the wake signal
@@ -919,12 +898,9 @@ pub(super) fn scan_directory_pass1(
     dedup_paths_in_place(&mut paths);
     dedup_paths_in_place(&mut xml_paths);
 
-    // Every file's scan in this pass and the next is contained: a file whose scan
-    // panics contributes nothing to the workspace until it changes.
-
     // XML pass: scan XML files for frame/template declarations
     let xml_results: Vec<_> = xml_paths.par_iter()
-        .filter_map(|p| contain(Some(p), Task::Scan, || crate::xml_scan::scan_xml_file(p)).flatten().map(|r| (p.clone(), r)))
+        .filter_map(|p| crate::xml_scan::scan_xml_file(p).map(|r| (p.clone(), r)))
         .collect();
 
     // Pass 1: parse + scan all files, keeping source text and trees for reuse
@@ -937,7 +913,7 @@ pub(super) fn scan_directory_pass1(
             };
             let synth = CorrelatedReturns::from_enabled(configs_ref.correlated_return_overloads_for(p));
             let ipp = ProtectedPrefix::from_enabled(configs_ref.implicit_protected_prefix_for(p));
-            contain(Some(p), Task::Scan, || scan_lua_file_cached(p, &text, synth, ipp)).flatten().map(|r| (p.clone(), r))
+            scan_lua_file_cached(p, &text, synth, ipp).map(|r| (p.clone(), r))
         })
         .collect();
 
@@ -1014,18 +990,15 @@ pub(super) fn complete_directory_scan(
         let defclass_results: Vec<_> = pass1.results.par_iter()
             .filter_map(|(p, cached)| {
                 let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
+                let mut found = Vec::new();
                 let ipp = configs.implicit_protected_prefix_for(p);
-                let found = contain(Some(p), Task::Scan, || {
-                    let mut found = Vec::new();
-                    if needs_defclass {
-                        let addon_name = configs.addon_name_for(p);
-                        found.extend(scan_defclass_calls_with_context(root, &defclass_ctx, ipp, addon_name.as_deref()));
-                    }
-                    if needs_built_name {
-                        found.extend(scan_built_name_calls_with_context(root, &built_ctx, ipp));
-                    }
-                    found
-                })?;
+                if needs_defclass {
+                    let addon_name = configs.addon_name_for(p);
+                    found.extend(scan_defclass_calls_with_context(root, &defclass_ctx, ipp, addon_name.as_deref()));
+                }
+                if needs_built_name {
+                    found.extend(scan_built_name_calls_with_context(root, &built_ctx, ipp));
+                }
                 Some((p.clone(), found))
             })
             .collect();
@@ -1049,7 +1022,7 @@ pub(super) fn complete_directory_scan(
         let created: Vec<_> = pass1.results.par_iter()
             .filter_map(|(p, cached)| {
                 let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
-                let found = contain(Some(p), Task::Scan, || crate::annotations::scan_created_globals(root, creates_global_specs, Some(p)))?;
+                let found = crate::annotations::scan_created_globals(root, creates_global_specs, Some(p));
                 if found.is_empty() { None } else { Some((p.clone(), found)) }
             })
             .collect();
@@ -1073,7 +1046,7 @@ pub(super) fn complete_directory_scan(
                 .filter_map(|(p, cached)| {
                     let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
                     let scope = configs.addon_name_for(p);
-                    let (regs, consts) = contain(Some(p), Task::Scan, || crate::annotations::scan_callback_registries(root, &events_methods, scope.as_deref()))?;
+                    let (regs, consts) = crate::annotations::scan_callback_registries(root, &events_methods, scope.as_deref());
                     if regs.is_empty() && consts.is_empty() { None } else { Some((p.clone(), regs, consts)) }
                 })
                 .collect();
@@ -1102,14 +1075,11 @@ pub(super) fn complete_directory_scan(
                 .filter_map(|(p, cached)| {
                     let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
                     let ipp = configs.implicit_protected_prefix_for(p);
-                    let (typed, funcall, bare) = contain(Some(p), Task::Scan, || {
-                        let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
-                        let funcall = scan_method_funcall_self_fields(
-                            root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
-                        );
-                        let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
-                        (typed, funcall, bare)
-                    })?;
+                    let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+                    let funcall = scan_method_funcall_self_fields(
+                        root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
+                    );
+                    let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
                     if typed.is_empty() && funcall.is_empty() && bare.is_empty() { None } else { Some((p.clone(), typed, funcall, bare)) }
                 })
                 .collect();

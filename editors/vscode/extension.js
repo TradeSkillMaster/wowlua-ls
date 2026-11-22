@@ -89,26 +89,6 @@ function activate(context) {
   );
 
   client = new LanguageClient("wowluals", "WoW Lua LS", serverOptions, clientOptions);
-
-  // After the server crashes five times in three minutes the client stops
-  // restarting it; this brings it back without reloading the window.
-  context.subscriptions.push(
-    commands.registerCommand("wowlua-ls.restartServer", async () => {
-      try {
-        // A stopped (or never started) client can't be stopped again.
-        if (client.isRunning()) {
-          await client.restart();
-        } else {
-          await client.start();
-        }
-      } catch (error) {
-        window.showErrorMessage(
-          `Restarting the WoW Lua language server failed: ${error?.message ?? error}`
-        );
-      }
-    })
-  );
-
   client.start();
 }
 

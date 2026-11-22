@@ -16,6 +16,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: wowlua_ls
+            # The oldest glibc the binary may need: Rust's own minimum for
+            # this target, so it starts on every glibc distro Rust supports
+            # (Ubuntu 14.04+, Debian 8+, RHEL/CentOS 7+). A row with a
+            # `glibc` builds with cargo-zigbuild, which links against that
+            # glibc's symbol versions instead of the runner's. Every
+            # *-linux-gnu row needs one: "Check glibc floor" fails without it.
+            glibc: "2.17"
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: wowlua_ls
@@ -27,6 +34,11 @@ jobs:
             binary: wowlua_ls.exe
 
     runs-on: ${{ matrix.os }}
+    env:
+      # `cargo zigbuild --target <target>.<glibc>` for a row with a glibc
+      # floor, plain `cargo build` otherwise. Output lands in
+      # target/<target>/release either way.
+      RELEASE_BUILD: ${{ matrix.glibc && format('zigbuild --target {0}.{1}', matrix.target, matrix.glibc) || format('build --target {0}', matrix.target) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,6 +52,19 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      - name: Install cargo-zigbuild
+        # Zig supplies the C compiler and linker for the floor's glibc: its
+        # headers and symbol-version stubs, so neither the C dependencies
+        # (vendored Lua, zstd, mimalloc) nor the link pick up the runner's
+        # newer glibc. Pinned, like the Rust toolchain; cargo-zigbuild runs
+        # zig as `python3 -m ziglang`, found through the venv on PATH.
+        if: matrix.glibc
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/pip" install ziglang==0.17.1 cargo-zigbuild==0.24.1
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
+
       - name: Set version from tag
         shell: bash
         run: |
@@ -50,7 +75,7 @@ jobs:
           sed -n "${TABLE}p" Cargo.toml | grep "^version = \"$VERSION\""
 
       - name: Build standalone binary (embedded stubs)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo ${{ env.RELEASE_BUILD }} --release
 
       - name: Prepare standalone binary
         shell: bash
@@ -62,13 +87,7 @@ jobs:
           fi
 
       - name: Build editor binary (external stubs)
-        run: cargo build --release --target ${{ matrix.target }} --no-default-features
-
-      - name: Upload standalone binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-${{ matrix.target }}
-          path: wowlua_ls-${{ matrix.target }}*
+        run: cargo ${{ env.RELEASE_BUILD }} --release --no-default-features
 
       - name: Prepare editor binary for JetBrains
         shell: bash
@@ -78,6 +97,56 @@ jobs:
           else
             cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-editor-${{ matrix.target }}
           fi
+
+      - name: Check glibc floor
+        # Fails when either binary needs a glibc symbol version newer than
+        # the row's floor, and when a *-linux-gnu row sets no floor at all.
+        # Built against the runner's glibc, v0.38.0 needed GLIBC_2.38 (the C
+        # dependencies' `__isoc23_strtol`) and GLIBC_2.39 (std's
+        # `pidfd_spawnp`), so it didn't start on Ubuntu 22.04 or Debian 12.
+        if: contains(matrix.target, '-linux-gnu')
+        run: >-
+          .github/scripts/check-glibc-floor.sh "${{ matrix.glibc }}"
+          wowlua_ls-${{ matrix.target }} wowlua_ls-editor-${{ matrix.target }}
+
+      - name: Run on the glibc floor
+        # Runs both binaries on CentOS 7, whose glibc is 2.17, the floor set
+        # above (change the two together). Each checks a one-file workspace:
+        # the standalone binary from its embedded stubs, the editor binary
+        # from the checked-out stubs/ beside it. The workspace's plugin warns
+        # once, from the vendored Lua, so `check` must exit 1 with that
+        # warning.
+        if: contains(matrix.target, '-linux-gnu')
+        shell: bash
+        run: |
+          mkdir smoke
+          echo 'local unit = { name = UnitName("player") }' > smoke/main.lua
+          echo '{ "plugins": ["./plugin.lua"] }' > smoke/.wowluarc.json
+          cat > smoke/plugin.lua <<'EOF'
+          return {
+            code = "smoke",
+            run = function(ctx)
+              for _, var in ipairs(ctx:find_locals({ init = "table" })) do
+                ctx:warn(var.range, "Lua ran: " .. tonumber("ff", 16))
+              end
+            end,
+          }
+          EOF
+          docker run --rm -v "$PWD:/io" -w /io centos:7 bash -euo pipefail -c '
+            getconf GNU_LIBC_VERSION
+            for bin in ./wowlua_ls-${{ matrix.target }} ./wowlua_ls-editor-${{ matrix.target }}; do
+              $bin --version
+              out=$($bin check smoke 2>&1) && status=0 || status=$?
+              echo "$out"
+              [[ $status == 1 && $out == *"Lua ran: 255"* ]]
+            done
+          '
+
+      - name: Upload standalone binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: wowlua_ls-${{ matrix.target }}*
 
       - name: Upload editor binary artifact
         uses: actions/upload-artifact@v4

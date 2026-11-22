@@ -23,8 +23,6 @@ A language server for World of Warcraft addon development. Built specifically fo
 
 Open a WoW addon folder. The extension automatically scans `.lua` files, loads WoW API stubs, and starts reporting diagnostics. No configuration required.
 
-To restart the language server, run **WoW Lua: Restart Language Server** from the Command Palette.
-
 For project-specific settings, add a `.wowluarc.json` to your addon root:
 
 ```json

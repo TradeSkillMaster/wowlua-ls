@@ -58,7 +58,6 @@ mod crossfile;
 mod diagnostics_handlers;
 mod handlers;
 mod hierarchy;
-mod isolation;
 mod memory;
 mod rebuild;
 mod refactor;
@@ -74,7 +73,6 @@ use crossfile::*;
 use diagnostics_handlers::*;
 use handlers::*;
 use hierarchy::*;
-use isolation::{contain, Task};
 use rebuild::*;
 use refactor::*;
 use scan::*;
@@ -163,74 +161,6 @@ struct Document {
     /// results can be matched to the correct open generation. Zero for non-stub
     /// documents.
     stub_open_seq: u64,
-    /// Set when a caught panic cost the document its analysis (`isolation.rs`).
-    failure: Option<Failure>,
-}
-
-/// What a caught panic cost a document, which has no tree or analysis since.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Failure {
-    /// Analyzing `text` panicked. Edits still apply, and the next one analyzes it
-    /// again.
-    Analysis,
-    /// Applying an edit panicked, so `text` may not be what the editor shows:
-    /// edits are ignored until the editor opens the document again.
-    Edit,
-}
-
-impl Document {
-    /// A Lua document holding `text` whose analysis panicked ([`Failure::Analysis`]).
-    fn failed(text: String, ws_generation: u64) -> Self {
-        Document {
-            text,
-            pending_text: None,
-            tree: None,
-            analysis: None,
-            toc: None,
-            plugin_diags: Vec::new(),
-            dirty: false,
-            ws_generation,
-            pending_line_delta: None,
-            pending_edit_map: None,
-            cached_diagnostics: None,
-            stub_open_seq: 0,
-            failure: Some(Failure::Analysis),
-        }
-    }
-
-    /// Whether edits to the document are applied: a Lua document analyzed, waiting
-    /// on its background analysis (`stub_open_seq`), or whose analysis panicked.
-    fn follows_lua_edits(&self) -> bool {
-        match self.failure {
-            Some(Failure::Edit) => false,
-            Some(Failure::Analysis) => true,
-            None => self.analysis.is_some() || self.stub_open_seq != 0,
-        }
-    }
-
-    /// Whether `text` (with `pending_text`) is what the editor shows, which handlers
-    /// that edit it from its text alone check: not after an edit to it couldn't be
-    /// applied ([`Failure::Edit`]).
-    fn has_editor_text(&self) -> bool {
-        self.failure != Some(Failure::Edit)
-    }
-
-    /// Drop what the document was analyzed and edited into after an edit to it
-    /// couldn't be applied ([`Failure::Edit`]): it answers nothing until the editor
-    /// opens it again. `text` stays, as the last text the server knew, which
-    /// closing it compares with the file on disk; nothing else reads it.
-    fn lose_track(&mut self) {
-        self.pending_text = None;
-        self.tree = None;
-        self.analysis = None;
-        self.plugin_diags.clear();
-        self.dirty = false;
-        self.pending_line_delta = None;
-        self.pending_edit_map = None;
-        self.cached_diagnostics = None;
-        self.toc = None;
-        self.failure = Some(Failure::Edit);
-    }
 }
 
 /// Cached workspace diagnostics: (generation, vec of (uri_string, diagnostics)).
@@ -250,9 +180,6 @@ struct CrossfileState {
     /// A full warm recorded every file's references. Until one has, a function
     /// referenced only by files not recorded yet would be reported.
     complete: bool,
-    /// Workspace files whose references aren't recorded because analyzing them
-    /// panicked (`isolation.rs`). Until they are, the check doesn't run either.
-    unknown: HashSet<PathBuf>,
     /// The scanned buffer and generation each open document's references were
     /// collected from. They follow the document's buffer, which can have changed
     /// since a warm read it.
@@ -301,9 +228,6 @@ struct WarmReferences {
     /// It analyzed every workspace file: one it lacks has left the workspace.
     full: bool,
     files: Vec<(PathBuf, crate::diagnostics::unused_function::FileReferences)>,
-    /// The files whose analysis panicked: still in the workspace, they keep the
-    /// references recorded for them before.
-    kept: Vec<PathBuf>,
 }
 
 struct WorkspaceState {
@@ -497,9 +421,6 @@ pub(super) struct XfileRefKey {
 pub(super) struct XfileRefs {
     /// `(file, its matches)` for each matching file, in search order.
     pub(super) files: Vec<(PathBuf, Vec<Location>)>,
-    /// The files naming the target that couldn't be searched: analyzing them
-    /// panicked (`isolation.rs`).
-    pub(super) unsearched: Vec<PathBuf>,
 }
 
 /// Entry cap for [`XfileRefCache`] within one generation; past it the cache restarts.
@@ -530,9 +451,7 @@ struct WarmInputs {
 /// the generation they were computed against.
 struct WarmResult {
     generation: u64,
-    /// `None` when the warm panicked outside any one file's analysis: the
-    /// closed-file diagnostics shown so far stay.
-    diagnostics: Option<Vec<(String, Vec<lsp_types::Diagnostic>)>>,
+    diagnostics: Vec<(String, Vec<lsp_types::Diagnostic>)>,
     /// The cross-file references of the files it analyzed; `None` when it was
     /// cancelled or panicked.
     references: Option<WarmReferences>,
@@ -547,8 +466,8 @@ struct StubAnalysisResult {
     /// means the file was closed and reopened (or replaced) in the interim and
     /// this result is stale.
     open_seq: u64,
-    /// `None` when the analysis panicked.
-    analyzed: Option<(SyntaxTree, AnalysisResult)>,
+    tree: SyntaxTree,
+    analysis: AnalysisResult,
 }
 
 /// Channels for spawning background stub-file analysis from notification handlers.
@@ -1263,14 +1182,7 @@ fn main_loop(
         begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
     }
 
-    // Caught panics reported to the user so far (`isolation.rs`).
-    let mut reported_panics = isolation::Reported::default();
-
     loop {
-        // Tell the user about the panics caught since the last iteration, here or
-        // in a background pass. Every iteration ends back here before blocking.
-        isolation::report_caught(&connection, &ws.roots, &mut reported_panics);
-
         // Drain any completed background warms. A result whose generation still
         // matches the live workspace is installed into the cache and triggers a
         // second diagnostic refresh (#2) so pull-model clients re-request the now
@@ -1284,13 +1196,7 @@ fn main_loop(
                 // so `should_cancel()` fired before `compute`) left nothing to release,
                 // and the broadcast would block this single-threaded loop mid-burst.
                 memory::release_memory(None);
-                // A warm that panicked keeps the entries from before, as current:
-                // marking them stale would only start another warm to panic.
-                let diagnostics = match res.diagnostics {
-                    Some(diagnostics) => diagnostics,
-                    None => ws.cached_ws_diagnostics.take().map(|(_, entries)| entries).unwrap_or_default(),
-                };
-                ws.cached_ws_diagnostics = Some((res.generation, diagnostics));
+                ws.cached_ws_diagnostics = Some((res.generation, res.diagnostics));
                 // The files it analyzed (every one, for a full warm) replace their
                 // references; the cross-file check reruns once the loop is idle.
                 if let Some(references) = res.references {
@@ -1379,15 +1285,10 @@ fn main_loop(
             if let Some(doc) = documents.get_mut(&res.uri_key)
                 && doc.stub_open_seq == res.open_seq
                 && doc.analysis.is_none()
-                && doc.failure.is_none()
             {
-                let Some((tree, analysis)) = res.analyzed else {
-                    doc.failure = Some(Failure::Analysis);
-                    continue;
-                };
-                let is_meta = analysis.is_meta();
-                doc.tree = Some(tree);
-                doc.analysis = Some(analysis);
+                let is_meta = res.analysis.is_meta();
+                doc.tree = Some(res.tree);
+                doc.analysis = Some(res.analysis);
                 // Stub files stay silent, but `@meta` files now surface
                 // annotation type-integrity diagnostics (undefined type/class
                 // references). The didOpen fast-path routes these to background
@@ -1528,7 +1429,7 @@ fn main_loop(
                 "notification {} {}", not.method,
                 watchdog::message_uri(&not.params).unwrap_or_default(),
             ));
-            serve_notification(&connection, &mut documents, &mut ws, not, &client, &mut progress_counter, &bg);
+            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
         }
         if has_did_change {
             last_dirty_at = Some(Instant::now());
@@ -1559,7 +1460,7 @@ fn main_loop(
                 "request {} {}", req.method,
                 watchdog::message_uri(&req.params).unwrap_or_default(),
             ));
-            serve_request(&connection, &mut documents, &mut ws, req, &client);
+            handle_request(&connection, &mut documents, &mut ws, req, &client);
         }
 
         // Phase 4: Re-analyze any dirty documents once the debounce
@@ -1713,7 +1614,7 @@ fn main_loop(
                     if doc.toc.is_some() {
                         let text = doc.pending_text.unwrap_or(doc.text);
                         let toc = crate::toc::parse_toc(&text);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         continue;
                     }
                     {
@@ -1726,59 +1627,48 @@ fn main_loop(
                         let text = doc.pending_text.unwrap_or(doc.text);
 
                         if is_ignored_uri(&uri, &ws.configs) {
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                             continue;
                         }
 
-                        // A panic costs the document its analysis: it is kept with
-                        // its text, analyzed again when it changes. A rebuild that
-                        // ran before the panic still counts.
-                        let mut rebuild_scope = RebuildScope::None;
-                        let path = (!file_path.as_os_str().is_empty()).then_some(file_path.as_path());
-                        let analyzed = contain(path, Task::Analysis, || {
-                            // Reuse the cached tree when no new text arrived since
-                            // Phase 2's parse. Otherwise re-parse the new text.
-                            let tree = if has_new_text {
-                                parse_lua(&text)
-                            } else {
-                                doc.tree.unwrap_or_else(|| parse_lua(&text))
-                            };
-
-                            // A stub has nothing to rescan. A `@meta` file the workspace
-                            // reads is rescanned like any other source — what it declares
-                            // is what other files read — and a file the workspace doesn't
-                            // read (a stub not recognized by path among them) rescans
-                            // nothing (`update_file_scan`).
-                            if !is_stub_path(&uri) {
-                                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                                rebuild_scope = maybe_rebuild_workspace(&uri, root, &mut ws);
-                            }
-                            let rebuilt = rebuild_scope.is_rebuild();
-
-                            // If no new text, workspace didn't rebuild for THIS file,
-                            // and the analysis was built against the current workspace
-                            // generation, Phase 2's analysis is still valid.
-                            let ws_stale = doc.ws_generation < ws.ws_generation;
-                            let mut result = if !has_new_text && !rebuilt && !ws_stale {
-                                doc.analysis.unwrap_or_else(|| analyze_lua_parsed(
-                                    &uri, &ws.pre_globals, &ws.configs, &tree,
-                                ))
-                            } else {
-                                analyze_lua_parsed(
-                                    &uri, &ws.pre_globals, &ws.configs, &tree,
-                                )
-                            };
-                            result.plugin_diag_codes = ws.plugin_codes();
-
-                            let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                            (tree, result, plugin_diags)
-                        });
-                        let rebuilt = rebuild_scope.is_rebuild();
-                        let doc = match analyzed {
-                            Some((tree, result, plugin_diags)) => Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None },
-                            None => Document::failed(text, ws.ws_generation),
+                        // Reuse the cached tree when no new text arrived since
+                        // Phase 2's parse. Otherwise re-parse the new text.
+                        let tree = if has_new_text {
+                            parse_lua(&text)
+                        } else {
+                            doc.tree.unwrap_or_else(|| parse_lua(&text))
                         };
-                        documents.insert(uri_str.clone(), doc);
+
+                        // A stub has nothing to rescan. A `@meta` file the workspace
+                        // reads is rescanned like any other source — what it declares
+                        // is what other files read — and a file the workspace doesn't
+                        // read (a stub not recognized by path among them) rescans
+                        // nothing (`update_file_scan`).
+                        let rebuild_scope = if is_stub_path(&uri) {
+                            RebuildScope::None
+                        } else {
+                            let root = crate::syntax::SyntaxNode::new_root(&tree);
+                            maybe_rebuild_workspace(&uri, root, &mut ws)
+                        };
+                        let rebuilt = rebuild_scope.is_rebuild();
+
+                        // If no new text, workspace didn't rebuild for THIS file,
+                        // and the analysis was built against the current workspace
+                        // generation, Phase 2's analysis is still valid.
+                        let ws_stale = doc.ws_generation < ws.ws_generation;
+                        let mut result = if !has_new_text && !rebuilt && !ws_stale {
+                            doc.analysis.unwrap_or_else(|| analyze_lua_parsed(
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
+                            ))
+                        } else {
+                            analyze_lua_parsed(
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
+                            )
+                        };
+                        result.plugin_diag_codes = ws.plugin_codes();
+
+                        let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         if rebuilt {
                             had_workspace_rebuild = true;
                             warm_scope = warm_scope.merge(rebuild_scope);
@@ -2045,53 +1935,16 @@ fn drain_pending_requests(
                 if not.method == "textDocument/didChange" {
                     *last_dirty_at = Some(Instant::now());
                 }
-                serve_notification(connection, documents, ws, not, client, progress_counter, bg);
+                handle_notification(connection, documents, ws, not, &None, client, progress_counter, bg);
             }
             Message::Response(_) => {}
         }
     }
     analyze_current_text_for(&requests, documents, ws);
     for req in requests {
-        serve_request(connection, documents, ws, req, client);
+        handle_request(connection, documents, ws, req, client);
     }
     false
-}
-
-/// Handle a notification. A panic it doesn't contain itself (as it does each
-/// file's analysis and each edit) is logged and reported against its document.
-fn serve_notification(
-    connection: &Connection,
-    documents: &mut HashMap<String, Document>,
-    ws: &mut WorkspaceState,
-    not: Notification,
-    client: &ClientSupport,
-    progress_counter: &mut i32,
-    bg: &BackgroundChannels,
-) {
-    let path = isolation::message_path(&not.params);
-    let task = Task::Other(format!("handling {}", not.method));
-    contain(path.as_deref(), task, || {
-        handle_notification(connection, documents, ws, not, &None, client, progress_counter, bg);
-    });
-}
-
-/// Answer a request. A panic costs only its response: it is answered with an
-/// error, and logged and reported against its document.
-fn serve_request(
-    connection: &Connection,
-    documents: &mut HashMap<String, Document>,
-    ws: &mut WorkspaceState,
-    req: Request,
-    client: &ClientSupport,
-) {
-    let id = req.id.clone();
-    let method = req.method.clone();
-    let path = isolation::message_path(&req.params);
-    if contain(path.as_deref(), Task::Request(method.clone()), || handle_request(connection, documents, ws, req, client)).is_none() {
-        let file = path.map(|path| format!(" for {}", path.display())).unwrap_or_default();
-        let message = format!("wowlua_ls hit an internal error answering {method}{file}; see the language server's log");
-        let _ = connection.sender.send(Message::Response(Response::new_err(id, lsp_server::ErrorCode::RequestFailed as i32, message)));
-    }
 }
 
 /// Phase 2: analyze the unapplied text (`pending_text`) of the document each
@@ -2115,19 +1968,10 @@ fn analyze_current_text_for(requests: &[Request], documents: &mut HashMap<String
         if doc.toc.is_some() { continue; }
         let Some(text) = doc.pending_text.clone() else { continue };
         let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
+        let tree = parse_lua(&text);
         let _wg = watchdog::WorkGuard::new(format!("analyze (interactive) {uri_str}"));
-        let path = uri_to_abs_path(&uri);
-        let doc = match contain(path.as_deref(), Task::Analysis, || {
-            let tree = parse_lua(&text);
-            let analysis = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-            (tree, analysis)
-        }) {
-            Some((tree, analysis)) => Document { text, pending_text: None, analysis: Some(analysis), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None },
-            // Still dirty, so Phase 4 scans the edit for the workspace (and finds
-            // the analysis panics too).
-            None => Document { dirty: true, ..Document::failed(text, ws.ws_generation) },
-        };
-        documents.insert(uri_str.to_string(), doc);
+        let analysis = Some(analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree));
+        documents.insert(uri_str.to_string(), Document { text, pending_text: None, analysis, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
     }
 }
 
@@ -2594,7 +2438,6 @@ mod tests {
             pending_edit_map: None,
             cached_diagnostics: None,
             stub_open_seq,
-            failure: None,
         }
     }
 
@@ -4214,7 +4057,7 @@ end
         documents.insert(uri.to_string(), Document {
             text: text.to_string(), pending_text: None, analysis: None, tree: None,
             toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation,
-            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None,
+            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
         });
         for (uri_str, doc) in documents.iter_mut() {
             if rebuilt || doc.analysis.is_none() {
@@ -4558,7 +4401,6 @@ end
                 toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: 0,
                 pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None,
                 stub_open_seq: 0,
-                failure: None,
             });
         }
 
@@ -4621,7 +4463,6 @@ end
                 toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: 0,
                 pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None,
                 stub_open_seq: 0,
-                failure: None,
             });
         }
 
@@ -4683,7 +4524,7 @@ end
         documents.insert(uri.to_string(), Document {
             text: "local x = 1\n".to_string(), pending_text: None, analysis: None, tree: None,
             toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: 0,
-            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None,
+            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
         });
         // Simulate an edit that flagged the file, then the user closing it.
         ws.edited_uris.insert(path.clone());
@@ -4731,7 +4572,7 @@ end
         documents.insert(uri.to_string(), Document {
             text: text.to_string(), pending_text: None, analysis: Some(analysis), tree: Some(tree),
             toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation,
-            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None,
+            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
         });
 
         client.sender.send(Message::Notification(Notification::new(
@@ -6336,7 +6177,7 @@ end
             text, pending_text: None, analysis: Some(analysis), tree: Some(tree),
             toc: None, plugin_diags: Vec::new(), dirty: false,
             ws_generation: ws.ws_generation, pending_line_delta: None,
-            pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0, failure: None,
+            pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
         };
         (uri, doc)
     }
@@ -6459,7 +6300,6 @@ end
                 pending_edit_map: None,
                 cached_diagnostics: None,
                 stub_open_seq: 0,
-                failure: None,
             }
         }
 

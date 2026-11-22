@@ -22,15 +22,6 @@ pub(super) fn install_warm_references(ws: &mut WorkspaceState, warm: WarmReferen
         if !state.open_stamps.contains_key(&path) {
             state.stale |= state.references.set(path.clone(), refs);
         }
-        state.unknown.remove(&path);
-        analyzed.insert(path);
-    }
-    // A file whose analysis panicked keeps the references recorded for it; with
-    // none, it may call a function nothing else does.
-    for path in warm.kept {
-        if !state.open_stamps.contains_key(&path) && !state.references.paths().any(|p| *p == path) {
-            state.unknown.insert(path.clone());
-        }
         analyzed.insert(path);
     }
     if warm.full {
@@ -41,7 +32,6 @@ pub(super) fn install_warm_references(ws: &mut WorkspaceState, warm: WarmReferen
         for path in gone {
             state.references.remove(&path);
         }
-        state.unknown.retain(|path| analyzed.contains(path));
         state.complete = true;
         state.reconvert_all = true;
         state.stale = true;
@@ -69,13 +59,8 @@ pub(super) fn refresh_open_references(documents: &HashMap<String, Document>, ws:
             continue;
         }
         let own = scanned_function_keys(ws.ws_file_globals.get(&path).map_or(&[], Vec::as_slice));
-        let task = Task::Other("collecting cross-file references".to_string());
-        let refs = contain(Some(&path), task, || collect_file_references(analysis, &own));
-        // Stamped either way: one that panicked keeps its earlier references, and
-        // isn't retried every time the loop goes idle.
+        let refs = collect_file_references(analysis, &own);
         ws.crossfile.open_stamps.insert(path.clone(), (Arc::clone(scanned), doc.ws_generation));
-        let Some(refs) = refs else { continue };
-        ws.crossfile.unknown.remove(&path);
         ws.crossfile.references.set(path, refs);
         // Even with the same references, the scan moved the file's functions.
         ws.crossfile.stale = true;
@@ -120,12 +105,7 @@ pub(super) fn update_crossfile(
     tx: &crossbeam_channel::Sender<CrossfileConversion>,
     wake_tx: &crossbeam_channel::Sender<()>,
 ) {
-    let task = Task::Other("running the cross-file unused-function check".to_string());
-    let Some(changes) = contain(None, task, || crossfile_changes(ws)).unwrap_or_else(|| {
-        // Not rerun every time the loop goes idle: the next change reruns it.
-        ws.crossfile.stale = false;
-        None
-    }) else { return };
+    let Some(changes) = crossfile_changes(ws) else { return };
     ws.crossfile.in_flight = true;
     let configs = Arc::clone(&ws.configs);
     let tx = tx.clone();
@@ -143,7 +123,7 @@ pub(super) fn update_crossfile(
 /// check isn't due or nothing changed.
 pub(super) fn crossfile_changes(ws: &mut WorkspaceState) -> Option<Vec<(PathBuf, FileUnused)>> {
     let state = &ws.crossfile;
-    if !state.complete || !state.unknown.is_empty() || !state.stale || state.in_flight || ws.warm_in_flight {
+    if !state.complete || !state.stale || state.in_flight || ws.warm_in_flight {
         return None;
     }
     let by_file = unused_by_file(ws);

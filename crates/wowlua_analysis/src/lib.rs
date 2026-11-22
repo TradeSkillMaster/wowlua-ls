@@ -14,7 +14,6 @@ pub mod analysis;
 pub mod annotations;
 pub mod config;
 pub mod diagnostics;
-pub mod panics;
 pub mod pre_globals;
 pub mod xml_scan;
 

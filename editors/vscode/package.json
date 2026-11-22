@@ -19,13 +19,6 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "wowlua-ls.restartServer",
-        "title": "Restart Language Server",
-        "category": "WoW Lua"
-      }
-    ],
     "languages": [
       {
         "id": "lua",
