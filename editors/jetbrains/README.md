@@ -27,7 +27,7 @@ The plugin adds:
 
 - A JetBrains IDE 2025.2 or newer, with the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin. LSP4IJ is a required dependency, so installing from the Marketplace pulls it in automatically.
 - JDK 21+ (for building)
-- `wowlua_ls` binary ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root, which needs [Git LFS](https://git-lfs.com))
+- `wowlua_ls` binary for a plugin built from source ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root, which needs [Git LFS](https://git-lfs.com)). The Marketplace plugin bundles it for Windows, macOS and Linux on x64 and Arm.
 
 ## LSP backend
 
@@ -46,7 +46,9 @@ cargo build --release
 
 If you cloned without Git LFS, the build stops and says so: run `git lfs install` and `git lfs pull` in the checkout, then build again.
 
-Then add the binary to your PATH.
+Then add the binary to your PATH, or set its path in **Settings → Languages & Frameworks → WoW Lua LS → Server path**.
+
+The plugin runs, in order: the server path from that setting, the binary bundled for this platform (`server/<platform>/` in a release build; none in a `./gradlew buildPlugin` build), then `wowlua_ls` on PATH. The setting is IDE-wide and machine-local (it doesn't sync through Backup and Sync), so no project can choose the program it runs. When none of them can run, the "Cannot start server" notification says why.
 
 ### 2. Build the plugin
 
@@ -86,7 +88,9 @@ src/main/
 │   ├── lsp4ij/
 │   │   ├── WowLuaLanguageServerFactory.kt  # LSP4IJ client wiring (server + enablement)
 │   │   └── WowLuaGotoDeclarationHandler.kt # Keeps the caret in place when a symbol has no definition
-│   ├── WowLuaServerPath.kt                 # wowlua_ls binary resolution
+│   ├── WowLuaServerPath.kt                 # wowlua_ls binary resolution (setting, bundled, PATH)
+│   ├── WowLuaServerPathSettings.kt         # The user's own server path (application-level, not synced)
+│   ├── WowLuaSettingsConfigurable.kt       # Settings → Languages & Frameworks → WoW Lua LS
 │   ├── WowLuaStubDir.kt                    # On-disk stub directory for go-to-definition into WoW API stubs
 │   ├── WowLuaTextMateBundleProvider.kt     # Registers the bundled TextMate grammars
 │   └── WowLuaSettings.kt                   # Persistent settings (LSP4IJ server enable/disable)

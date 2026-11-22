@@ -23,6 +23,10 @@ jobs:
             # glibc's symbol versions instead of the runner's. Every
             # *-linux-gnu row needs one: "Check glibc floor" fails without it.
             glibc: "2.17"
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: wowlua_ls
+            glibc: "2.17"
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: wowlua_ls
@@ -178,6 +182,7 @@ jobs:
           cp ../../stubs/precomputed-files.bin.zst server/stubs/
           for spec in \
             "x86_64-unknown-linux-gnu:linux-x64:wowlua_ls" \
+            "aarch64-unknown-linux-gnu:linux-arm64:wowlua_ls" \
             "x86_64-apple-darwin:darwin-x64:wowlua_ls" \
             "aarch64-apple-darwin:darwin-arm64:wowlua_ls" \
             "x86_64-pc-windows-msvc:win32-x64:wowlua_ls.exe"; do
@@ -256,6 +261,7 @@ jobs:
           cp ../../../../stubs/precomputed-files.bin.zst repack/wowlua-ls/server/stubs/
           for spec in \
             "x86_64-unknown-linux-gnu:linux-x64:wowlua_ls" \
+            "aarch64-unknown-linux-gnu:linux-arm64:wowlua_ls" \
             "x86_64-apple-darwin:darwin-x64:wowlua_ls" \
             "aarch64-apple-darwin:darwin-arm64:wowlua_ls" \
             "x86_64-pc-windows-msvc:win32-x64:wowlua_ls.exe"; do

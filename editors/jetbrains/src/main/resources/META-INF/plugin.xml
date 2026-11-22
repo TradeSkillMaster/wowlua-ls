@@ -27,8 +27,10 @@
     </ul>
 
     <h3>Setup</h3>
-    <p>The plugin bundles the <code>wowlua_ls</code> binary — no separate install needed. If no
-    bundled binary ships for your platform, it falls back to a <code>wowlua_ls</code> on your PATH.</p>
+    <p>The plugin bundles the <code>wowlua_ls</code> binary for Windows (x64, and Arm through
+    emulation), macOS (Intel and Apple silicon) and Linux (x64 and arm64) — no separate install
+    needed. On any other platform, build <code>wowlua_ls</code> and set its path in
+    <b>Settings | Languages &amp; Frameworks | WoW Lua LS</b>, or put it on your PATH.</p>
     <p>The plugin drives the language server through the
     <a href="https://plugins.jetbrains.com/plugin/23257-lsp4ij">LSP4IJ</a> plugin, which the
     Marketplace installs automatically as a dependency.</p>
@@ -41,6 +43,15 @@
     <extensions defaultExtensionNs="com.intellij">
         <applicationService
                 serviceImplementation="com.tradeskillmaster.wowluals.WowLuaSettings"/>
+        <applicationService
+                serviceImplementation="com.tradeskillmaster.wowluals.WowLuaServerPathSettings"/>
+        <!-- Application-level, never projectConfigurable: the server path names a
+             program to run, so a project must not be able to set it. -->
+        <applicationConfigurable
+                parentId="language"
+                id="com.tradeskillmaster.wowlua-ls.settings"
+                displayName="WoW Lua LS"
+                instance="com.tradeskillmaster.wowluals.WowLuaSettingsConfigurable"/>
         <!-- Runs before LSP4IJ's handler so a symbol with several definitions shows
              the picker on every click, not just the first. See
              WowLuaMultiDefinitionGotoHandler for the full rationale. -->

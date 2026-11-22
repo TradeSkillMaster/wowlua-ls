@@ -38,13 +38,13 @@ Full feature list and a complete LuaLS comparison in the [documentation](https:/
 
 ### VS Code
 
-Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). The extension bundles the language server binary - no separate install needed.
+Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). The extension bundles the language server binary for Windows, macOS and Linux (x64 and Arm) - no separate install needed. On other platforms, build the server and set `wowlua-ls.server.path` in your User settings ([details](https://tradeskillmaster.github.io/wowlua-ls/guide/getting-started#platforms-without-a-bundled-server)).
 
 On editors that use the [Open VSX Registry](https://open-vsx.org/extension/TradeSkillMaster/wowlua-ls) instead of the Marketplace (VSCodium, Cursor, Gitpod, Eclipse Theia), install it from there - it's the same extension.
 
 ### JetBrains IDEs
 
-Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary - no separate install needed.
+Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary for Windows, macOS and Linux (x64 and Arm) - no separate install needed. On other platforms, build the server and set it under **Settings → Languages & Frameworks → WoW Lua LS** ([details](https://tradeskillmaster.github.io/wowlua-ls/guide/getting-started#platforms-without-a-bundled-server)).
 
 ### Zed
 

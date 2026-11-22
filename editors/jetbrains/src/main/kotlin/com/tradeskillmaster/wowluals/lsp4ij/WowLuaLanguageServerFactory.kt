@@ -10,6 +10,7 @@ import com.redhat.devtools.lsp4ij.LanguageServersRegistry
 import com.redhat.devtools.lsp4ij.client.features.LSPClientFeatures
 import com.redhat.devtools.lsp4ij.client.features.LSPSelectionRangeFeature
 import com.redhat.devtools.lsp4ij.client.features.LSPSemanticTokensFeature
+import com.redhat.devtools.lsp4ij.server.CannotStartProcessException
 import com.redhat.devtools.lsp4ij.server.ProcessStreamConnectionProvider
 import com.redhat.devtools.lsp4ij.server.StreamConnectionProvider
 import com.tradeskillmaster.wowluals.WowLuaServerPath
@@ -32,11 +33,20 @@ class WowLuaLanguageServerFactory : LanguageServerFactory, LanguageServerEnablem
         // stub falls back to "find usages".
         WowLuaStubDir.ensureWatched()
         val env = mapOf(WowLuaStubDir.ENV_VAR to WowLuaStubDir.path().toString())
+        val server = WowLuaServerPath.resolve()
         return object : ProcessStreamConnectionProvider(
-            listOf(WowLuaServerPath.resolve()),
+            listOf((server as? WowLuaServerPath.Resolution.Found)?.path ?: "wowlua_ls"),
             project.basePath ?: ".",
             env,
-        ) {}
+        ) {
+            // LSP4IJ shows a start failure's message in its "Cannot start server"
+            // notification, so say why there's no server to run and what to do,
+            // rather than let the process launch fail with a bare "No such file".
+            override fun start() {
+                if (server is WowLuaServerPath.Resolution.Problem) throw CannotStartProcessException(server.message)
+                super.start()
+            }
+        }
     }
 
     // Adds the server's own requests (`wowlua/typeHover`) to the proxy LSP4IJ

@@ -35,6 +35,14 @@ For project-specific settings, add a `.wowluarc.json` to your addon root:
 }
 ```
 
+## Supported platforms
+
+The extension bundles the language server for Windows (x64, and Arm through Windows 11's emulation), macOS (Intel and Apple silicon) and glibc-based Linux (x64 and arm64, including dev containers on Apple silicon Macs). On any other platform, [build the server](https://tradeskillmaster.github.io/wowlua-ls/guide/getting-started#platforms-without-a-bundled-server) and set its path:
+
+| Setting | Description |
+|---------|-------------|
+| `wowlua-ls.server.path` | Absolute path to a `wowlua_ls` binary to run instead of the bundled one. User settings only (Remote settings when connected to a container, WSL or SSH host); workspace settings can't set it. |
+
 ## Annotations
 
 LuaLS-compatible `---@` annotations:

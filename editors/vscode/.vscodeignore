@@ -3,3 +3,5 @@ extension.js
 .gitignore
 package-lock.json
 syntaxes/tests/
+server-path.js
+test/

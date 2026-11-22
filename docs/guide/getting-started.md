@@ -4,13 +4,13 @@
 
 ### VS Code
 
-Install the **wowlua-ls** extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). It bundles the language server binary - no separate install needed.
+Install the **wowlua-ls** extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). It bundles the language server binary - no separate install needed. On a platform it has no bundled server for, see [Platforms without a bundled server](#platforms-without-a-bundled-server).
 
 On editors that use the [Open VSX Registry](https://open-vsx.org/extension/TradeSkillMaster/wowlua-ls) instead of the Marketplace (VSCodium, Cursor, Gitpod, Eclipse Theia), install it from there - it's the same extension.
 
 ### JetBrains IDEs
 
-Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary - no separate install needed.
+Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary - no separate install needed. On a platform it has no bundled server for, see [Platforms without a bundled server](#platforms-without-a-bundled-server).
 
 ### Zed
 
@@ -157,6 +157,21 @@ cargo build --release
 If you cloned without Git LFS, the build stops and says so: run `git lfs install` and `git lfs pull` in the checkout, then build again. `cargo install --git` and source archives don't fetch LFS files, so build from a clone.
 
 The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua and TOC files. The server picks the file kind from the language ID the editor sends: `lua` for Lua files and `toc` for TOC files.
+
+### Platforms without a bundled server
+
+The VS Code extension and the JetBrains plugin bundle the server for:
+
+- Windows on x64. Windows 11 on Arm runs the x64 server through its built-in emulation.
+- macOS on Intel and Apple silicon.
+- Linux on x64 and arm64 (Arm64 covers dev containers on Apple silicon Macs and WSL on Windows on Arm), for glibc-based distributions.
+
+On any other platform - another CPU architecture, FreeBSD, or a musl-based Linux such as Alpine - the editor shows an error saying so instead of starting a server. Build the server on that machine (see [Other editors](#other-editors)) and point the editor at the binary:
+
+- **VS Code**: set `wowlua-ls.server.path` to the binary's absolute path in your User settings. When VS Code is connected to a dev container, WSL or an SSH host, set it in that window's Remote settings instead, since the binary has to be on the remote machine. The server restarts when the setting changes.
+- **JetBrains IDEs**: set **Settings → Languages & Frameworks → WoW Lua LS → Server path**, or put `wowlua_ls` on your `PATH`. Applying the setting restarts the server.
+
+Workspace settings and project files can't set either one: it names a program to run, and opening someone else's addon mustn't be able to choose that program. The same settings run a server you built yourself in place of the bundled one on a supported platform.
 
 ## Your first project
 

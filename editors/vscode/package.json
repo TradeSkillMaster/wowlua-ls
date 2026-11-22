@@ -75,6 +75,17 @@
         }
       }
     ],
+    "configuration": {
+      "title": "WoW Lua Language Server",
+      "properties": {
+        "wowlua-ls.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Absolute path to a `wowlua_ls` binary to run instead of the one bundled with the extension - for a platform the extension has no bundled server for, or to run one you built. Leave empty to use the bundled server.\n\nSet it in your User settings, or in Remote settings when VS Code is connected to a container, WSL or SSH host (the binary has to be on that machine). Workspace settings can't set it, since it names a program to run."
+        }
+      }
+    },
     "jsonValidation": [
       {
         "fileMatch": ".wowluarc.json",
@@ -93,7 +104,9 @@
     "build": "esbuild ./extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "test:grammar": "vscode-tmgrammar-test -g syntaxes/lua.tmLanguage.json syntaxes/tests/lua.test.lua",
     "test:grammar:snap": "vscode-tmgrammar-snap -g syntaxes/wowlua-hover.tmLanguage.json -s source.wowlua-hover syntaxes/tests/hover.test.wowlua-hover",
-    "test": "npm run test:grammar && npm run test:grammar:snap",
+    "test:server-path": "node --test test/server-path.test.js",
+    "test:extension": "node --test test/extension.test.js",
+    "test": "npm run test:grammar && npm run test:grammar:snap && npm run test:server-path && npm run test:extension",
     "package": "npm run build && vsce package"
   },
   "repository": {
