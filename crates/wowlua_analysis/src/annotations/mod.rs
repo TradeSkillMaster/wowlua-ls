@@ -1305,6 +1305,7 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
 
 /// Scan all comments in the syntax tree for @class, @alias, and @event declarations.
 pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
+    crate::panics::inject("scan", root.tree.source());
     let mut result = ScanResult { classes: Vec::new(), aliases: Vec::new(), events: Vec::new(), has_meta: false, callable_classes: HashSet::default() };
 
     let mut current_group: Vec<(String, u32, u32)> = Vec::new();

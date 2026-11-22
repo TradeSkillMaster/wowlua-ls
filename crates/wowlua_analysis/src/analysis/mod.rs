@@ -4828,6 +4828,7 @@ impl<'a> Analysis<'a> {
         pre_globals: Arc<PreResolvedGlobals>,
         config: AnalysisConfig,
     ) -> Analysis<'a> {
+        crate::panics::inject("analysis", tree.source());
         let AnalysisConfig {
             framexml_enabled,
             allowed_read_globals,

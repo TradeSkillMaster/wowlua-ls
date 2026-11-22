@@ -41,10 +41,15 @@ pub(super) fn build_file_diagnostics_with(
     if configs.is_library(&file_path) {
         return Vec::new();
     }
-    let diags = analysis.run_diagnostics(tree);
-    let disabled = configs.disabled_diagnostics_for(&file_path);
-    let severity = configs.severity_overrides_for(&file_path);
-    diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, suppressions, &disabled, &severity)
+    // A diagnostic pass that panics costs the file its diagnostics, which callers
+    // cache like any others, so it isn't retried until the file is analyzed again.
+    let path = (!file_path.as_os_str().is_empty()).then_some(file_path.as_path());
+    contain(path, Task::Diagnostics, || {
+        let diags = analysis.run_diagnostics(tree);
+        let disabled = configs.disabled_diagnostics_for(&file_path);
+        let severity = configs.severity_overrides_for(&file_path);
+        diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, suppressions, &disabled, &severity)
+    }).unwrap_or_default()
 }
 
 /// Adjust cached diagnostic positions for a pending edit that hasn't been
@@ -137,6 +142,15 @@ pub(super) fn append_crossfile_diagnostics(
     }
 }
 
+/// Send `items` as `uri`'s diagnostics (`textDocument/publishDiagnostics`).
+pub(super) fn publish_diagnostics(connection: &Connection, uri: &lsp_types::Uri, items: Vec<lsp_types::Diagnostic>) {
+    let params = lsp_types::PublishDiagnosticsParams { uri: uri.clone(), diagnostics: items, version: None };
+    let _ = connection.sender.send(Message::Notification(Notification::new(
+        "textDocument/publishDiagnostics".to_string(),
+        params,
+    )));
+}
+
 /// Build diagnostics, cache them on the document, and send a
 /// `textDocument/publishDiagnostics` notification. Called after Phase 4
 /// for all clients (push-only and pull-model) to ensure in-buffer
@@ -147,7 +161,14 @@ pub(super) fn push_fresh_diagnostics(
     doc: &mut Document,
     ws: &WorkspaceState,
 ) {
-    let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) else { return };
+    let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) else {
+        // A panic cost the document its analysis: clear what was shown from before.
+        if doc.failure.is_some() {
+            doc.cached_diagnostics = Some(Vec::new());
+            publish_diagnostics(connection, uri, Vec::new());
+        }
+        return;
+    };
     // Files under `stubs/` never produce diagnostics. Clear cached diagnostics
     // and publish an empty list so push-only clients don't retain stale
     // diagnostics from a previous analysis. `@meta` files are NOT short-circuited
@@ -244,6 +265,7 @@ pub(super) fn handle_document_diagnostic(
     // whether the diagnostics we're building came from a meta source so the
     // append below can honor that.
     let mut source_is_meta = false;
+    let mut failed = false;
     let mut items = if let Some(doc) = documents.get_mut(&uri_str) {
         // TOC document: run TOC-specific diagnostics.
         if let Some(toc) = &doc.toc {
@@ -257,6 +279,12 @@ pub(super) fn handle_document_diagnostic(
         // avoid rerunning all ~40 diagnostic passes on every pull request.
         // The cache stores per-file items only (no cross-file); cross-file
         // items are appended below after line-shifting.
+        // A panic cost the document its analysis, and with it its diagnostics,
+        // cross-file ones included.
+        else if doc.failure.is_some() {
+            failed = true;
+            Vec::new()
+        }
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
             source_is_meta = analysis.is_meta();
             // Scan suppressions once and reuse for both the (uncached) per-file
@@ -331,7 +359,7 @@ pub(super) fn handle_document_diagnostic(
     // have consistent positions during pending edits. `@meta` files surface
     // only annotation type-integrity diagnostics, so the runtime cross-file
     // items (unused-function) stay suppressed there.
-    if !source_is_meta {
+    if !source_is_meta && !failed {
         append_crossfile_diagnostics(&mut items, &uri_str, ws, open_suppressions.as_deref());
     }
 

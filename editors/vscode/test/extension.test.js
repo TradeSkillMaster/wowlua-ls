@@ -14,9 +14,11 @@ const Module = require("module");
 function fakeLanguageClient(running) {
   let created = 0;
   return class FakeLanguageClient {
+    static instances = [];
     constructor() {
       this.id = ++created;
       this.state = "initial";
+      FakeLanguageClient.instances.push(this);
     }
     start() {
       this.state = "starting";
@@ -33,12 +35,21 @@ function fakeLanguageClient(running) {
       this.state = "stopped";
       running.delete(this.id);
     }
+    /** The server keeps crashing and the client gives up restarting it. */
+    giveUp() {
+      this.state = "stopped";
+      running.delete(this.id);
+    }
   };
 }
 
-/** Loads a fresh copy of the extension; returns it and its config-change listener. */
+/**
+ * Loads a fresh copy of the extension; returns it, its config-change listener,
+ * the commands it registered, and its LanguageClient class.
+ */
 function loadExtension(t, serverPath, running) {
   let onConfigChange;
+  const registered = {};
   const vscode = {
     workspace: {
       onDidChangeConfiguration: (listener) => {
@@ -48,7 +59,13 @@ function loadExtension(t, serverPath, running) {
       getConfiguration: () => ({ inspect: () => ({ globalValue: serverPath }) }),
     },
     window: { showErrorMessage: async () => undefined },
-    commands: { registerCommand: () => ({ dispose() {} }), executeCommand() {} },
+    commands: {
+      registerCommand: (name, handler) => {
+        registered[name] = handler;
+        return { dispose() {} };
+      },
+      executeCommand() {},
+    },
     env: {},
     Uri: {},
     Position: class {},
@@ -66,7 +83,12 @@ function loadExtension(t, serverPath, running) {
   delete require.cache[extensionPath];
   const extension = require(extensionPath);
   extension.activate({ subscriptions: [] });
-  return { extension, changeSetting: () => onConfigChange({ affectsConfiguration: () => true }) };
+  return {
+    extension,
+    changeSetting: () => onConfigChange({ affectsConfiguration: () => true }),
+    registered,
+    LanguageClient: languageClient.LanguageClient,
+  };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
@@ -97,4 +119,25 @@ test("deactivating during a restart leaves no server running", async (t) => {
   await extension.deactivate();
   await settle();
   assert.deepStrictEqual([...running], []);
+});
+
+test("the restart command brings back a server the client gave up on", async (t) => {
+  const running = new Set();
+  const { registered, LanguageClient } = loadExtension(t, serverBinary(t), running);
+  await settle();
+  LanguageClient.instances.at(-1).giveUp();
+  assert.deepStrictEqual([...running], []);
+  await registered["wowlua-ls.restartServer"]();
+  await settle();
+  assert.strictEqual(running.size, 1, `servers still running: ${[...running]}`);
+});
+
+test("restarting a running server twice leaves one server running", async (t) => {
+  const running = new Set();
+  const { registered } = loadExtension(t, serverBinary(t), running);
+  await settle();
+  registered["wowlua-ls.restartServer"]();
+  await registered["wowlua-ls.restartServer"]();
+  await settle();
+  assert.strictEqual(running.size, 1, `servers still running: ${[...running]}`);
 });

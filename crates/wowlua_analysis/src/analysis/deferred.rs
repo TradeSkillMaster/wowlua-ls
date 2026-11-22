@@ -414,6 +414,10 @@ pub struct DeferredHarvests {
     /// What each file's discovery analysis gives a harvest that would cut every read
     /// it made too ([`first_analysis`]).
     first: RwLock<HashMap<PathBuf, Arc<FirstAnalysis>>>,
+    /// Files whose analysis panicked, read like files that can't be read until they
+    /// change ([`Self::invalidate`]) rather than analyzed to the panic again for
+    /// every read.
+    failed: RwLock<HashSet<PathBuf>>,
     /// File analyses run for discovery and harvests.
     analyses: AtomicUsize,
 }
@@ -445,6 +449,9 @@ impl DeferredHarvests {
     pub fn invalidate(&self, path: &Path) {
         if let Ok(mut reads) = self.reads.write() {
             reads.remove(path);
+        }
+        if let Ok(mut failed) = self.failed.write() {
+            failed.remove(path);
         }
         if let Ok(mut first) = self.first.write() {
             first.remove(path);
@@ -2837,6 +2844,10 @@ fn analyze_file(
     if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lua")) {
         return None;
     }
+    let harvests = &ext.deferred_harvests;
+    if harvests.failed.read().is_ok_and(|failed| failed.contains(path)) {
+        return None;
+    }
     // Prefer in-memory document content (unsaved editor buffer) over disk.
     let text = ext
         .document_overrides
@@ -2865,13 +2876,29 @@ fn analyze_file(
         None => AnalysisConfig { file_path: Some(path.to_path_buf()), ..AnalysisConfig::default() },
     };
 
-    let tree = crate::syntax::parser::parse(&text);
-    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
-    analysis.resolve_types();
-    let mut result = analysis.into_result();
-    result.adopt_write_root_versions();
-    ext.deferred_harvests.analyses.fetch_add(1, Ordering::Relaxed);
-    Some((tree, result))
+    // A file whose analysis panics is read like one that can't be: its readers keep
+    // their coarse types, rather than every file reading it panicking in turn. Its
+    // own analysis reports the panic to the user.
+    let analyzed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let tree = crate::syntax::parser::parse(&text);
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
+        analysis.resolve_types();
+        let mut result = analysis.into_result();
+        result.adopt_write_root_versions();
+        (tree, result)
+    }));
+    harvests.analyses.fetch_add(1, Ordering::Relaxed);
+    analyzed
+        .inspect_err(|payload| {
+            log::error!(
+                "Internal error analyzing {} for the files that read it: {}",
+                path.display(), crate::panics::message(&**payload),
+            );
+            if let Ok(mut failed) = harvests.failed.write() {
+                failed.insert(path.to_path_buf());
+            }
+        })
+        .ok()
 }
 
 /// Harvest everything cross-file readers take from an analysis of `path`: the precise

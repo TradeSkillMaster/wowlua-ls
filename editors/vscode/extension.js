@@ -137,6 +137,15 @@ function registerCommands(context) {
       }
     )
   );
+
+  // After the server crashes five times in three minutes the client stops
+  // restarting it; this brings it back without reloading the window.
+  context.subscriptions.push(
+    commands.registerCommand("wowlua-ls.restartServer", () => {
+      restartServer();
+      return restarting;
+    })
+  );
 }
 
 function deactivate() {

@@ -1610,6 +1610,7 @@ pub fn scan_method_typed_self_fields(
     known_classes: &HashSet<String>,
     implicit_protected_prefix: bool,
 ) -> Vec<TypedSelfField> {
+    crate::panics::inject("self-fields", root.tree.source());
     let mut results = Vec::new();
     for write in class_field_writes(root, known_classes) {
         let Some(annotation_type) = write.declared else { continue };
