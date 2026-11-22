@@ -9018,10 +9018,9 @@ fn scope_completion_locals_sort_before_globals() {
 
 #[test]
 fn test_unused_function_cross_file() {
-    use wowlua_ls::collections::HashMap;
-    use std::path::PathBuf;
     use wowlua_ls::diagnostics::unused_function::{
-        collect_file_reference_data, find_unused_workspace_functions,
+        collect_file_references, find_unused_workspace_functions, scanned_function_keys_by_file,
+        OwnFunctionKeys, WorkspaceReferences,
     };
 
     let scan_dir = std::env::current_dir().unwrap().join("tests/unused-function");
@@ -9048,8 +9047,8 @@ fn test_unused_function_cross_file() {
     let pre_globals = Arc::new(pg);
 
     // Analyze each file, collect reference data.
-    let mut file_refs: HashMap<PathBuf, wowlua_ls::diagnostics::unused_function::FileReferenceData> = HashMap::default();
-    let mut meta_paths: HashSet<PathBuf> = HashSet::default();
+    let own_functions = scanned_function_keys_by_file(&sg);
+    let mut file_refs = WorkspaceReferences::default();
     for entry in std::fs::read_dir(&scan_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
@@ -9072,11 +9071,10 @@ fn test_unused_function_cross_file() {
         );
         analysis.resolve_types();
         let result = analysis.into_result();
-        if result.is_meta() {
-            meta_paths.insert(path.clone());
-        }
-        let ref_data = collect_file_reference_data(&result);
-        file_refs.insert(path, ref_data);
+        let no_functions = OwnFunctionKeys::default();
+        let own = own_functions.get(&path).unwrap_or(&no_functions);
+        let ref_data = collect_file_references(&result, own);
+        file_refs.set(path, ref_data);
     }
 
     let unused = find_unused_workspace_functions(
@@ -9084,7 +9082,6 @@ fn test_unused_function_cross_file() {
         &pre_globals,
         &file_refs,
         &|p| project_configs.is_library(p),
-        &|p| meta_paths.contains(p),
     );
     let unused_names: HashSet<&str> = unused.iter().map(|u| u.name.as_str()).collect();
 

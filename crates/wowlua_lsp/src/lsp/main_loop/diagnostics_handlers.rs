@@ -103,14 +103,14 @@ pub(super) fn shift_diagnostics_for_pending_edit(
 
 /// Append cross-file diagnostics from `cached_crossfile_diagnostics` into a
 /// per-file diagnostic list. This cache stores ONLY diagnostics from the
-/// cross-file unused-function pass (`find_unused_from_pre_globals`), separate
-/// from the per-file `unused-function` items emitted by `UnusedLocal::run`.
+/// cross-file unused-function check (`crossfile.rs`), separate from the
+/// per-file `unused-function` items emitted by `UnusedLocal::run`.
 ///
 /// When `suppressions` is provided, each cached diagnostic is filtered against
 /// the current document's `---@diagnostic disable/enable` directives. This is
-/// required for open documents because the cache is populated by the workspace
-/// warm against on-disk text; suppressions added in the editor since the
-/// workspace warm last ran would otherwise be ignored until the next warm.
+/// required for open documents because the cache is converted against the text
+/// the document's latest scan read; suppressions typed since would otherwise be
+/// ignored until the next scan.
 pub(super) fn append_crossfile_diagnostics(
     items: &mut Vec<lsp_types::Diagnostic>,
     uri_str: &str,
@@ -383,25 +383,33 @@ pub(super) fn handle_workspace_diagnostic(
         }
     }
 
-    if let Some((_, ref cached)) = ws.cached_ws_diagnostics {
-        for (uri_str, diag_items) in cached {
-            // Skip files that are currently open — they are served by
-            // textDocument/diagnostic instead.
-            if open_uri_strs.contains(uri_str.as_str()) {
-                continue;
-            }
-            if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
-                items.push(WorkspaceDocumentDiagnosticReport::Full(
-                    WorkspaceFullDocumentDiagnosticReport {
-                        uri,
-                        version: None,
-                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                            result_id: None,
-                            items: diag_items.clone(),
-                        },
+    // Each closed file's per-file diagnostics, then its cross-file ones, which
+    // are kept apart (and can exist for a file with no per-file entry).
+    let per_file = ws.cached_ws_diagnostics.as_ref().map_or(&[][..], |(_, cached)| cached.as_slice());
+    let per_file_uris: HashSet<&str> = per_file.iter().map(|(uri_str, _)| uri_str.as_str()).collect();
+    let crossfile_only = ws.cached_crossfile_diagnostics.iter()
+        .filter(|(uri_str, _)| !per_file_uris.contains(uri_str.as_str()))
+        .map(|(uri_str, _)| (uri_str, &[][..]));
+    let files = per_file.iter().map(|(uri_str, diags)| (uri_str, diags.as_slice())).chain(crossfile_only);
+    for (uri_str, diag_items) in files {
+        // Skip files that are currently open — they are served by
+        // textDocument/diagnostic instead.
+        if open_uri_strs.contains(uri_str.as_str()) {
+            continue;
+        }
+        if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
+            let mut diag_items = diag_items.to_vec();
+            append_crossfile_diagnostics(&mut diag_items, uri_str, ws, None);
+            items.push(WorkspaceDocumentDiagnosticReport::Full(
+                WorkspaceFullDocumentDiagnosticReport {
+                    uri,
+                    version: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: diag_items,
                     },
-                ));
-            }
+                },
+            ));
         }
     }
 

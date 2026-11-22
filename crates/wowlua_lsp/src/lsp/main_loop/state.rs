@@ -385,6 +385,8 @@ impl WorkspaceState {
         // The rebuilt index has every file's current display text and positions.
         self.display_refresh_wanted = false;
         self.changed_since_build.clear();
+        // Its functions, or where they are, may have changed.
+        self.crossfile.stale = true;
         self.bump_generation();
         // Intentionally retain `cached_ws_diagnostics` (now stale: its stored
         // generation no longer matches `ws_generation`). The generation mismatch
@@ -414,6 +416,18 @@ impl WorkspaceState {
             .collect()
     }
 
+    /// The workspace's files as their latest scans read them (see [`WarmFiles`]).
+    pub(super) fn warm_files(&self) -> WarmFiles {
+        WarmFiles {
+            paths: self.ws_lua_paths(),
+            buffers: self.ws_file_scanned_buffers.clone(),
+            own_functions: self.ws_file_globals.iter()
+                .map(|(path, globals)| (path.clone(), crate::diagnostics::unused_function::scanned_function_keys(globals)))
+                .filter(|(_, keys)| !keys.is_empty())
+                .collect(),
+        }
+    }
+
     /// Snapshot everything a warm needs as owned/`Arc`-shared, `Send + 'static`
     /// data so the work can run on a background thread without borrowing `self`.
     /// Clones (rather than takes) the prior cache so untouched files reuse their
@@ -427,7 +441,7 @@ impl WorkspaceState {
         };
         WarmInputs {
             generation: self.ws_generation,
-            paths: self.ws_lua_paths(),
+            files: self.warm_files(),
             pre_globals: Arc::clone(&self.pre_globals),
             configs: Arc::clone(&self.configs),
             plugin_codes: self.plugin_codes(),
@@ -489,6 +503,7 @@ impl WorkspaceState {
             ws_file_string_consts: HashMap::default(),
             ws_file_self_fields: HashMap::default(),
             ws_file_self_field_globals: HashMap::default(),
+            ws_file_scanned_buffers: HashMap::default(),
             pre_globals: Arc::new(PreResolvedGlobals::empty()),
             document_overrides: Arc::default(),
             cached_all_globals: Vec::new(),
@@ -506,6 +521,7 @@ impl WorkspaceState {
             ws_generation: 0,
             cached_ws_diagnostics: None,
             cached_crossfile_diagnostics: HashMap::default(),
+            crossfile: CrossfileState::default(),
             warm_in_flight: false,
             pending_lazy_warm: false,
             live_generation: Arc::new(AtomicU64::new(0)),

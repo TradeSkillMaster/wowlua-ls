@@ -1007,22 +1007,8 @@ impl<'a> BuildOnStubsContext<'a> {
                             {
                                 self.addon_ns_methods.push(func_idx);
                             }
-                            // Record display name for unused-function diagnostics. A constructor's
-                            // function entries are values frameworks often call (option and
-                            // callback tables), so that leaves them out.
-                            if !g.ctor_method {
-                                let display_name = if is_addon_ns {
-                                    let mut parts = path.clone();
-                                    parts.push(method_name.clone());
-                                    parts.join(".")
-                                } else {
-                                    let sep = if *is_colon { ":" } else { "." };
-                                    if path.is_empty() {
-                                        format!("{}{sep}{method_name}", g.name)
-                                    } else {
-                                        format!("{}.{}{sep}{method_name}", g.name, path.join("."))
-                                    }
-                                };
+                            // Record display name for unused-function diagnostics.
+                            if let Some(display_name) = g.method_display_name() {
                                 self.function_names.insert(func_idx, display_name);
                             }
                             self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));

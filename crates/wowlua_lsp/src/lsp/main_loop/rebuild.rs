@@ -469,6 +469,16 @@ pub(super) fn update_file_scan(uri: &lsp_types::Uri, root: crate::syntax::Syntax
     // Always store fresh values so positions stay current for hover/go-to-def.
     // Only rebuild when semantic content (types, names, fields) actually changed.
     ws.ws_file_globals.insert(file_path.clone(), new_globals);
+    // What the positions are offsets into: an open document's buffer, which can
+    // differ from the file on disk.
+    let is_open = ws.document_overrides.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&file_path);
+    if is_open {
+        ws.ws_file_scanned_buffers.insert(file_path.clone(), Arc::from(root.tree.source()));
+    } else {
+        ws.ws_file_scanned_buffers.remove(&file_path);
+    }
     ws.ws_file_classes.insert(file_path.clone(), scan.classes);
     ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
     if scan.callable_classes.is_empty() {
@@ -788,6 +798,8 @@ pub(super) fn install_display_refresh(
         }
     }
     ws.pre_globals = new;
+    // The functions' locations are the new index's.
+    ws.crossfile.stale = true;
     // As after an edit (Phase 4): the redone documents re-run only for a new generation.
     if redone {
         ws.bump_generation();

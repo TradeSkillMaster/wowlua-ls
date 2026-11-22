@@ -1609,6 +1609,10 @@ pub(super) fn handle_notification(
                 {
                     overrides.remove(p);
                 }
+                if let Some(p) = &path {
+                    ws.ws_file_scanned_buffers.remove(p);
+                    forget_open_references(ws, p);
+                }
                 // Other files now see the file's content on disk. If they may have
                 // seen other text — edits discarded on close, or ones not yet
                 // reconciled — take the file from disk.
@@ -1877,6 +1881,7 @@ pub(super) fn rescan_workspace_from_disk(
     if ws.roots.is_empty() { return; }
     // Build a fresh config locally (scan mutates it), then swap in a new Arc.
     let mut new_configs = crate::config::ProjectConfigs::default();
+    let open_buffers = ws.document_overrides.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     let DirectoryScanResult {
         file_globals,
         file_classes,
@@ -1894,7 +1899,7 @@ pub(super) fn rescan_workspace_from_disk(
     } = scan_directory_tracked(
         &ws.roots,
         &mut new_configs,
-        &ws.document_overrides.read().unwrap_or_else(std::sync::PoisonError::into_inner),
+        &open_buffers,
         ws.stub_classes(),
         ws.stub_globals(),
         ws.stub_pre_globals.creates_global_specs(),
@@ -1912,6 +1917,11 @@ pub(super) fn rescan_workspace_from_disk(
     ws.ws_file_dynamic_prefixes = file_dynamic_prefixes;
     ws.ws_file_callback_registries = file_callback_registries;
     ws.ws_file_string_consts = file_string_consts;
+    // The scan read the open files it scanned from their buffers.
+    ws.ws_file_scanned_buffers = open_buffers.into_iter()
+        .filter(|(path, _)| ws.ws_file_globals.contains_key(path))
+        .map(|(path, text)| (path, Arc::from(text)))
+        .collect();
     // Every closed file and scan input was just taken from disk, so no earlier
     // record holds.
     ws.closed_file_hashes.clear();

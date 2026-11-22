@@ -2,7 +2,7 @@
 //! a summary. Exits non-zero when errors or warnings are present.
 
 use std::cell::RefCell;
-use wowlua_ls::collections::{HashMap, HashSet};
+use wowlua_ls::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use log::error;
 use rayon::prelude::*;
 
 use wowlua_ls::diagnostics::SYNTAX_CODE;
-use wowlua_ls::diagnostics::unused_function::FileReferenceData;
+use wowlua_ls::diagnostics::unused_function::{FileReferences, OwnFunctionKeys, WorkspaceReferences};
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::plugins::PluginEngine;
 use wowlua_ls::{annotations, config, lsp, syntax};
@@ -58,10 +58,7 @@ struct FileResult {
     /// This file's contribution to the run-wide stats.
     stats: CheckStats,
     /// Cross-file reference data for the workspace-level unused-function check.
-    ref_entry: Option<(PathBuf, FileReferenceData)>,
-    /// This file has a `---@meta` marker. Its functions are declaration stubs,
-    /// so they are excluded from the cross-file unused-function check.
-    is_meta: bool,
+    ref_entry: Option<(PathBuf, FileReferences)>,
 }
 
 /// Analyze a single file: parse, resolve types, run diagnostics (+ plugins),
@@ -73,6 +70,7 @@ fn analyze_one_file(
     path: &Path,
     dir: &Path,
     pre_globals: &Arc<PreResolvedGlobals>,
+    own_functions: &HashMap<PathBuf, OwnFunctionKeys>,
     project_configs: &config::ProjectConfigs,
     mut plugin_engine: Option<&mut PluginEngine>,
     include_hints: bool,
@@ -163,15 +161,16 @@ fn analyze_one_file(
         }
 
         // Collect cross-file reference data for workspace-level unused function check
-        let ref_data = wowlua_ls::diagnostics::unused_function::collect_file_reference_data(&ar);
-        (lines, stats, ref_data, ar.is_meta())
+        let no_functions = OwnFunctionKeys::default();
+        let own = own_functions.get(path).unwrap_or(&no_functions);
+        let ref_data = wowlua_ls::diagnostics::unused_function::collect_file_references(&ar, own);
+        (lines, stats, ref_data)
     }));
     match result {
-        Ok((lines, st, ref_data, is_meta)) => {
+        Ok((lines, st, ref_data)) => {
             fr.lines.extend(lines);
             fr.stats.merge(&st);
             fr.ref_entry = Some((path.to_path_buf(), ref_data));
-            fr.is_meta = is_meta;
         }
         Err(_) => {
             error!("PANIC analyzing: {}", name.display());
@@ -253,16 +252,19 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
         drop(PluginEngine::new(&plugin_paths));
     }
 
+    // Each file's own workspace functions by definition offset in its scan: how
+    // its references to them are named for the cross-file unused-function check.
+    let own_functions = wowlua_ls::diagnostics::unused_function::scanned_function_keys_by_file(&ws.scan.globals);
     let results: Vec<FileResult> = lua_files
         .par_iter()
         .map(|path| {
             if !has_plugins {
-                return analyze_one_file(path, &dir, &pre_globals, &project_configs, None, include_hints);
+                return analyze_one_file(path, &dir, &pre_globals, &own_functions, &project_configs, None, include_hints);
             }
             CHECK_PLUGIN_ENGINE.with(|cell| {
                 let mut slot = cell.borrow_mut();
                 let engine = slot.get_or_insert_with(|| PluginEngine::new_quiet(&plugin_paths));
-                analyze_one_file(path, &dir, &pre_globals, &project_configs, Some(engine), include_hints)
+                analyze_one_file(path, &dir, &pre_globals, &own_functions, &project_configs, Some(engine), include_hints)
             })
         })
         .collect();
@@ -272,10 +274,7 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
     // so they share batched writes and identical broken-pipe handling (a closed
     // downstream pipe, e.g. `| head`, drops writes silently instead of panicking).
     let mut stats = CheckStats::default();
-    let mut file_refs: HashMap<PathBuf, FileReferenceData> = HashMap::default();
-    // `@meta` files whose functions must be excluded from the cross-file
-    // unused-function check (their functions are declaration stubs).
-    let mut meta_paths: HashSet<PathBuf> = HashSet::default();
+    let mut file_refs = WorkspaceReferences::default();
     {
         let stdout = std::io::stdout();
         let mut out = std::io::BufWriter::new(stdout.lock());
@@ -288,10 +287,7 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
             }
             stats.merge(&fr.stats);
             if let Some((p, rd)) = fr.ref_entry {
-                if fr.is_meta {
-                    meta_paths.insert(p.clone());
-                }
-                file_refs.insert(p, rd);
+                file_refs.set(p, rd);
             }
         }
 
@@ -301,7 +297,6 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
             &pre_globals,
             &file_refs,
             &|p| project_configs.is_library(p),
-            &|p| meta_paths.contains(p),
         );
         let diag_map = wowlua_ls::diagnostics::unused_function::emit_unused_workspace_diagnostics(&unused);
         for (fpath, diags) in &diag_map {

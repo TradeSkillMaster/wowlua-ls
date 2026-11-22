@@ -4,41 +4,103 @@ use std::path::{Path, PathBuf};
 use crate::analysis::{AnalysisResult, Ir};
 use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind, FieldValueKind};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, ExprId, FunctionIndex, ScopeIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType};
+use crate::types::{Expr, ExprId, FunctionIndex, ScopeIndex, SymbolIdentifier, TableIndex, ValueType};
 
 use super::WowDiagnostic;
 
-/// Per-file reference data collected during analysis. Used by the cross-file
-/// unused function check to aggregate which external symbols are referenced.
-#[derive(Clone, Default)]
-pub struct FileReferenceData {
-    /// External `SymbolIndex` values (>= `EXT_BASE`) referenced by this file.
-    pub referenced_externals: HashSet<SymbolIndex>,
-    /// Scope-0 symbol names that are locally referenced within this file.
-    pub scope0_referenced_names: HashSet<String>,
-    /// External `FunctionIndex` values (>= `EXT_BASE`) called by this file.
-    /// Used for top-level global function usage tracking.
-    pub referenced_external_functions: HashSet<FunctionIndex>,
-    /// Definition start offsets of this file's own functions that it calls or
-    /// reads as a value. A method referenced only from its defining file
-    /// resolves to the file-local `FunctionIndex`, not the workspace one, so the
-    /// method pass matches it to its workspace definition by location.
-    pub referenced_local_function_defs: HashSet<u32>,
+/// A workspace function as references to it are recorded: the name
+/// `unused-function` reports it by. Functions are numbered in build order, so
+/// every index rebuild can renumber a `FunctionIndex`; references kept across
+/// rebuilds (the LSP keeps each file's until it analyzes the file again) name
+/// functions this way instead. The name doesn't include the defining file, so a
+/// method moved to another file keeps the references recorded before; the build
+/// makes the same-named definitions of a method one function anyway.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionKey(String);
+
+impl FunctionKey {
+    /// `func_idx`'s key in `pre_globals`. `None` for a function `unused-function`
+    /// never reports: a stub's, a constructor's function entry.
+    fn of(pre_globals: &PreResolvedGlobals, func_idx: FunctionIndex) -> Option<Self> {
+        if func_idx.ext_offset() < pre_globals.stub_functions_end {
+            return None;
+        }
+        pre_globals.function_names.get(&func_idx).map(|name| Self(name.clone()))
+    }
 }
 
-impl FileReferenceData {
+/// The keys of a file's own workspace functions by definition offset. A method
+/// referenced only from its defining file resolves to the file's own
+/// `FunctionIndex`, not the workspace one, so [`collect_file_references`] names it
+/// by where it is defined: offsets into the text the analysis was built from.
+pub type OwnFunctionKeys = HashMap<u32, Vec<FunctionKey>>;
+
+/// A file's [`OwnFunctionKeys`] from its scan (`globals`): offsets into the text
+/// the scan read, which is the text to analyze with them. Every definition of a
+/// method gets its name (a method exported to several fields gets each), so a
+/// call resolving to any of them counts.
+pub fn scanned_function_keys(globals: &[ExternalGlobal]) -> OwnFunctionKeys {
+    let mut keys: OwnFunctionKeys = HashMap::default();
+    for g in globals {
+        if let Some(name) = g.method_display_name() {
+            keys.entry(g.def_start).or_default().push(FunctionKey(name));
+        }
+    }
+    keys
+}
+
+/// Group a workspace scan's globals by file into each file's [`OwnFunctionKeys`].
+pub fn scanned_function_keys_by_file(globals: &[ExternalGlobal]) -> HashMap<PathBuf, OwnFunctionKeys> {
+    let mut by_file: HashMap<PathBuf, OwnFunctionKeys> = HashMap::default();
+    for g in globals {
+        if let (Some(path), Some(name)) = (&g.source_path, g.method_display_name()) {
+            by_file.entry(path.clone()).or_default().entry(g.def_start).or_default().push(FunctionKey(name));
+        }
+    }
+    by_file
+}
+
+/// What one file references, in terms that survive an index rebuild (global
+/// names, [`FunctionKey`]s), for the cross-file `unused-function` check.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileReferences {
+    /// Workspace globals the file reads. A global's definition reads it first, so
+    /// its defining file is among them, and is left out of its count.
+    globals: HashSet<String>,
+    /// The file's own scope-0 symbols it reads once it has defined them (a
+    /// recursive global function).
+    own_globals: HashSet<String>,
+    /// Workspace functions the file calls or reads as a value.
+    functions: HashSet<FunctionKey>,
+    /// A `@meta` file: the functions it declares are declaration stubs (the
+    /// workspace analogue of the built-in WoW API stubs), never reported.
+    is_meta: bool,
+}
+
+/// Collects a file's [`FileReferences`] from its analysis.
+struct Collector<'a> {
+    analysis: &'a AnalysisResult,
+    own_functions: &'a OwnFunctionKeys,
+    refs: FileReferences,
+}
+
+impl Collector<'_> {
     /// Record a function the file calls or reads as a value: a workspace
-    /// function by index, one of the file's own functions by definition offset.
-    /// Synthetic local functions (materialized `fun()` annotation types, clones
-    /// of external generics) have no definition node — their dummy offset 0
-    /// would match a method defined at the start of the file.
-    fn record_function(&mut self, analysis: &AnalysisResult, func_idx: FunctionIndex) {
+    /// function by its key in the index, one of the file's own functions by
+    /// definition offset. Synthetic local functions (materialized `fun()`
+    /// annotation types, clones of external generics) have no definition node —
+    /// their dummy offset 0 would match a method defined at the start of the file.
+    fn record_function(&mut self, func_idx: FunctionIndex) {
         if func_idx.is_external() {
-            self.referenced_external_functions.insert(func_idx);
+            if let Some(key) = FunctionKey::of(&self.analysis.ir.ext, func_idx) {
+                self.refs.functions.insert(key);
+            }
         } else {
-            let def = analysis.func(func_idx).def_node;
-            if def.node_id.is_some() {
-                self.referenced_local_function_defs.insert(def.start);
+            let def = self.analysis.func(func_idx).def_node;
+            if def.node_id.is_some()
+                && let Some(keys) = self.own_functions.get(&def.start)
+            {
+                self.refs.functions.extend(keys.iter().cloned());
             }
         }
     }
@@ -88,7 +150,8 @@ fn resolve_field_func(ir: &Ir, base_expr: ExprId, field_name: &str) -> Option<Fu
 /// definition offset. For a `@class` target, also look up the external class table
 /// by name (`ext.classes` — unlike a global-symbol lookup, this finds `@class`es
 /// declared on a `local`), whose field yields the workspace index directly.
-fn record_keyof_handler_ref(analysis: &AnalysisResult, target: TableIndex, name: &str, refs: &mut FileReferenceData) {
+fn record_keyof_handler_ref(collector: &mut Collector<'_>, target: TableIndex, name: &str) {
+    let analysis = collector.analysis;
     let ir = &analysis.ir;
     let ext_by_name = ir
         .table(target)
@@ -99,7 +162,7 @@ fn record_keyof_handler_ref(analysis: &AnalysisResult, target: TableIndex, name:
         if let Some(field) = ir.get_field(t, name)
             && let Expr::FunctionDef(func_idx) = ir.expr(field.expr)
         {
-            refs.record_function(analysis, *func_idx);
+            collector.record_function(*func_idx);
             if func_idx.is_external() {
                 return;
             }
@@ -107,21 +170,34 @@ fn record_keyof_handler_ref(analysis: &AnalysisResult, target: TableIndex, name:
     }
 }
 
-/// Extract cross-file reference data from a per-file `AnalysisResult`.
-/// Uses `call_resolutions` (already computed during analysis) to track
-/// function references. No additional tree walk is performed.
-pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceData {
-    let mut refs = FileReferenceData::default();
+/// Collect what `analysis` references, its own functions named by
+/// `own_functions` (see [`OwnFunctionKeys`]). Uses `call_resolutions` (already
+/// computed during analysis) to track function references. No additional tree
+/// walk is performed.
+pub fn collect_file_references(analysis: &AnalysisResult, own_functions: &OwnFunctionKeys) -> FileReferences {
+    let mut collector = Collector {
+        analysis,
+        own_functions,
+        refs: FileReferences { is_meta: analysis.is_meta(), ..FileReferences::default() },
+    };
 
+    // Workspace globals, by name: the index's scope-0 symbols the file reads.
+    let ext = &analysis.ir.ext;
     for &idx in &analysis.referenced_symbols {
-        if idx.is_external() {
-            refs.referenced_externals.insert(idx);
+        if !idx.is_external() || idx.ext_offset() < ext.stub_symbols_end {
+            continue;
+        }
+        let id = &analysis.sym(idx).id;
+        if let SymbolIdentifier::Name(name) = id
+            && ext.scope0_symbols.get(id) == Some(&idx)
+        {
+            collector.refs.globals.insert(name.clone());
         }
     }
 
     // Collect function indices from call resolutions.
     for cr in analysis.ir.call_resolutions.values() {
-        refs.record_function(analysis, cr.func_idx);
+        collector.record_function(cr.func_idx);
     }
 
     // Collect functions referenced as values (not called).
@@ -150,7 +226,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         if let Some(cached) = analysis.resolved_expr_cache_get(eid) {
             let mut recorded_external = false;
             visit_function_members(cached, &mut |func_idx| {
-                refs.record_function(analysis, func_idx);
+                collector.record_function(func_idx);
                 recorded_external |= func_idx.is_external();
             });
             if recorded_external {
@@ -162,7 +238,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         // functions whose workspace entry is another file's definition of the
         // same method (the field on the external table points to it).
         if let Some(func_idx) = resolve_field_func(&analysis.ir, *base_expr, field) {
-            refs.record_function(analysis, func_idx);
+            collector.record_function(func_idx);
         }
     }
 
@@ -203,7 +279,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
             let Some(table_idx) = cr.resolve_keyof_target(ref_name) else {
                 continue;
             };
-            record_keyof_handler_ref(analysis, table_idx, key, &mut refs);
+            record_keyof_handler_ref(&mut collector, table_idx, key);
         }
     }
 
@@ -221,7 +297,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         for (&arg_idx, &target) in &cr.keyof_arg_targets {
             let Some(&arg_expr) = args.get(arg_idx) else { continue };
             let Some(key) = analysis.ir.string_literals.get(&arg_expr) else { continue };
-            record_keyof_handler_ref(analysis, target, key, &mut refs);
+            record_keyof_handler_ref(&mut collector, target, key);
         }
     }
 
@@ -231,80 +307,131 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         if analysis.referenced_symbols.contains(&sym_idx)
             && let SymbolIdentifier::Name(name) = id
         {
-            refs.scope0_referenced_names.insert(name.clone());
+            collector.refs.own_globals.insert(name.clone());
         }
     }
 
-    refs
+    collector.refs
 }
 
-/// Pre-aggregated cross-file reference data for O(1) lookups in the
-/// unused-function candidate loops. Built once from all per-file
-/// `FileReferenceData` entries before iterating function candidates.
-struct AggregatedRefs {
-    /// External symbols referenced in 2+ distinct files.
-    /// Any symbol here is definitely referenced "elsewhere".
-    multi_file_externals: HashSet<SymbolIndex>,
-    /// External symbols referenced in exactly 1 file (path stored for comparison).
-    single_file_externals: HashMap<SymbolIndex, PathBuf>,
-    /// Union of all `referenced_external_functions` across all files (calls +
-    /// function-as-value reads). Includes references from the defining file
-    /// itself, so recursive self-calls keep the function alive. Unlike
-    /// `is_referenced_elsewhere` (which excludes the defining file to avoid
-    /// counting the LHS assignment), method lookups here have no spurious
-    /// self-reference to exclude.
-    all_functions: HashSet<FunctionIndex>,
+/// Every file's [`FileReferences`], with how many files reference each global
+/// and function, for the cross-file `unused-function` check. Being keyed by
+/// name, a file's entry stays valid across index rebuilds, so the LSP replaces
+/// one file's at a time as it analyzes it again.
+#[derive(Default)]
+pub struct WorkspaceReferences {
+    files: HashMap<PathBuf, FileReferences>,
+    /// The number of files whose `globals` hold each name.
+    global_files: HashMap<String, u32>,
+    /// The number of files referencing each function, its defining file
+    /// included: a recursive call keeps a method alive.
+    function_files: HashMap<FunctionKey, u32>,
 }
 
-impl AggregatedRefs {
-    fn build(file_refs: &HashMap<PathBuf, FileReferenceData>) -> Self {
-        let mut multi_file_externals = HashSet::default();
-        let mut single_file_externals: HashMap<SymbolIndex, PathBuf> = HashMap::default();
-        let mut all_functions = HashSet::default();
+impl WorkspaceReferences {
+    /// Record `path`'s references in place of its earlier ones. Returns whether
+    /// that changed anything.
+    pub fn set(&mut self, path: PathBuf, refs: FileReferences) -> bool {
+        if self.files.get(&path) == Some(&refs) {
+            return false;
+        }
+        if let Some(old) = self.files.remove(&path) {
+            self.count(&old, false);
+        }
+        self.count(&refs, true);
+        self.files.insert(path, refs);
+        true
+    }
 
-        for (path, ref_data) in file_refs {
-            for &sym in &ref_data.referenced_externals {
-                if !multi_file_externals.contains(&sym) {
-                    if let Some(existing) = single_file_externals.get(&sym) {
-                        if existing != path {
-                            // Second distinct referencing file → promote to multi.
-                            multi_file_externals.insert(sym);
-                            single_file_externals.remove(&sym);
-                        }
-                    } else {
-                        single_file_externals.insert(sym, path.clone());
-                    }
+    /// Forget `path`'s references. Returns whether it had any.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        let Some(old) = self.files.remove(path) else { return false };
+        self.count(&old, false);
+        true
+    }
+
+    /// The files whose references are recorded.
+    pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.keys()
+    }
+
+    fn count(&mut self, refs: &FileReferences, add: bool) {
+        fn bump<K: std::hash::Hash + Eq + Clone>(counts: &mut HashMap<K, u32>, key: &K, add: bool) {
+            if add {
+                *counts.entry(key.clone()).or_default() += 1;
+            } else if let Some(n) = counts.get_mut(key) {
+                *n -= 1;
+                if *n == 0 {
+                    counts.remove(key);
                 }
             }
-            all_functions.extend(ref_data.referenced_external_functions.iter().copied());
         }
-
-        Self { multi_file_externals, single_file_externals, all_functions }
+        for name in &refs.globals {
+            bump(&mut self.global_files, name, add);
+        }
+        for key in &refs.functions {
+            bump(&mut self.function_files, key, add);
+        }
     }
 
-    /// Returns `true` if `sym` is referenced in any file other than `source_path`.
-    fn is_referenced_elsewhere(&self, sym: SymbolIndex, source_path: &Path) -> bool {
-        if self.multi_file_externals.contains(&sym) {
-            return true;
-        }
-        self.single_file_externals
-            .get(&sym)
-            .is_some_and(|p| p.as_path() != source_path)
+    fn is_meta(&self, path: &Path) -> bool {
+        self.files.get(path).is_some_and(|refs| refs.is_meta)
     }
 
-    /// Returns `true` if `func_idx` is referenced in any file — either called
-    /// directly or read as a value (e.g. passed as a callback argument).
-    fn is_function_referenced(&self, func_idx: &FunctionIndex) -> bool {
-        self.all_functions.contains(func_idx)
+    /// Whether a file other than `defining_file` reads global `name`.
+    fn global_read_elsewhere(&self, name: &str, defining_file: &Path) -> bool {
+        let files = self.global_files.get(name).copied().unwrap_or(0);
+        let own = self.files.get(defining_file).is_some_and(|refs| refs.globals.contains(name));
+        files > u32::from(own)
+    }
+
+    /// Whether `defining_file` reads its global `name` once it has defined it.
+    fn global_read_by_own_file(&self, name: &str, defining_file: &Path) -> bool {
+        self.files.get(defining_file).is_some_and(|refs| refs.own_globals.contains(name))
+    }
+
+    /// Whether any file calls the function or reads it as a value.
+    fn function_referenced(&self, key: &FunctionKey) -> bool {
+        self.function_files.contains_key(key)
+    }
+}
+
+impl FromIterator<(PathBuf, FileReferences)> for WorkspaceReferences {
+    fn from_iter<I: IntoIterator<Item = (PathBuf, FileReferences)>>(files: I) -> Self {
+        let mut refs = Self::default();
+        for (path, file) in files {
+            refs.set(path, file);
+        }
+        refs
     }
 }
 
 /// An unused workspace function detected by cross-file analysis.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnusedWorkspaceFunction {
     pub source_path: PathBuf,
     pub name: String,
     pub name_start: u32,
     pub name_end: u32,
+    /// A method (named by its display name), not a global function.
+    pub method: bool,
+}
+
+impl UnusedWorkspaceFunction {
+    /// Report it where `globals`, a later scan of its file, defines it, if it
+    /// still does: the index locates it in the text it was built from, which an
+    /// edit that only moved code leaves behind.
+    pub fn locate_in_scan(&mut self, globals: &[ExternalGlobal]) {
+        let found = globals.iter().find(|g| if self.method {
+            g.method_display_name().as_deref() == Some(self.name.as_str())
+        } else {
+            matches!(&g.kind, ExternalGlobalKind::Function | ExternalGlobalKind::Variable(FieldValueKind::Function))
+                && g.name == self.name
+        });
+        if let Some(g) = found {
+            (self.name_start, self.name_end) = name_range_or_fallback(g.name_start, g.name_end, g.def_start, g.def_end);
+        }
+    }
 }
 
 /// Common filtering logic for a candidate global function. Returns `true` if
@@ -312,11 +439,8 @@ pub struct UnusedWorkspaceFunction {
 fn is_used_or_excluded(
     name: &str,
     source_path: &Path,
-    ext_sym: SymbolIndex,
-    agg: &AggregatedRefs,
-    file_refs: &HashMap<PathBuf, FileReferenceData>,
+    refs: &WorkspaceReferences,
     is_library: &dyn Fn(&Path) -> bool,
-    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> bool {
     // Skip underscore-prefixed names (convention for intentionally unused).
     if name.starts_with('_') {
@@ -339,40 +463,24 @@ fn is_used_or_excluded(
     // Skip `@meta` declaration files: a function declared in one is a deliberate
     // type-declaration stub (the workspace analogue of the built-in WoW API
     // stubs), so "no references in workspace" is expected, not a defect.
-    if is_meta_path(source_path) {
+    if refs.is_meta(source_path) {
         return true;
     }
 
-    // O(1) check: is this symbol referenced in any file other than the defining file?
-    if agg.is_referenced_elsewhere(ext_sym, source_path) {
-        return true;
-    }
-
-    // Only the defining-file's scope0_referenced_names check still needs
-    // file_refs; all cross-file lookups are handled via agg above.
-    // `scope0_referenced_names` tracks local scope-0 symbols that appear in
-    // `referenced_symbols`. The LOCAL scope-0 symbol is created by
-    // `insert_or_version_symbol` during the assignment, so any subsequent
-    // NameRef (e.g. a recursive call) resolves to the LOCAL index and adds
-    // it to `referenced_symbols`. The definition itself does not add the
-    // local index (only the external one, from the pre-definition LHS lookup).
-    if let Some(ref_data) = file_refs.get(source_path)
-        && ref_data.scope0_referenced_names.contains(name)
-    {
-        return true;
-    }
-
-    false
+    // Referenced in any file other than the defining one, or by the defining
+    // file after the definition: a NameRef following the assignment (e.g. a
+    // recursive call) resolves to the file's own scope-0 symbol
+    // (`insert_or_version_symbol`), while the definition itself only reads the
+    // workspace one, from the pre-definition LHS lookup.
+    refs.global_read_elsewhere(name, source_path) || refs.global_read_by_own_file(name, source_path)
 }
 
 /// Shared Pass 2 logic: check method functions for usage across the workspace.
 /// Returns unused method functions as `UnusedWorkspaceFunction` entries.
 fn find_unused_methods(
     pre_globals: &PreResolvedGlobals,
-    agg: &AggregatedRefs,
-    file_refs: &HashMap<PathBuf, FileReferenceData>,
+    refs: &WorkspaceReferences,
     is_library: &dyn Fn(&Path) -> bool,
-    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
 
@@ -415,22 +523,14 @@ fn find_unused_methods(
         // Skip `@meta` declaration files (see `is_used_or_excluded`): a method
         // declared in a type-declaration stub is expected to have no workspace
         // references.
-        if is_meta_path(&loc.path) {
+        if refs.is_meta(&loc.path) {
             continue;
         }
 
-        // O(1) check: is this function referenced by any file?
-        // Covers both direct calls (call_resolutions) and function-as-value
-        // reads (FieldAccess nodes in resolved_expr_cache).
-        if agg.is_function_referenced(func_idx) {
-            continue;
-        }
-
-        // Referenced from its own file (where it resolves to the file-local copy).
-        if file_refs
-            .get(&loc.path)
-            .is_some_and(|r| r.referenced_local_function_defs.contains(&loc.start))
-        {
+        // Referenced by any file, its own included: called directly
+        // (call_resolutions) or read as a value (FieldAccess nodes in
+        // resolved_expr_cache).
+        if refs.function_referenced(&FunctionKey(display_name.clone())) {
             continue;
         }
 
@@ -451,6 +551,7 @@ fn find_unused_methods(
             name: display_name.clone(),
             name_start: ns,
             name_end: ne,
+            method: true,
         });
     }
 
@@ -482,17 +583,15 @@ fn name_range_or_fallback(name_start: u32, name_end: u32, start: u32, end: u32) 
 /// Find workspace-global functions that are never referenced from any file.
 ///
 /// `ws_globals` is the flat list of workspace-scanned globals. `pre_globals`
-/// provides the external `SymbolIndex` mapping. `file_refs` maps each file's
-/// path to its reference data. `is_library` tests whether a path is a library.
+/// provides the external `SymbolIndex` mapping. `refs` holds every file's
+/// references. `is_library` tests whether a path is a library.
 pub fn find_unused_workspace_functions(
     ws_globals: &[ExternalGlobal],
     pre_globals: &PreResolvedGlobals,
-    file_refs: &HashMap<PathBuf, FileReferenceData>,
+    refs: &WorkspaceReferences,
     is_library: &dyn Fn(&Path) -> bool,
-    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
-    let agg = AggregatedRefs::build(file_refs);
 
     // Pass 1: top-level global functions.
     for g in ws_globals {
@@ -515,7 +614,7 @@ pub fn find_unused_workspace_functions(
             continue;
         }
 
-        if is_used_or_excluded(&g.name, source_path, ext_sym, &agg, file_refs, is_library, is_meta_path) {
+        if is_used_or_excluded(&g.name, source_path, refs, is_library) {
             continue;
         }
 
@@ -524,11 +623,12 @@ pub fn find_unused_workspace_functions(
             name: g.name.clone(),
             name_start: g.name_start,
             name_end: g.name_end,
+            method: false,
         });
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, &agg, file_refs, is_library, is_meta_path));
+    unused.extend(find_unused_methods(pre_globals, refs, is_library));
 
     unused
 }
@@ -540,12 +640,10 @@ pub fn find_unused_workspace_functions(
 /// and from `pre_globals.function_names` + `function_locations` for methods.
 pub fn find_unused_from_pre_globals(
     pre_globals: &PreResolvedGlobals,
-    file_refs: &HashMap<PathBuf, FileReferenceData>,
+    refs: &WorkspaceReferences,
     is_library: &dyn Fn(&Path) -> bool,
-    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
-    let agg = AggregatedRefs::build(file_refs);
 
     // Pass 1: top-level global functions (scope-0 symbols).
     for (id, &ext_sym) in &pre_globals.scope0_symbols {
@@ -576,7 +674,7 @@ pub fn find_unused_from_pre_globals(
             None => continue,
         };
 
-        if is_used_or_excluded(name, &loc.path, ext_sym, &agg, file_refs, is_library, is_meta_path) {
+        if is_used_or_excluded(name, &loc.path, refs, is_library) {
             continue;
         }
 
@@ -586,11 +684,12 @@ pub fn find_unused_from_pre_globals(
             name: name.clone(),
             name_start: ns,
             name_end: ne,
+            method: false,
         });
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, &agg, file_refs, is_library, is_meta_path));
+    unused.extend(find_unused_methods(pre_globals, refs, is_library));
 
     unused
 }

@@ -55,17 +55,20 @@ pub(super) fn is_ident_byte(b: u8) -> bool {
 /// Re-reads, re-parses and re-analyzes each `.lua` path in parallel. When
 /// `affected` is `Some` and `prior` is present, a file whose text mentions none
 /// of the affected declaration names reuses its prior diagnostics verbatim
-/// (incremental warm); otherwise it is fully re-analyzed.
+/// (incremental warm); otherwise it is fully re-analyzed. Returns each file's
+/// per-file diagnostics and, unless cancelled, the cross-file references of the
+/// files it analyzed, from which the main loop runs the cross-file
+/// `unused-function` check (`crossfile.rs`).
 pub(super) fn compute_ws_diagnostics(
-    paths: &[PathBuf],
+    files: &WarmFiles,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
     plugin_codes: &[String],
     affected: Option<&HashSet<String>>,
     prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
     should_cancel: &(dyn Fn() -> bool + Sync),
-) -> (Vec<(String, Vec<lsp_types::Diagnostic>)>, Option<CrossfileDiagnostics>) {
-    use crate::diagnostics::unused_function::{self, FileReferenceData};
+) -> (Vec<(String, Vec<lsp_types::Diagnostic>)>, Option<WarmReferences>) {
+    use crate::diagnostics::unused_function::{self, FileReferences, OwnFunctionKeys};
     use rayon::prelude::*;
     let prior_map: Option<HashMap<&str, &Vec<lsp_types::Diagnostic>>> = match (affected, prior) {
         (Some(_), Some(entries)) => {
@@ -73,18 +76,12 @@ pub(super) fn compute_ws_diagnostics(
         }
         _ => None,
     };
-    let is_incremental = affected.is_some();
+    let no_functions = OwnFunctionKeys::default();
 
-    // Phase 1: per-file analysis (parallel). Collect diagnostics + reference data.
-    // Also cache file text (path → text) for files that have cross-file diagnostics,
-    // so Phase 2 can reuse it without re-reading from disk.
-    // The final `bool` in the inner tuple is `is_meta` (file has a `---@meta`
-    // marker). Present only for freshly-analyzed files; the incremental-reuse
-    // path returns `None` for the whole option. Phase 2 (cross-file) runs only
-    // on full rebuilds where every file is freshly analyzed, so it always has
-    // this flag available for the files it inspects.
-    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Option<(PathBuf, FileReferenceData, String, bool)>);
-    let per_file: Vec<PerFileEntry> = paths
+    // Per-file analysis (parallel): diagnostics, and the references of a file
+    // analyzed (an incremental warm reuses the others' diagnostics).
+    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Option<(PathBuf, FileReferences)>);
+    let per_file: Vec<PerFileEntry> = files.paths
         .par_iter()
         .filter_map(|path| {
             // Abort early if a newer rebuild has superseded this warm: the result
@@ -98,7 +95,14 @@ pub(super) fn compute_ws_diagnostics(
             if should_cancel() {
                 return None;
             }
-            let text = crate::syntax::read_source_file(path).ok()?;
+            // The text the file's latest scan read, so the offsets the analysis
+            // records match the scan's: references to a file's own functions are
+            // named by definition offset, and an open file edited since its last
+            // save would miss them on disk.
+            let text = match files.buffers.get(path) {
+                Some(buffer) => buffer.to_string(),
+                None => crate::syntax::read_source_file(path).ok()?,
+            };
             if crate::has_shebang(&text) {
                 return None;
             }
@@ -118,139 +122,29 @@ pub(super) fn compute_ws_diagnostics(
             let tree = parse_lua(&text);
             let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
             result.plugin_diag_codes = plugin_codes.to_vec();
-            let ref_data = unused_function::collect_file_reference_data(&result);
+            let own = files.own_functions.get(path).unwrap_or(&no_functions);
+            let references = unused_function::collect_file_references(&result, own);
             let root = crate::syntax::SyntaxNode::new_root(&tree);
             let suppressions = scan_diagnostic_directives(root);
             let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
-            Some((uri_s, diag_items, Some((path.clone(), ref_data, text, result.is_meta()))))
+            Some((uri_s, diag_items, Some((path.clone(), references))))
         })
         .collect();
 
-    // Phase 2: cross-file unused function check.
-    // Only runs on FULL rebuilds — during incremental rebuilds, skipped files
-    // have no ref_data, so the reference set is incomplete and would produce
-    // false positive "unused" diagnostics. Skipped entirely if the warm was
-    // superseded mid-flight (Phase 1 returned partial data).
-    //
-    // `crossfile_computed` records whether this phase actually ran. When it
-    // didn't (incremental or cancelled), the function returns `None` for the
-    // cross-file map so the caller PRESERVES its existing cache rather than
-    // clobbering it with an empty map — otherwise the first incremental warm
-    // after a full warm would erase every `unused-function` diagnostic until
-    // the next full warm.
-    let crossfile_computed = !is_incremental && !should_cancel();
-    let cross_file_diags: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = if crossfile_computed {
-        let file_refs: HashMap<PathBuf, FileReferenceData> = per_file
-            .iter()
-            .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
-            .map(|(p, r, _, _)| (p.clone(), r.clone()))
-            .collect();
-        // Paths of `@meta` declaration files — their functions are declaration
-        // stubs, so the cross-file unused check must exclude them (mirrors the
-        // `is_library` exclusion). Built here because meta-ness is a per-file
-        // analysis property, not a path pattern.
-        let meta_paths: HashSet<PathBuf> = per_file
-            .iter()
-            .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
-            .filter(|(_, _, _, is_meta)| *is_meta)
-            .map(|(p, _, _, _)| p.clone())
-            .collect();
-        if !file_refs.is_empty() {
-            let unused = unused_function::find_unused_from_pre_globals(
-                pre_globals, &file_refs,
-                &|p| configs.is_library(p),
-                &|p| meta_paths.contains(p),
-            );
-            let raw_diags = unused_function::emit_unused_workspace_diagnostics(&unused);
-            // Build a text cache from Phase 1 to avoid re-reading files.
-            let text_cache: HashMap<&Path, &str> = per_file
-                .iter()
-                .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
-                .map(|(p, _, text, _)| (p.as_path(), text.as_str()))
-                .collect();
-            // Convert WowDiagnostic to LSP Diagnostic for each file.
-            let utf8 = use_utf8();
-            let mut result = HashMap::default();
-            for (fpath, wow_diags) in raw_diags {
-                let file_disabled = configs.disabled_diagnostics_for(&fpath);
-                if file_disabled.contains("unused-function") { continue; }
-                let text = match text_cache.get(fpath.as_path()) {
-                    Some(t) => *t,
-                    None => continue,
-                };
-                let tree = parse_lua(text);
-                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let suppressions = scan_diagnostic_directives(root);
-                let file_severity = configs.severity_overrides_for(&fpath);
-                let numbers = crate::lsp::SafeLinePositions::new(text);
-                let mut lsp_diags = Vec::new();
-                for d in &wow_diags {
-                    let effective_severity = file_severity.get(d.code).copied().unwrap_or(d.severity);
-                    let start_line = numbers.line_col(d.start).0 .0;
-                    if crate::lsp::diagnostics::is_suppressed(d.code, start_line, &suppressions) { continue; }
-                    lsp_diags.push(lsp_types::Diagnostic {
-                        range: numbers.lsp_range(d.start, d.end, utf8),
-                        severity: Some(effective_severity),
-                        code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-                        code_description: None,
-                        source: Some(String::from("wowlua_ls")),
-                        message: d.message.clone(),
-                        tags: Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]),
-                        related_information: None,
-                        data: None,
-                    });
-                }
-                if !lsp_diags.is_empty() {
-                    result.insert(fpath, lsp_diags);
-                }
-            }
-            result
-        } else {
-            HashMap::default()
+    // A cancelled warm skipped files, so it can't vouch for the workspace. An
+    // incremental one with no prior diagnostics to reuse analyzed every file.
+    let mut references = (!should_cancel()).then(|| WarmReferences {
+        full: affected.is_none() || prior_map.is_none(),
+        files: Vec::new(),
+    });
+    let mut output = Vec::with_capacity(per_file.len());
+    for (uri, diags, file_refs) in per_file {
+        if let (Some(references), Some(file_refs)) = (references.as_mut(), file_refs) {
+            references.files.push(file_refs);
         }
-    } else {
-        HashMap::default()
-    };
-
-    // Merge per-file diagnostics with cross-file diagnostics using O(1) lookups.
-    let mut output: Vec<(String, Vec<lsp_types::Diagnostic>)> = per_file
-        .into_iter()
-        .map(|(uri, diags, _)| (uri, diags))
-        .collect();
-    if !cross_file_diags.is_empty() {
-        let uri_index: HashMap<String, usize> = output.iter().enumerate()
-            .map(|(i, (uri, _))| (uri.clone(), i))
-            .collect();
-        for (fpath, extra_diags) in &cross_file_diags {
-            let uri_s = match abs_path_to_uri(fpath) {
-                Some(u) => u.to_string(),
-                None => continue,
-            };
-            if let Some(&idx) = uri_index.get(&uri_s) {
-                output[idx].1.extend(extra_diags.clone());
-            } else {
-                output.push((uri_s, extra_diags.clone()));
-            }
-        }
+        output.push((uri, diags));
     }
-
-    // Build per-URI cross-file cache only when the phase actually ran (full,
-    // non-cancelled warm). Incremental/cancelled warms skip this entirely and
-    // return `None` so the caller preserves its existing cache.
-    let crossfile_result = if crossfile_computed {
-        let mut by_uri = HashMap::default();
-        for (fpath, extra_diags) in cross_file_diags {
-            let uri_s = match abs_path_to_uri(&fpath) {
-                Some(u) => u.to_string(),
-                None => continue,
-            };
-            by_uri.insert(uri_s, extra_diags);
-        }
-        Some(by_uri)
-    } else {
-        None
-    };
-    (output, crossfile_result)
+    (output, references)
 }
 
 /// Run a warm on a detached background thread. Sends the `WarmResult` over
@@ -307,7 +201,7 @@ pub(super) fn spawn_warm(
                 let _ = warm_tx.send(WarmResult {
                     generation: target_gen,
                     diagnostics: Vec::new(),
-                    crossfile_diagnostics: None,
+                    references: None,
                 });
                 return;
             }
@@ -315,7 +209,7 @@ pub(super) fn spawn_warm(
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let compute = || compute_ws_diagnostics(
-                &inputs.paths,
+                &inputs.files,
                 &inputs.pre_globals,
                 &inputs.configs,
                 &inputs.plugin_codes,
@@ -349,15 +243,13 @@ pub(super) fn spawn_warm(
             out
         }));
         match result {
-            Ok((diagnostics, crossfile_diagnostics)) => {
-                // Forwards None/Some from compute — see WarmResult doc.
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics, crossfile_diagnostics });
+            Ok((diagnostics, references)) => {
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics, references });
             }
             Err(_) => {
-                // Preserve the existing cross-file cache on panic (`None`) rather
-                // than wiping it with an empty map.
+                // No references (`None`): the main loop keeps the ones it has.
                 log::error!("Background warm panicked; sending empty result to unblock main loop");
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new(), crossfile_diagnostics: None });
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new(), references: None });
             }
         }
         // _guard drops here, sending the wake signal

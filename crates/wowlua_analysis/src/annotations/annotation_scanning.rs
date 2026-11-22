@@ -635,6 +635,30 @@ impl ExternalGlobal {
             inferred_guard: None,
         }
     }
+
+    /// The name `unused-function` reports a method by (`NS:Method`, `NS.Sub.f`, an
+    /// addon namespace's `Sub.Method`), which also identifies it to the cross-file
+    /// references (`FunctionKey`). `None` for anything but a method, and for a
+    /// constructor's function entries: values frameworks often call (option and
+    /// callback tables), which the check leaves out.
+    pub fn method_display_name(&self) -> Option<String> {
+        let ExternalGlobalKind::Method(path, method_name, is_colon) = &self.kind else { return None };
+        if self.ctor_method {
+            return None;
+        }
+        Some(if self.name == ADDON_NS_NAME {
+            let mut parts = path.clone();
+            parts.push(method_name.clone());
+            parts.join(".")
+        } else {
+            let sep = if *is_colon { ":" } else { "." };
+            if path.is_empty() {
+                format!("{}{sep}{method_name}", self.name)
+            } else {
+                format!("{}.{}{sep}{method_name}", self.name, path.join("."))
+            }
+        })
+    }
 }
 
 /// Check if an expression is `select(N, ...)` and return N.

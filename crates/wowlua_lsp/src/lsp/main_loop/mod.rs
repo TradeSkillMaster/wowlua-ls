@@ -54,6 +54,7 @@ pub(super) use crate::lsp::uri::{abs_path_to_uri, uri_file_name, uri_to_abs_path
 
 mod code_actions;
 mod conversions;
+mod crossfile;
 mod diagnostics_handlers;
 mod handlers;
 mod hierarchy;
@@ -68,6 +69,7 @@ mod stub_loading;
 mod watchdog;
 
 use conversions::*;
+use crossfile::*;
 use diagnostics_handlers::*;
 use handlers::*;
 use hierarchy::*;
@@ -167,6 +169,67 @@ type CachedWsDiagnostics = (u64, Vec<(String, Vec<lsp_types::Diagnostic>)>);
 /// Cross-file-only diagnostics keyed by URI string.
 type CrossfileDiagnostics = HashMap<String, Vec<lsp_types::Diagnostic>>;
 
+/// The cross-file `unused-function` check (`crossfile.rs`). Each file's references
+/// are kept, by names an index rebuild doesn't change, until the file is analyzed
+/// again — by a warm, or, for an open document, by its own re-analysis — so the
+/// check reruns whenever any file's change, rather than only after a full warm.
+#[derive(Default)]
+struct CrossfileState {
+    /// Every workspace file's references.
+    references: crate::diagnostics::unused_function::WorkspaceReferences,
+    /// A full warm recorded every file's references. Until one has, a function
+    /// referenced only by files not recorded yet would be reported.
+    complete: bool,
+    /// The scanned buffer and generation each open document's references were
+    /// collected from. They follow the document's buffer, which can have changed
+    /// since a warm read it.
+    open_stamps: HashMap<PathBuf, (Arc<str>, u64)>,
+    /// The references or the index changed since the check last ran.
+    stale: bool,
+    /// Each file's unused functions `cached_crossfile_diagnostics` shows.
+    shown: HashMap<PathBuf, FileUnused>,
+    /// Results are being converted into diagnostics on a background thread.
+    in_flight: bool,
+    /// Convert every file's results next time, not only the changed ones: a full
+    /// warm follows a configuration change (a disabled code, a severity).
+    reconvert_all: bool,
+}
+
+/// A file's unused functions, located in the text its latest scan read: the
+/// editor buffer it was scanned from, else (`None`) the file on disk.
+#[derive(Clone, Debug, Default)]
+struct FileUnused {
+    functions: Vec<crate::diagnostics::unused_function::UnusedWorkspaceFunction>,
+    buffer: Option<Arc<str>>,
+}
+
+impl PartialEq for FileUnused {
+    fn eq(&self, other: &Self) -> bool {
+        self.functions == other.functions
+            && match (&self.buffer, &other.buffer) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
+    }
+}
+
+/// The files a warm analyzes, as their latest scans read them: an open file from
+/// the editor buffer it was last scanned from, any other from disk. Those scans
+/// locate each file's own functions in that text (`own_functions`), which the
+/// cross-file references of the file name by definition offset.
+struct WarmFiles {
+    paths: Vec<PathBuf>,
+    buffers: HashMap<PathBuf, Arc<str>>,
+    own_functions: HashMap<PathBuf, crate::diagnostics::unused_function::OwnFunctionKeys>,
+}
+
+/// The cross-file references a warm collected, from each file it analyzed.
+struct WarmReferences {
+    /// It analyzed every workspace file: one it lacks has left the workspace.
+    full: bool,
+    files: Vec<(PathBuf, crate::diagnostics::unused_function::FileReferences)>,
+}
+
 struct WorkspaceState {
     /// Primary workspace root (first of `roots`), used for URI↔path resolution
     /// and single-root config lookups. `None` only when the client sent no root.
@@ -205,6 +268,10 @@ struct WorkspaceState {
     ws_file_self_fields: HashMap<PathBuf, Vec<crate::annotations::TypedSelfField>>,
     /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
     ws_file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
+    /// The editor buffer an open document's `ws_file_*` entries were scanned from:
+    /// the text their positions are offsets into. A file absent here was scanned
+    /// from disk.
+    ws_file_scanned_buffers: HashMap<PathBuf, Arc<str>>,
     pre_globals: Arc<PreResolvedGlobals>,
     /// Open documents' current text (unsaved edits included), keyed by path.
     /// Outlives each rebuilt `pre_globals`, which shares it so cross-file
@@ -245,10 +312,13 @@ struct WorkspaceState {
     /// Populated lazily on first `workspace/diagnostic` request and invalidated
     /// when `ws_generation` changes (i.e. workspace is rebuilt).
     cached_ws_diagnostics: Option<CachedWsDiagnostics>,
-    /// Cross-file-only diagnostics from the workspace warm, keyed by URI string.
-    /// Separate from `cached_ws_diagnostics` so open-file handlers can merge
-    /// without duplicating per-file diagnostics that share the same code string.
+    /// Cross-file-only diagnostics (`unused-function`), keyed by URI string.
+    /// Separate from `cached_ws_diagnostics`, which holds per-file ones only, so
+    /// both kinds of file append them without duplicating per-file diagnostics
+    /// that share the same code string.
     cached_crossfile_diagnostics: CrossfileDiagnostics,
+    /// What the cross-file `unused-function` check knows (see [`CrossfileState`]).
+    crossfile: CrossfileState,
     /// True while a background warm (`spawn_warm`) is computing closed-file
     /// diagnostics. When set, `handle_workspace_diagnostic` serves the prior
     /// (stale) cache instead of synchronously recomputing — the in-flight warm
@@ -362,7 +432,7 @@ pub(super) const XFILE_REF_CACHE_MAX_ENTRIES: usize = 4096;
 /// if the workspace has since advanced.
 struct WarmInputs {
     generation: u64,
-    paths: Vec<PathBuf>,
+    files: WarmFiles,
     pre_globals: Arc<PreResolvedGlobals>,
     configs: Arc<crate::config::ProjectConfigs>,
     plugin_codes: Vec<String>,
@@ -382,15 +452,9 @@ struct WarmInputs {
 struct WarmResult {
     generation: u64,
     diagnostics: Vec<(String, Vec<lsp_types::Diagnostic>)>,
-    /// Cross-file-only diagnostics (e.g. unused-function from
-    /// `find_unused_from_pre_globals`), keyed by URI string. Stored separately
-    /// so open-file handlers can merge them without duplicating per-file items.
-    ///
-    /// `None` means this warm did NOT recompute the cross-file pass (incremental,
-    /// cancelled, or panicked) — the main loop preserves its existing cache.
-    /// `Some(map)` means a full warm computed the complete set and the cache
-    /// should be replaced (an empty map then correctly clears all such diagnostics).
-    crossfile_diagnostics: Option<CrossfileDiagnostics>,
+    /// The cross-file references of the files it analyzed; `None` when it was
+    /// cancelled or panicked.
+    references: Option<WarmReferences>,
 }
 
 /// Output of a background stub-file parse + analysis, used to patch a
@@ -862,6 +926,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_string_consts: scan_result.file_string_consts,
         ws_file_self_fields: scan_result.file_self_fields,
         ws_file_self_field_globals: scan_result.file_self_field_globals,
+        // Nothing is open yet: every file was scanned from disk.
+        ws_file_scanned_buffers: HashMap::default(),
         ws_file_dynamic_prefixes: scan_result.file_dynamic_prefixes,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
         document_overrides: Arc::default(),
@@ -879,6 +945,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_generation: 0,
         cached_ws_diagnostics: None,
         cached_crossfile_diagnostics: HashMap::default(),
+        crossfile: CrossfileState::default(),
         warm_in_flight: false,
         pending_lazy_warm: false,
         live_generation: Arc::new(AtomicU64::new(0)),
@@ -1061,6 +1128,9 @@ fn main_loop(
     // Display refreshes (see `WorkspaceState::display_refresh_wanted`): the
     // cross-file index rebuilt on a background thread, installed by the drain below.
     let (display_tx, display_rx) = crossbeam_channel::unbounded::<DisplayRefreshResult>();
+    // The cross-file `unused-function` results converted into diagnostics on a
+    // background thread (`crossfile.rs`), installed by the drain below.
+    let (crossfile_tx, crossfile_rx) = crossbeam_channel::unbounded::<CrossfileConversion>();
     // A second rebuild during a warm stores its scope here instead of spawning a
     // concurrent worker; the pending warm is launched when the in-flight one
     // returns (results coalesce). Successive scopes are merged, so two
@@ -1106,7 +1176,7 @@ fn main_loop(
     if client.diagnostic_refresh && !ws.ws_file_globals.is_empty() {
         let mut inputs = ws.warm_inputs(None);
         inputs.is_initial = true;
-        let file_count = inputs.paths.len();
+        let file_count = inputs.files.paths.len();
         ws.warm_in_flight = true;
         spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
         begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
@@ -1127,12 +1197,10 @@ fn main_loop(
                 // and the broadcast would block this single-threaded loop mid-burst.
                 memory::release_memory(None);
                 ws.cached_ws_diagnostics = Some((res.generation, res.diagnostics));
-                // Only a full warm recomputes the cross-file pass; an incremental
-                // warm returns `None` and we keep the prior cache so cross-file
-                // `unused-function` diagnostics survive edits (they'd otherwise be
-                // wiped on the first incremental warm after a full one).
-                if let Some(crossfile) = res.crossfile_diagnostics {
-                    ws.cached_crossfile_diagnostics = crossfile;
+                // The files it analyzed (every one, for a full warm) replace their
+                // references; the cross-file check reruns once the loop is idle.
+                if let Some(references) = res.references {
+                    install_warm_references(&mut ws, references);
                 }
                 if client.diagnostic_refresh {
                     queue_refresh(&mut owed_refresh, false, false, false, true);
@@ -1160,7 +1228,7 @@ fn main_loop(
                         _ => None,
                     };
                     let inputs = ws.warm_inputs(affected);
-                    let file_count = inputs.paths.len();
+                    let file_count = inputs.files.paths.len();
                     ws.warm_in_flight = true;
                     spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
                     // A coalesced warm took over; keep the existing progress span.
@@ -1188,6 +1256,13 @@ fn main_loop(
             spawn_display_refresh(&mut ws, display_tx.clone(), wake_tx.clone());
         }
 
+        // Show the cross-file `unused-function` diagnostics a conversion produced.
+        while let Ok(conversion) = crossfile_rx.try_recv() {
+            if install_crossfile_conversion(&mut ws, conversion) && client.diagnostic_refresh {
+                queue_refresh(&mut owed_refresh, false, false, false, true);
+            }
+        }
+
         // Spawn a background warm if handle_workspace_diagnostic deferred one.
         // This replaces the old synchronous warm_ws_diagnostic_cache() call that
         // blocked the main loop for 10+ seconds on large workspaces.
@@ -1195,7 +1270,7 @@ fn main_loop(
             ws.pending_lazy_warm = false;
             log::debug!("Spawning deferred background warm (full)");
             let inputs = ws.warm_inputs(None);
-            let file_count = inputs.paths.len();
+            let file_count = inputs.files.paths.len();
             ws.warm_in_flight = true;
             spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
             begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
@@ -1253,6 +1328,13 @@ fn main_loop(
             );
         }
         let has_dirty = documents.values().any(|d| d.dirty);
+
+        // Once no document awaits analysis, record the open documents' references
+        // and rerun the cross-file `unused-function` check if anything changed.
+        if !has_dirty {
+            refresh_open_references(&documents, &mut ws);
+            update_crossfile(&mut ws, &crossfile_tx, &wake_tx);
+        }
 
         // Flush coalesced refresh requests once the workspace is idle — no dirty
         // docs remain to re-analyze, so the (re)analysis storm that queued them
@@ -1684,7 +1766,7 @@ fn main_loop(
                         }
                     );
                     let inputs = ws.warm_inputs(affected);
-                    let file_count = inputs.paths.len();
+                    let file_count = inputs.files.paths.len();
                     ws.warm_in_flight = true;
                     spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
                     begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
@@ -3737,13 +3819,13 @@ mod tests {
         );
     }
 
-    fn setup_unused_function_fixture() -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
+    fn setup_unused_function_fixture() -> (WarmFiles, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
         build_ws_fixture(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function"))
     }
 
-    /// Scan a fixture directory and build the `(paths, pre_globals, configs)`
+    /// Scan a fixture directory and build the `(files, pre_globals, configs)`
     /// triple `compute_ws_diagnostics` needs. Shared by the unused-function tests.
-    fn build_ws_fixture(scan_dir: PathBuf) -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
+    fn build_ws_fixture(scan_dir: PathBuf) -> (WarmFiles, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
         let mut configs = crate::config::ProjectConfigs::default();
         configs.try_load(&scan_dir);
         let scan = crate::lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut configs);
@@ -3756,8 +3838,12 @@ mod tests {
         let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
         pg.merge_events(&se);
         let configs = Arc::new(configs);
-        let paths = collect_lua_paths(&scan_dir, &mut crate::config::ProjectConfigs::default());
-        (paths, Arc::new(pg), configs)
+        let files = WarmFiles {
+            paths: collect_lua_paths(&scan_dir, &mut crate::config::ProjectConfigs::default()),
+            buffers: HashMap::default(),
+            own_functions: crate::diagnostics::unused_function::scanned_function_keys_by_file(&sg),
+        };
+        (files, Arc::new(pg), configs)
     }
 
     #[test]
@@ -3768,11 +3854,8 @@ mod tests {
         // file in the same workspace must still be flagged, so the exclusion is
         // proven specific to meta files (and the meta assertion is non-vacuous).
         let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function-meta");
-        let (paths, pre_globals, configs) = build_ws_fixture(scan_dir.clone());
-        let (_, crossfile) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], None, None, &|| false,
-        );
-        let crossfile = crossfile.expect("full warm must compute the cross-file map");
+        let (files, pre_globals, configs) = build_ws_fixture(scan_dir.clone());
+        let crossfile = full_warm_crossfile(&files, &pre_globals, &configs);
 
         let meta_uri = abs_path_to_uri(&scan_dir.join("types.lua")).unwrap().to_string();
         let consumer_uri = abs_path_to_uri(&scan_dir.join("consumer.lua")).unwrap().to_string();
@@ -3792,6 +3875,445 @@ mod tests {
             crossfile.get(&consumer_uri).is_some_and(|d| !d.is_empty()),
             "non-meta unused function must still be flagged (the cross-file pass must run)",
         );
+    }
+
+    /// Run the cross-file check on `ws`'s references and show its results, as
+    /// the main loop does once idle, converting them here instead of on a
+    /// background thread.
+    fn run_crossfile(ws: &mut WorkspaceState) {
+        if let Some(changes) = crossfile_changes(ws) {
+            let configs = Arc::clone(&ws.configs);
+            let conversion = convert_crossfile(changes, &configs);
+            install_crossfile_conversion(ws, conversion);
+        }
+    }
+
+    /// Run a warm of `files` against `ws`'s index — incremental over `affected`
+    /// when given — and record the references it collected, as the main loop
+    /// does with a warm's result.
+    fn warm_references(ws: &mut WorkspaceState, files: &WarmFiles, affected: Option<&HashSet<String>>) {
+        let prior = ws.cached_ws_diagnostics.as_ref().map(|(_, entries)| entries.clone());
+        let (diagnostics, references) = compute_ws_diagnostics(
+            files, &ws.pre_globals, &ws.configs, &[], affected, prior.as_deref(), &|| false,
+        );
+        ws.cached_ws_diagnostics = Some((ws.ws_generation, diagnostics));
+        install_warm_references(ws, references.expect("an uncancelled warm collects references"));
+    }
+
+    /// [`warm_references`] over every workspace file.
+    fn warm_workspace(ws: &mut WorkspaceState, affected: Option<&HashSet<String>>) {
+        let files = ws.warm_files();
+        warm_references(ws, &files, affected);
+    }
+
+    /// The cross-file diagnostics, by URI, a full warm of `files` shows.
+    fn full_warm_crossfile(
+        files: &WarmFiles,
+        pre_globals: &Arc<PreResolvedGlobals>,
+        configs: &Arc<crate::config::ProjectConfigs>,
+    ) -> CrossfileDiagnostics {
+        let mut ws = WorkspaceState::for_test(None);
+        ws.pre_globals = Arc::clone(pre_globals);
+        ws.configs = Arc::clone(configs);
+        warm_references(&mut ws, files, None);
+        run_crossfile(&mut ws);
+        ws.cached_crossfile_diagnostics
+    }
+
+    /// A namespace method referenced only from its own file (`Locate`) and one
+    /// nothing references (`Save`). The cross-file pass matches same-file
+    /// references to a method by its definition offset.
+    const SAME_FILE_REFS: &str = "\
+local _, Addon = ...
+
+function Addon:Save()
+    return self:Locate()
+end
+
+function Addon:Locate()
+    return 1
+end
+";
+
+    /// [`SAME_FILE_REFS`] with an unsaved line above both methods that rebuilds
+    /// the index, moving them one line down.
+    fn same_file_refs_edited() -> String {
+        SAME_FILE_REFS.replacen("...\n", "...\nAddon.version = 1\n", 1)
+    }
+
+    /// A workspace holding [`SAME_FILE_REFS`] on disk with `unused-function` on,
+    /// scanned from disk. Returns its directory and the file's path.
+    fn same_file_refs_workspace(name: &str) -> (PathBuf, PathBuf, WorkspaceState) {
+        let (dir, ws) = unused_function_workspace(name, &[("Store.lua", SAME_FILE_REFS)]);
+        let path = dir.join("Store.lua");
+        (dir, path, ws)
+    }
+
+    /// A temporary workspace of `files` (name, text) with `unused-function` on,
+    /// scanned from disk. Returns its directory.
+    fn unused_function_workspace(name: &str, files: &[(&str, &str)]) -> (PathBuf, WorkspaceState) {
+        let dir = std::env::temp_dir().join(format!("wowlua_ls_test_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{ "diagnostics": { "enable": ["unused-function"] } }"#).unwrap();
+        for (file, text) in files {
+            std::fs::write(dir.join(file), text).unwrap();
+        }
+        let mut ws = WorkspaceState::for_test(Some(dir.clone()));
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
+        (dir, ws)
+    }
+
+    /// Scan `path` from `text` as the editor's buffer (`didOpen`/`didChange`) or,
+    /// with `None`, from disk once closed, rebuilding the index if that changed it.
+    fn scan_as(ws: &mut WorkspaceState, path: &Path, text: Option<&str>) -> RebuildScope {
+        let saved;
+        let text = match text {
+            Some(text) => {
+                ws.document_overrides.write().unwrap().insert(path.to_path_buf(), text.to_string());
+                text
+            }
+            None => {
+                ws.document_overrides.write().unwrap().remove(path);
+                saved = std::fs::read_to_string(path).unwrap();
+                &saved
+            }
+        };
+        let tree = crate::syntax::parser::parse(text);
+        maybe_rebuild_workspace(&abs_path_to_uri(path).unwrap(), crate::syntax::SyntaxNode::new_root(&tree), ws)
+    }
+
+    /// The cross-file `unused-function` items a full warm reports in `path`, as
+    /// (0-based line, message).
+    fn crossfile_unused(ws: &mut WorkspaceState, path: &Path) -> Vec<(u32, String)> {
+        warm_workspace(ws, None);
+        run_crossfile(ws);
+        crossfile_items(&ws.cached_crossfile_diagnostics, path)
+    }
+
+    /// `path`'s items in `crossfile`, as (0-based line, message).
+    fn crossfile_items(crossfile: &CrossfileDiagnostics, path: &Path) -> Vec<(u32, String)> {
+        let uri = abs_path_to_uri(path).unwrap().to_string();
+        crossfile.get(&uri).into_iter().flatten()
+            .map(|d| (d.range.start.line, d.message.clone()))
+            .collect()
+    }
+
+    const SAVE_UNUSED: &str = "unused function 'Save' (no references in workspace)";
+
+    /// A full warm read an open file from disk while the index held its unsaved
+    /// buffer, so a method's same-file references matched no definition: it was
+    /// reported unused under a lens counting them. The warm reads each file as its
+    /// latest scan did and names its methods by that scan's offsets — the buffer
+    /// moved without a rebuild too, where the item follows them — and reads it
+    /// from disk again once it is closed.
+    #[test]
+    fn crossfile_unused_reads_files_as_last_scanned() {
+        let (dir, path, mut ws) = same_file_refs_workspace("crossfile_unused_buffers");
+        assert_eq!(crossfile_unused(&mut ws, &path), vec![(2, SAVE_UNUSED.to_string())], "saved");
+
+        let edited = same_file_refs_edited();
+        assert!(scan_as(&mut ws, &path, Some(&edited)).is_rebuild());
+        assert_eq!(crossfile_unused(&mut ws, &path), vec![(3, SAVE_UNUSED.to_string())], "unsaved edit");
+
+        let moved = format!("-- note\n{edited}");
+        assert!(!scan_as(&mut ws, &path, Some(&moved)).is_rebuild());
+        assert_eq!(crossfile_unused(&mut ws, &path), vec![(4, SAVE_UNUSED.to_string())], "moved without a rebuild");
+
+        // Closed without saving: the disk text again.
+        assert!(scan_as(&mut ws, &path, None).is_rebuild());
+        assert_eq!(crossfile_unused(&mut ws, &path), vec![(2, SAVE_UNUSED.to_string())], "closed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A full rescan scans the open files it reads from their buffers, so a warm
+    /// reads them that way too.
+    #[test]
+    fn crossfile_unused_after_rescan_reads_open_buffers() {
+        let (dir, path, mut ws) = same_file_refs_workspace("crossfile_unused_rescan");
+        ws.document_overrides.write().unwrap().insert(path.clone(), same_file_refs_edited());
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
+        assert_eq!(crossfile_unused(&mut ws, &path), vec![(3, SAVE_UNUSED.to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A method another file calls, and the file calling it.
+    const LIB: &str = "\
+---@class Lib
+Lib = {}
+
+function Lib:Ping()
+end
+";
+    const PING_UNUSED: &str = "unused function 'Lib:Ping' (no references in workspace)";
+
+    /// Open `path` with `text` (or edit it to that) as `didOpen`/`didChange` and
+    /// Phase 4 leave it: scanned, rebuilding the index if that changed it, and
+    /// analyzed. A rebuild has Phase 4 re-analyze every open document too.
+    fn edit_document(ws: &mut WorkspaceState, documents: &mut HashMap<String, Document>, path: &Path, text: &str) -> RebuildScope {
+        let scope = scan_as(ws, path, Some(text));
+        let rebuilt = scope.is_rebuild();
+        let uri = abs_path_to_uri(path).unwrap();
+        documents.insert(uri.to_string(), Document {
+            text: text.to_string(), pending_text: None, analysis: None, tree: None,
+            toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation,
+            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
+        });
+        for (uri_str, doc) in documents.iter_mut() {
+            if rebuilt || doc.analysis.is_none() {
+                let uri = lsp_types::Uri::from_str(uri_str).unwrap();
+                let (tree, analysis) = analyze_lua(&uri, &doc.text, &ws.pre_globals, &ws.configs);
+                doc.tree = Some(tree);
+                doc.analysis = Some(analysis);
+                doc.ws_generation = ws.ws_generation;
+            }
+        }
+        scope
+    }
+
+    /// Close `path` without saving, as `didClose` does: its references are a
+    /// warm's to record again, from disk.
+    fn close_document(ws: &mut WorkspaceState, documents: &mut HashMap<String, Document>, path: &Path) {
+        documents.remove(&abs_path_to_uri(path).unwrap().to_string());
+        ws.ws_file_scanned_buffers.remove(path);
+        forget_open_references(ws, path);
+        scan_as(ws, path, None);
+    }
+
+    /// Adding the only call to a method in an open document clears its cross-file
+    /// `unused-function` once the document is re-analyzed, and removing it brings
+    /// it back: the body edit rebuilds nothing, so no warm runs to notice.
+    #[test]
+    fn crossfile_unused_follows_open_document_edits() {
+        let (dir, mut ws) = unused_function_workspace(
+            "crossfile_unused_edits", &[("Lib.lua", LIB), ("User.lua", "local x = 1\nreturn x\n")],
+        );
+        let (lib, user) = (dir.join("Lib.lua"), dir.join("User.lua"));
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        assert_eq!(crossfile_items(&ws.cached_crossfile_diagnostics, &lib), vec![(3, PING_UNUSED.to_string())]);
+
+        let mut documents = HashMap::default();
+        edit_document(&mut ws, &mut documents, &user, "Lib:Ping()\n");
+        refresh_open_references(&documents, &mut ws);
+        run_crossfile(&mut ws);
+        assert!(!ws.warm_in_flight && ws.cached_crossfile_diagnostics.is_empty(), "called: {:?}", ws.cached_crossfile_diagnostics);
+
+        edit_document(&mut ws, &mut documents, &user, "local x = 1\nreturn x\n");
+        refresh_open_references(&documents, &mut ws);
+        run_crossfile(&mut ws);
+        assert_eq!(crossfile_items(&ws.cached_crossfile_diagnostics, &lib), vec![(3, PING_UNUSED.to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A warm reads each file as it was when the warm started: a document opened
+    /// or edited since keeps its own, newer references. Once it is closed without
+    /// saving, a warm records its disk text's.
+    #[test]
+    fn crossfile_warm_keeps_open_documents_references() {
+        let (dir, mut ws) = unused_function_workspace(
+            "crossfile_unused_warm_open", &[("Lib.lua", LIB), ("User.lua", "local x = 1\nreturn x\n")],
+        );
+        let (lib, user) = (dir.join("Lib.lua"), dir.join("User.lua"));
+        warm_workspace(&mut ws, None);
+        let started = ws.warm_files();
+        let mut documents = HashMap::default();
+        edit_document(&mut ws, &mut documents, &user, "Lib:Ping()\n");
+        refresh_open_references(&documents, &mut ws);
+        warm_references(&mut ws, &started, None);
+        run_crossfile(&mut ws);
+        assert!(ws.cached_crossfile_diagnostics.is_empty(), "open: {:?}", ws.cached_crossfile_diagnostics);
+
+        close_document(&mut ws, &mut documents, &user);
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        assert_eq!(crossfile_items(&ws.cached_crossfile_diagnostics, &lib), vec![(3, PING_UNUSED.to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file closed without saving is read from disk again, even when a rebuild
+    /// while it was open (another file's edit) built the index from its buffer:
+    /// neither its per-file diagnostics nor its references are the discarded text's.
+    #[test]
+    fn crossfile_closed_file_is_read_from_disk() {
+        let (dir, mut ws) = unused_function_workspace(
+            "crossfile_unused_closed_disk", &[("Lib.lua", LIB), ("User.lua", "local x = 1\nreturn x\n")],
+        );
+        let (lib, user) = (dir.join("Lib.lua"), dir.join("User.lua"));
+        warm_workspace(&mut ws, None);
+        let mut documents = HashMap::default();
+        edit_document(&mut ws, &mut documents, &user, "Lib:Ping()\nNotDefinedAnywhere()\n");
+        let pong = LIB.replace("function Lib:Ping()", "function Lib:Pong() end\n\nfunction Lib:Ping()");
+        assert!(edit_document(&mut ws, &mut documents, &lib, &pong).is_rebuild());
+        refresh_open_references(&documents, &mut ws);
+
+        close_document(&mut ws, &mut documents, &user);
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        let user_uri = abs_path_to_uri(&user).unwrap().to_string();
+        let per_file = ws.cached_ws_diagnostics.as_ref().unwrap().1.iter()
+            .find(|(uri, _)| *uri == user_uri)
+            .map(|(_, diags)| diags.iter().map(|d| d.message.clone()).collect::<Vec<_>>());
+        assert_eq!(per_file, Some(Vec::new()), "User.lua's per-file diagnostics are its disk text's");
+        assert_eq!(
+            crossfile_items(&ws.cached_crossfile_diagnostics, &lib),
+            vec![
+                (3, "unused function 'Lib:Pong' (no references in workspace)".to_string()),
+                (5, PING_UNUSED.to_string()),
+            ],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A method moved to another file keeps the references recorded before the
+    /// move, from files no warm analyzes again: an addon namespace's methods
+    /// change only the namespace, which no file's text names, so an incremental
+    /// warm re-analyzes none of their callers.
+    #[test]
+    fn crossfile_references_follow_a_moved_method() {
+        let (dir, mut ws) = unused_function_workspace(
+            "crossfile_unused_moved", &[
+                ("A.lua", "local _, ns = ...\nfunction ns:Foo() return 1 end\n"),
+                ("B.lua", "local _, ns = ...\nreturn ns:Foo()\n"),
+                ("C.lua", "local _, ns = ...\n"),
+            ],
+        );
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        assert!(ws.cached_crossfile_diagnostics.is_empty(), "{:?}", ws.cached_crossfile_diagnostics);
+
+        let mut documents = HashMap::default();
+        for (file, text) in [("A.lua", "local _, ns = ...\n"), ("C.lua", "local _, ns = ...\nfunction ns:Foo() return 1 end\n")] {
+            let RebuildScope::Incremental(names) = edit_document(&mut ws, &mut documents, &dir.join(file), text) else {
+                panic!("moving the method should rebuild incrementally");
+            };
+            warm_workspace(&mut ws, Some(&names));
+            refresh_open_references(&documents, &mut ws);
+            run_crossfile(&mut ws);
+        }
+        assert!(ws.cached_crossfile_diagnostics.is_empty(), "{:?}", ws.cached_crossfile_diagnostics);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `unused-function` suppressed while its file was open stays suppressed
+    /// once the file is saved and closed: its diagnostics are converted again
+    /// from the text on disk, not kept from the open buffer's.
+    #[test]
+    fn crossfile_suppression_survives_closing_the_file() {
+        let (dir, mut ws) = unused_function_workspace("crossfile_unused_suppressed", &[("Lib.lua", LIB)]);
+        let lib = dir.join("Lib.lua");
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        assert_eq!(crossfile_items(&ws.cached_crossfile_diagnostics, &lib), vec![(3, PING_UNUSED.to_string())]);
+
+        let mut documents = HashMap::default();
+        edit_document(&mut ws, &mut documents, &lib, LIB);
+        refresh_open_references(&documents, &mut ws);
+        run_crossfile(&mut ws);
+        let suppressed = format!("---@diagnostic disable: unused-function\n{LIB}");
+        assert!(!edit_document(&mut ws, &mut documents, &lib, &suppressed).is_rebuild());
+        refresh_open_references(&documents, &mut ws);
+        run_crossfile(&mut ws);
+        assert!(ws.cached_crossfile_diagnostics.is_empty(), "open: {:?}", ws.cached_crossfile_diagnostics);
+
+        std::fs::write(&lib, &suppressed).unwrap();
+        close_document(&mut ws, &mut documents, &lib);
+        run_crossfile(&mut ws);
+        assert!(ws.cached_crossfile_diagnostics.is_empty(), "closed: {:?}", ws.cached_crossfile_diagnostics);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A full rescan reads an open file outside the workspace as no workspace
+    /// source: it records no scanned buffer, whose references would count.
+    #[test]
+    fn rescan_records_only_workspace_files_buffers() {
+        let (dir, mut ws) = unused_function_workspace("crossfile_unused_rescan_outside", &[("Lib.lua", LIB)]);
+        let outside = dir.with_file_name(format!("{}_outside.lua", dir.file_name().unwrap().to_string_lossy()));
+        ws.document_overrides.write().unwrap().insert(dir.join("Lib.lua"), LIB.to_string());
+        ws.document_overrides.write().unwrap().insert(outside.clone(), "Lib:Ping()\n".to_string());
+        rescan_workspace_from_disk(&mut HashMap::default(), &mut ws);
+        assert!(ws.ws_file_scanned_buffers.contains_key(&dir.join("Lib.lua")));
+        assert!(!ws.ws_file_scanned_buffers.contains_key(&outside));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An incremental warm with no prior diagnostics to reuse analyzes every
+    /// file, so it completes the record of references as a full one does: the
+    /// first warm after startup can be one, when an edit supersedes the initial.
+    #[test]
+    fn incremental_warm_without_prior_is_full() {
+        let (files, pre_globals, configs) = setup_unused_function_fixture();
+        let affected: HashSet<String> = ["NS".to_string()].into_iter().collect();
+        let (_, references) = compute_ws_diagnostics(
+            &files, &pre_globals, &configs, &[], Some(&affected), None, &|| false,
+        );
+        let references = references.expect("an uncancelled warm collects references");
+        assert!(references.full);
+        assert_eq!(references.files.len(), files.paths.len());
+    }
+
+    /// A rebuild renumbers the index's functions; references recorded before it,
+    /// by a warm that doesn't run again, still name the same functions.
+    #[test]
+    fn crossfile_references_survive_an_index_rebuild() {
+        let (dir, mut ws) = unused_function_workspace(
+            "crossfile_unused_rebuild", &[("Lib.lua", LIB), ("Caller.lua", "Lib:Ping()\n")],
+        );
+        let lib = dir.join("Lib.lua");
+        let ping_index = |ws: &WorkspaceState| ws.pre_globals.function_names.iter()
+            .find(|(_, name)| *name == "Lib:Ping")
+            .map(|(&func_idx, _)| func_idx);
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        assert!(ws.cached_crossfile_diagnostics.is_empty(), "{:?}", ws.cached_crossfile_diagnostics);
+        let before = ping_index(&ws);
+
+        // A method added above `Ping` is built before it.
+        let mut documents = HashMap::default();
+        let edited = LIB.replace("function Lib:Ping()", "function Lib:Pong() end\n\nfunction Lib:Ping()");
+        edit_document(&mut ws, &mut documents, &lib, &edited);
+        assert_ne!(ping_index(&ws), before, "the rebuild should renumber Lib:Ping");
+        refresh_open_references(&documents, &mut ws);
+        run_crossfile(&mut ws);
+        assert_eq!(
+            crossfile_items(&ws.cached_crossfile_diagnostics, &lib),
+            vec![(3, "unused function 'Lib:Pong' (no references in workspace)".to_string())],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A closed file's cross-file diagnostics are served with its per-file ones,
+    /// including after an incremental warm replaced the per-file ones (which
+    /// used to carry the cross-file ones, and so dropped them).
+    #[test]
+    fn workspace_diagnostics_include_closed_files_crossfile_items() {
+        let (dir, mut ws) = unused_function_workspace(
+            "crossfile_unused_workspace_pull", &[("Lib.lua", LIB), ("User.lua", "local x = 1\nreturn x\n")],
+        );
+        let lib_uri = abs_path_to_uri(&dir.join("Lib.lua")).unwrap();
+        let reported = |ws: &mut WorkspaceState| -> Vec<String> {
+            let WorkspaceDiagnosticReportResult::Report(report) = handle_workspace_diagnostic(&HashMap::default(), ws) else {
+                panic!("expected a full report");
+            };
+            report.items.into_iter()
+                .filter_map(|item| match item {
+                    WorkspaceDocumentDiagnosticReport::Full(full) if full.uri == lib_uri => Some(full),
+                    _ => None,
+                })
+                .flat_map(|full| full.full_document_diagnostic_report.items)
+                .filter(|d| d.code == Some(NumberOrString::String("unused-function".to_string())))
+                .map(|d| d.message)
+                .collect()
+        };
+        warm_workspace(&mut ws, None);
+        run_crossfile(&mut ws);
+        assert_eq!(reported(&mut ws), vec![PING_UNUSED.to_string()], "full warm");
+
+        let affected: HashSet<String> = ["Ping".to_string()].into_iter().collect();
+        warm_workspace(&mut ws, Some(&affected));
+        run_crossfile(&mut ws);
+        assert_eq!(reported(&mut ws), vec![PING_UNUSED.to_string()], "incremental warm re-analyzing Lib.lua");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Regression for the multi-file re-entrancy cycle in
@@ -5304,17 +5826,15 @@ end
 
     #[test]
     fn crossfile_diagnostics_separated_from_per_file() {
-        // compute_ws_diagnostics must return cross-file unused-function items
-        // in the separate CrossfileDiagnostics map, NOT mixed into the per-file
-        // list. This prevents duplication when open-file handlers merge them.
-        let (paths, pre_globals, configs) = setup_unused_function_fixture();
-        let (combined, crossfile) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], None, None, &|| false,
+        // A warm returns per-file diagnostics only; the cross-file
+        // unused-function items, checked from its references, live in the
+        // separate CrossfileDiagnostics map. This prevents duplication when
+        // file handlers merge them.
+        let (files, pre_globals, configs) = setup_unused_function_fixture();
+        let (combined, _) = compute_ws_diagnostics(
+            &files, &pre_globals, &configs, &[], None, None, &|| false,
         );
-
-        // A full warm (affected = None) computes the cross-file pass, so the
-        // result is `Some`. Incremental warms would return `None` instead.
-        let crossfile = crossfile.expect("full warm must compute the cross-file map");
+        let crossfile = full_warm_crossfile(&files, &pre_globals, &configs);
 
         // Cross-file map should have entries (unused global functions exist).
         assert!(
@@ -5335,63 +5855,48 @@ end
             }
         }
 
-        // The combined output should contain per-file diagnostics for each URI
-        // that also has cross-file items. Verify no duplication: counting
-        // unused-function occurrences in combined vs crossfile.
+        // No cross-file item is among the warm's per-file diagnostics.
         for (uri, cf_diags) in &crossfile {
-            let combined_entry = combined.iter().find(|(u, _)| u == uri);
-            if let Some((_, combined_diags)) = combined_entry {
-                let combined_uf_count = combined_diags.iter().filter(|d| {
-                    d.code.as_ref().is_some_and(|c| matches!(c,
-                        lsp_types::NumberOrString::String(s) if s == "unused-function"
-                    ))
-                }).count();
-                // Combined includes both per-file and cross-file unused-function,
-                // but cross-file items should be present exactly once.
-                assert!(
-                    combined_uf_count >= cf_diags.len(),
-                    "combined should contain at least the cross-file items for {uri}"
-                );
+            let Some((_, per_file)) = combined.iter().find(|(u, _)| u == uri) else { continue };
+            for d in cf_diags {
+                assert!(!per_file.contains(d), "per-file diagnostics of {uri} include the cross-file {d:?}");
             }
         }
     }
 
     #[test]
-    fn incremental_warm_preserves_crossfile_cache() {
-        // Regression: an incremental warm (affected = Some) must NOT recompute
-        // the cross-file pass — its reference set is incomplete (skipped files
-        // reuse prior diagnostics and contribute no ref_data, so running it
-        // would false-positive). It returns `None` so the main loop keeps the
-        // cache from the last full warm. Without this, the first edit after a
-        // full warm would wipe every cross-file `unused-function` diagnostic
-        // (the symptom: `check` reports an unused method but VSCode does not).
-        let (paths, pre_globals, configs) = setup_unused_function_fixture();
+    fn incremental_warm_records_only_the_files_it_analyzed() {
+        // An incremental warm (affected = Some) reuses unaffected files'
+        // diagnostics without analyzing them, so it has only the analyzed files'
+        // references: recording them must leave every other file's, and the
+        // check over all of them unchanged. Wiping the others' would report every
+        // function only they reference (the original symptom: the first edit
+        // after a full warm cleared every cross-file `unused-function`).
+        let (files, pre_globals, configs) = setup_unused_function_fixture();
+        let mut ws = WorkspaceState::for_test(None);
+        ws.pre_globals = pre_globals;
+        ws.configs = configs;
+        warm_references(&mut ws, &files, None);
+        run_crossfile(&mut ws);
+        let full = ws.cached_crossfile_diagnostics.clone();
+        assert!(!full.is_empty(), "full warm must lead to cross-file diagnostics");
 
-        // Full warm: computes a non-empty cross-file map. Its per-file output
-        // becomes the `prior` for the incremental warm below so that the
-        // incremental reuse path is actually exercised (files matching a prior
-        // URI skip re-analysis).
-        let (full_output, full_crossfile) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], None, None, &|| false,
+        // `NS` is in only some of the files, so the others reuse their prior
+        // diagnostics, exercising the true incremental path.
+        let affected: HashSet<String> = ["NS".to_string()].into_iter().collect();
+        let (_, references) = compute_ws_diagnostics(
+            &files, &ws.pre_globals, &ws.configs, &[], Some(&affected),
+            ws.cached_ws_diagnostics.as_ref().map(|(_, entries)| entries.as_slice()), &|| false,
         );
+        let references = references.expect("an uncancelled incremental warm collects references");
+        assert!(!references.full, "an incremental warm doesn't cover every file");
         assert!(
-            full_crossfile.is_some_and(|m| !m.is_empty()),
-            "full warm must compute a non-empty cross-file map"
+            !references.files.is_empty() && references.files.len() < files.paths.len(),
+            "the warm should analyze some files and reuse others, got {} of {}", references.files.len(), files.paths.len(),
         );
-
-        // Incremental warm: an affected set plus the full warm's output as the
-        // prior baseline. Files whose text doesn't mention "SomeName" reuse
-        // their prior diagnostics, exercising the true incremental path. The
-        // cross-file result must be `None` (preserve), never an empty map
-        // (which the caller would install, wiping the cache).
-        let affected: HashSet<String> = ["SomeName".to_string()].into_iter().collect();
-        let (_, inc_crossfile) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], Some(&affected), Some(&full_output), &|| false,
-        );
-        assert!(
-            inc_crossfile.is_none(),
-            "incremental warm must return None for cross-file (preserve cache), got {inc_crossfile:?}"
-        );
+        install_warm_references(&mut ws, references);
+        run_crossfile(&mut ws);
+        assert_eq!(ws.cached_crossfile_diagnostics, full);
     }
 
     #[test]
@@ -5400,22 +5905,22 @@ end
         // work — this is what keeps rapid edits from stacking up CPU-saturating
         // warms that starve the main loop. With `should_cancel` always true, the
         // Phase 1 fan-out skips every file, so both outputs are empty.
-        let (paths, pre_globals, configs) = setup_unused_function_fixture();
-        assert!(!paths.is_empty(), "fixture should have .lua files to skip");
+        let (files, pre_globals, configs) = setup_unused_function_fixture();
+        assert!(!files.paths.is_empty(), "fixture should have .lua files to skip");
 
         // Sanity: without cancellation this workspace produces diagnostics.
         let (live, _) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], None, None, &|| false,
+            &files, &pre_globals, &configs, &[], None, None, &|| false,
         );
         assert!(!live.is_empty(), "uncancelled warm should produce diagnostics");
 
-        // Cancelled: no per-file work, no cross-file work. The cross-file result
-        // is `None` (phase skipped) so the caller preserves its existing cache.
-        let (combined, crossfile) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], None, None, &|| true,
+        // Cancelled: no per-file work, and no references (`None`), so the caller
+        // keeps the ones it has.
+        let (combined, references) = compute_ws_diagnostics(
+            &files, &pre_globals, &configs, &[], None, None, &|| true,
         );
         assert!(combined.is_empty(), "cancelled warm must produce no per-file diagnostics");
-        assert!(crossfile.is_none(), "cancelled warm must skip the cross-file phase (None, not empty)");
+        assert!(references.is_none(), "cancelled warm must not vouch for any file's references");
     }
 
     #[test]
