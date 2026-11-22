@@ -378,7 +378,10 @@ impl WorkspaceState {
     }
 
     pub(super) fn rebuild(&mut self) {
-        let pg = self.pre_globals_inputs().build();
+        // A build that panics keeps the index from before; the next rebuild tries
+        // again with whatever changed since.
+        let inputs = self.pre_globals_inputs();
+        let Some(pg) = contain(None, Task::Rebuild, || inputs.build()) else { return };
         log::debug!("Workspace globals built; {}", pg.arena_edit_summary());
         self.pre_globals = Arc::new(pg);
         self.rebuilt_since_refresh = true;
