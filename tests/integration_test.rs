@@ -2173,6 +2173,45 @@ fn crossfile_addon_table() {
 }
 
 #[test]
+fn class_field_order_crossfile() {
+    // A class's hover in another file lists its fields in the order the declaring
+    // file defines them, then the members this file adds, then a third file's.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-field-order/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/class-field-order"),
+    });
+}
+
+#[test]
+fn class_field_order_partial_class() {
+    // A class declared in two files lists the first declaring file's fields
+    // first, read from another file or from the second declaring file. Stub
+    // build only: the cold build records one declaration per class (the last).
+    for lua_file in ["tests/class-field-order/partial_user.lua", "tests/class-field-order/z_partial.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/class-field-order"),
+        });
+    }
+}
+
+// Class hovers over stub parents, whose listings are too long to assert whole.
+// A frame of a workspace class keeps its `@field` descriptions. A field one file
+// writes on a frame goes on `Frame`'s overlay, which reads of any frame class
+// consult; another frame class's hover still leaves it out, as completion does.
+#[test]
+fn class_field_order_stub_parents() {
+    let dir = std::env::current_dir().unwrap().join("tests/class-field-order");
+    let (pg, configs) = scan_with_stub_decls(&dir);
+    let (hovers, _) = scan_hovers_and_warnings(&pg, &configs, &dir.join("stubs_user.lua"), &["panel", "frameButton"]);
+    assert!(hovers[0].contains("Collapse: fun(self: xforderpanel), -- Folds the panel."), "{}", hovers[0]);
+    assert!(hovers[1].contains("frameButton: Button {"), "{}", hovers[1]);
+    assert!(!hovers[1].contains("injectedThing"), "{}", hovers[1]);
+}
+
+#[test]
 fn crossfile_doc_comments() {
     // A class's doc comment, its `@field` descriptions, and a function's
     // `@param`/`@return` descriptions show in hover from another file.

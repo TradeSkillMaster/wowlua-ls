@@ -4,7 +4,7 @@
 --        ^ doc: A record kept in another file.
 --        ^ doc: Spans two lines.
 local record = XfDocRecord
---    ^ hover: (local) record: XfDocRecord {\n  Count: fun(): number,\n  Find: fun(id: number): XfDocRecord?,\n  id: number, -- The record's id.\n  note: string?\n}
+--    ^ hover: (local) record: XfDocRecord {\n  id: number, -- The record's id.\n  note: string?,\n  Find: fun(id: number): XfDocRecord?,\n  Count: fun(): number\n}
 
 local id = record.id
 --                ^ doc: The record's id.

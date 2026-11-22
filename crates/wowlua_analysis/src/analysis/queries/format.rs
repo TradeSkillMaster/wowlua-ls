@@ -1234,11 +1234,142 @@ impl AnalysisResult {
         formatted.to_string()
     }
 
+    /// Where `table_idx`'s field `name` is defined, as a file and byte offset, the
+    /// file `None` for this one: a table of this file's own defines its fields here
+    /// (`def_range`); another's are where the workspace or the stubs record them
+    /// (`field_locations`, by the table or by the class of its name), else, for a
+    /// field this file's overlay holds, at the file's write to it.
+    fn field_def_pos(&self, table_idx: TableIndex, name: &str, fi: &FieldInfo) -> Option<(Option<&std::path::Path>, u32)> {
+        if !table_idx.is_external() && let Some((start, _)) = fi.def_range {
+            return Some((None, start));
+        }
+        let locations = &self.ir.ext.field_locations;
+        let recorded = locations.get(&table_idx).and_then(|m| m.get(name)).or_else(|| {
+            let &class = self.ir.ext.classes.get(self.table(table_idx).class_name.as_ref()?)?;
+            locations.get(&class)?.get(name)
+        });
+        if let Some(loc) = recorded {
+            return Some((self.other_file(&loc.path), loc.start));
+        }
+        if !self.ir.overlay_fields.get(&table_idx).is_some_and(|o| o.contains_key(name)) {
+            return None;
+        }
+        self.ir.field_assignments.iter()
+            .find(|fa| fa.table_idx == table_idx && fa.field_name == name)
+            .map(|fa| (None, fa.ident_start))
+    }
+
+    /// `path`, unless it is this file's, which reads as `None`.
+    fn other_file<'a>(&self, path: &'a std::path::Path) -> Option<&'a std::path::Path> {
+        (self.ir.file_path.as_deref() != Some(path)).then_some(path)
+    }
+
+    /// Sort a class table's `fields` into the order the source defines them: those
+    /// in the files declaring the class, in the order the workspace declares it, by
+    /// position, then other files' (this one first), then the fields with no
+    /// recorded definition, by name. An anonymous table's sort by name: the
+    /// workspace scan doesn't locate the entries of a constructor nested in a
+    /// global's (`ns.Mod = { a = 1 }`), so only its later writes would have a
+    /// position.
+    fn sort_fields_by_definition(&self, table_idx: TableIndex, fields: &mut [(TableIndex, &str, &FieldInfo)]) {
+        let Some(class) = self.table(table_idx).class_name.as_ref() else {
+            fields.sort_unstable_by_key(|&(_, name, _)| name);
+            return;
+        };
+        let declared = self.ir.ext.class_locations_for_name(class);
+        let mut home: Vec<Option<&std::path::Path>> = if declared.is_empty() {
+            self.ir.ext.class_locations.get(class).into_iter().map(|loc| self.other_file(&loc.path)).collect()
+        } else {
+            declared.iter().map(|loc| self.other_file(&loc.path)).collect()
+        };
+        if home.is_empty() && !table_idx.is_external() {
+            home.push(None);
+        }
+        fields.sort_by_cached_key(|&(_, name, fi)| match self.field_def_pos(table_idx, name, fi) {
+            Some((file, start)) => match home.iter().position(|&h| h == file) {
+                Some(i) => (0, i, None, start, name),
+                None => (1, 0, file, start, name),
+            },
+            None => (2, 0, None, 0, name),
+        });
+    }
+
+    /// The class that defines `table_idx`'s field `name`, which the table holds as
+    /// `fi`. A table of this file's own holds copies of its parents' fields
+    /// (`prescan`'s inheritance pass): a copied `@field` is the class whose
+    /// annotation it is (`field_annotation_owner`), and another copy shares the
+    /// parent's expression.
+    fn field_definer(&self, table_idx: TableIndex, name: &str, fi: &FieldInfo) -> TableIndex {
+        let (mut table, mut fi) = (table_idx, fi);
+        let mut visited: HashSet<TableIndex> = HashSet::default();
+        while visited.insert(table) {
+            if !table.is_external()
+                && let Some((start, _)) = fi.def_range
+                && let Some(&owner) = self.ir.field_annotation_owner.get(&start)
+            {
+                return owner;
+            }
+            let Some((parent, parent_fi)) = self.table(table).parent_classes.iter().find_map(|&p| {
+                self.table(p).fields.get(name).filter(|parent_fi| parent_fi.expr == fi.expr).map(|parent_fi| (p, parent_fi))
+            }) else { break };
+            (table, fi) = (parent, parent_fi);
+        }
+        table
+    }
+
+    /// The fields of a class table `seen` hasn't listed yet and `keep` accepts,
+    /// each as a read of it finds it (`Ir::get_field_direct`: the class's before
+    /// its parents', this file's overlay of a table before the table's own), with
+    /// the class that defines it ([`Self::field_definer`]). The class's own fields
+    /// come first, then each parent class's, each class's in the order its source
+    /// defines them ([`Self::sort_fields_by_definition`]). A parent's overlay only
+    /// re-types the parent's fields: the fields this file writes on a parent (any
+    /// frame's, on `Frame`) aren't its subclasses' members.
+    fn class_fields_in_definition_order<'a>(
+        &'a self,
+        table_idx: TableIndex,
+        seen: &mut HashSet<&'a str>,
+        keep: impl Fn(&FieldInfo) -> bool,
+    ) -> Vec<(TableIndex, &'a str, &'a FieldInfo)> {
+        let tables: Vec<TableIndex> = std::iter::once(table_idx).chain(self.table(table_idx).parent_classes.iter().copied()).collect();
+        let mut classes = tables.clone();
+        let mut groups: Vec<Vec<(TableIndex, &str, &FieldInfo)>> = vec![Vec::new(); classes.len()];
+        for &table in &tables {
+            let overlay = self.ir.overlay_fields.get(&table);
+            let added = overlay.filter(|_| table == table_idx).into_iter().flatten().map(|(name, fi)| (name, fi, table));
+            let retyped = overlay.filter(|_| table.is_external());
+            let held = self.table(table).fields.iter().map(|(name, fi)| {
+                (name, retyped.and_then(|o| o.get(name)).unwrap_or(fi), self.field_definer(table, name, fi))
+            });
+            for (name, fi, definer) in added.chain(held) {
+                if !seen.insert(name.as_str()) || !keep(fi) {
+                    continue;
+                }
+                let group = match classes.iter().position(|&c| self.same_class(c, definer)) {
+                    Some(group) => group,
+                    None => {
+                        classes.push(definer);
+                        groups.push(Vec::new());
+                        classes.len() - 1
+                    }
+                };
+                groups[group].push((definer, name.as_str(), fi));
+            }
+        }
+        let mut listed = Vec::new();
+        for (class, mut fields) in classes.into_iter().zip(groups) {
+            self.sort_fields_by_definition(class, &mut fields);
+            listed.extend(fields);
+        }
+        listed
+    }
+
     /// Collect the fields of one or more tables visible from inside the `viewers`
     /// classes (see [`Ir::visible_from`]), deduplicating by name.
-    /// Returns sorted, formatted field lines ready to join with `\n` (e.g.
+    /// Returns formatted field lines ready to join with `\n` (e.g.
     /// `"  name: type,"`), each followed by its `@field` description as a
-    /// trailing `-- comment`.
+    /// trailing `-- comment`, in the order [`Self::class_fields_in_definition_order`]
+    /// lists them.
     pub(super) fn collect_accessible_fields(
         &self,
         table_indices: &[TableIndex],
@@ -1248,26 +1379,12 @@ impl AnalysisResult {
         let mut seen: HashSet<&str> = HashSet::default();
         let mut fields: Vec<(String, Option<&str>)> = Vec::new();
         for &table_idx in table_indices {
-            let table = self.table(table_idx);
-            let overlay = self.ir.overlay_fields.get(&table_idx);
-            let is_enum = table.enum_kind.is_enum();
+            let is_enum = self.table(table_idx).enum_kind.is_enum();
             let is_accessible = |fi: &FieldInfo| self.visible_from(fi.visibility, table_idx, viewers);
-            // This file's overlay first, as a read of the field sees it.
-            for (name, field_info) in overlay.into_iter().flatten().chain(&table.fields) {
-                if seen.insert(name.as_str()) && is_accessible(field_info) {
-                    fields.push((self.format_enum_field_line(indent, name, field_info, is_enum, 0), self.field_description(table_idx, name)));
-                }
-            }
-            for &parent_idx in &table.parent_classes {
-                let parent_table = self.table(parent_idx);
-                for (name, field_info) in &parent_table.fields {
-                    if seen.insert(name.as_str()) && is_accessible(field_info) {
-                        fields.push((self.format_enum_field_line(indent, name, field_info, is_enum, 0), self.field_description(parent_idx, name)));
-                    }
-                }
+            for (owner, name, field_info) in self.class_fields_in_definition_order(table_idx, &mut seen, is_accessible) {
+                fields.push((self.format_enum_field_line(indent, name, field_info, is_enum, 0), self.field_description(owner, name)));
             }
         }
-        fields.sort();
         let last = fields.len().saturating_sub(1);
         fields.into_iter().enumerate().map(|(i, (line, desc))| {
             let comma = if i < last { "," } else { "" };
@@ -1320,14 +1437,11 @@ impl AnalysisResult {
             if !table_indices.is_empty() {
                 // Dedup: remove members that are ancestors of another member.
                 // e.g. if MixinClass : Frame, then Frame & MixinClass → MixinClass
-                let deduped: Vec<&ValueType> = flat.iter().copied().filter(|t| {
-                    if let ValueType::Table(Some(idx)) = t {
-                        // Drop this member if some OTHER table member is a subclass of it
-                        !table_indices.iter().any(|&other| other != *idx && self.is_subclass_of(other, *idx))
-                    } else {
-                        true
-                    }
-                }).collect();
+                // Drop this member if some OTHER table member is a subclass of it
+                let subclassed = |idx: TableIndex| table_indices.iter().any(|&other| other != idx && self.is_subclass_of(other, idx));
+                let deduped: Vec<&ValueType> = flat.iter().copied()
+                    .filter(|t| !matches!(t, ValueType::Table(Some(idx)) if subclassed(*idx)))
+                    .collect();
 
                 // Build header line with deduped member names (depth 1 → class names only).
                 // Skip anonymous tables with fields — they'd expand inline in the header
@@ -1351,7 +1465,11 @@ impl AnalysisResult {
                     return self.format_type(vt);
                 }
 
-                let fields = self.collect_accessible_fields(&table_indices, viewers);
+                // A member another subclasses lists last: its fields are that
+                // subclass's inherited ones, which follow the subclass's own.
+                let (mut ordered, ancestors): (Vec<TableIndex>, Vec<TableIndex>) = table_indices.iter().partition(|&&idx| !subclassed(idx));
+                ordered.extend(ancestors);
+                let fields = self.collect_accessible_fields(&ordered, viewers);
                 if fields.is_empty() {
                     return header;
                 }
@@ -1708,24 +1826,10 @@ impl AnalysisResult {
                     }
                     let indent = "  ".repeat(depth + 1);
                     let is_enum = table.enum_kind.is_enum();
-                    let mut seen: HashSet<&str> = HashSet::default();
-                    let mut fields: Vec<String> = Vec::new();
-                    // This file's overlay first, as a read of the field sees it.
-                    for (name, field_info) in overlay.into_iter().flatten().chain(&table.fields) {
-                        if seen.insert(name.as_str()) {
-                            fields.push(self.format_enum_field_line(&indent, name, field_info, is_enum, depth));
-                        }
-                    }
-                    // Include inherited fields from parent classes
-                    for &parent_idx in &table.parent_classes {
-                        let parent_table = self.table(parent_idx);
-                        for (name, field_info) in &parent_table.fields {
-                            if seen.insert(name.as_str()) {
-                                fields.push(self.format_enum_field_line(&indent, name, field_info, is_enum, depth));
-                            }
-                        }
-                    }
-                    fields.sort();
+                    let fields: Vec<String> = self.class_fields_in_definition_order(*table_idx, &mut HashSet::default(), |_| true)
+                        .into_iter()
+                        .map(|(_, name, field_info)| self.format_enum_field_line(&indent, name, field_info, is_enum, depth))
+                        .collect();
                     if fields.is_empty() {
                         return class_name.clone();
                     }

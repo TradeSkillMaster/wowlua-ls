@@ -1412,7 +1412,7 @@ end
 --        ^ doc: A documented widget.
 local docWidget = DocWidget
 --    ^ doc: A documented widget.
---    ^ hover: (local) docWidget: DocWidget {\n  Run: fun(self: DocWidget, times: number, tag?: string): boolean, string,\n  count: number, -- How many there are.\n  extra: number,\n  label: string?, -- The display label.\n  onDone: fun(ok: boolean), -- Called when finished.\n  plain: number\n}
+--    ^ hover: (local) docWidget: DocWidget {\n  count: number, -- How many there are.\n  label: string?, -- The display label.\n  onDone: fun(ok: boolean), -- Called when finished.\n  plain: number,\n  Run: fun(self: DocWidget, times: number, tag?: string): boolean, string,\n  extra: number\n}
 
 -- A field's description shows on its hover.
 local _ = docWidget.count
@@ -1953,3 +1953,100 @@ useCascadeHandle(1)
 ---@param value CascadeNoMembers
 local function useNoMembers(value) return value end
 --             ^ hover: (local) function useNoMembers(value)
+
+-- ── A class's hover lists its fields in the order the class defines them ────
+-- Its own fields come first, by position: the `@field`s, constructor entries,
+-- later writes, methods and the fields its methods write on `self`; a field it
+-- redeclares keeps its own position. The inherited fields follow, in the
+-- parent's order.
+---@class FieldOrderBase
+---@field zulu number
+---@field alpha string
+---@field mike boolean
+
+---@class FieldOrderChild : FieldOrderBase
+---@field name string
+---@field count number
+---@field mike boolean
+---@diagnostic disable-next-line: missing-fields
+local FieldOrderChild = {
+    built = true,
+}
+FieldOrderChild.later = 1
+
+function FieldOrderChild:Method()
+    ---@diagnostic disable-next-line: inject-field
+    self.fromSelf = "x"
+end
+
+---@type FieldOrderChild
+local fieldOrder = nil
+--    ^ hover: (local) fieldOrder: FieldOrderChild {\n  name: string,\n  count: number,\n  mike: boolean,\n  built: boolean,\n  later: number,\n  Method: fun(self: FieldOrderChild),\n  fromSelf: string,\n  zulu: number,\n  alpha: string\n}
+
+---@type FieldOrderChild
+--        ^ hover: (class) FieldOrderChild {\n  name: string,\n  count: number,\n  mike: boolean,\n  built: boolean,\n  later: number,\n  Method: fun(self: FieldOrderChild),\n  fromSelf: string,\n  zulu: number,\n  alpha: string\n}
+local _fieldOrderAgain = nil
+
+-- An enum's members, in the order its table lists them.
+---@enum FieldOrderEnum
+local FieldOrderEnum = {
+--    ^ hover: (local) FieldOrderEnum: FieldOrderEnum {\n  Zero = 0,\n  Two = 2,\n  One = 1\n}
+    Zero = 0,
+    Two = 2,
+    One = 1,
+}
+
+-- An intersection lists a subclass's own fields before the ones it inherits from
+-- another member, whichever member comes first.
+---@type FieldOrderBase & FieldOrderChild
+local _fieldOrderBoth = nil
+--    ^ hover: (local) _fieldOrderBoth: FieldOrderChild {\n  name: string,\n  count: number,\n  mike: boolean,\n  built: boolean,\n  later: number,\n  Method: fun(self: FieldOrderChild),\n  fromSelf: string,\n  zulu: number,\n  alpha: string\n}
+
+-- A field two parents declare lists with the one a read finds, and its type.
+---@class FieldOrderDiamond : FieldOrderLeft, FieldOrderRight
+---@class FieldOrderLeft : FieldOrderRoot
+---@class FieldOrderRight
+---@field x string
+---@class FieldOrderRoot
+---@field x number
+---@type FieldOrderDiamond
+local fieldOrderDiamond = nil
+--    ^ hover: (local) fieldOrderDiamond: FieldOrderDiamond {\n  x: string\n}
+local _ = fieldOrderDiamond.x
+--                          ^ hover: (field) x: string
+
+-- A parent's `@field` its file then assigns stays with the parent's fields.
+---@class FieldOrderRunner
+---@field run fun(self: FieldOrderRunner)
+---@field other number
+local FieldOrderRunner = {}
+function FieldOrderRunner:run() end
+
+---@class FieldOrderRunnerChild : FieldOrderRunner
+---@field own number
+
+---@type FieldOrderRunnerChild
+local fieldOrderRunner = nil
+--    ^ hover: (local) fieldOrderRunner: FieldOrderRunnerChild {\n  own: number,\n  run: fun(self: FieldOrderRunner),\n  other: number\n}
+
+-- Three levels: each class's own fields, nearest class first.
+---@class FieldOrderGrand
+---@field gZ number
+---@field gA number
+---@class FieldOrderMid : FieldOrderGrand
+---@field mZ number
+---@field mA number
+---@class FieldOrderLeaf : FieldOrderMid
+---@field lZ number
+---@type FieldOrderLeaf
+local fieldOrderLeaf = nil
+--    ^ hover: (local) fieldOrderLeaf: FieldOrderLeaf {\n  lZ: number,\n  mZ: number,\n  mA: number,\n  gZ: number,\n  gA: number\n}
+
+-- A parent's constructor entries list with the parent's fields.
+---@class FieldOrderCtorParent
+local FieldOrderCtorParent = { zz = 1, bb = 2 }
+---@class FieldOrderCtorChild : FieldOrderCtorParent
+---@field own number
+---@type FieldOrderCtorChild
+local fieldOrderCtor = nil
+--    ^ hover: (local) fieldOrderCtor: FieldOrderCtorChild {\n  own: number,\n  zz: number,\n  bb: number\n}
