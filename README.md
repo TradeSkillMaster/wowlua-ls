@@ -48,7 +48,7 @@ Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plu
 
 ### Zed
 
-Install **WoW Lua Language Server** from Zed's extensions view (`zed: extensions`). The extension downloads the language server binary on first use - no separate install needed.
+The extension isn't in Zed's extension registry yet; install it as a dev extension. With Rust installed through [rustup](https://rustup.rs), clone [wowlua-ls-zed](https://github.com/TradeSkillMaster/wowlua-ls-zed), run `zed: install dev extension` in Zed, and pick the clone. The extension downloads the language server binary on first use - no separate install needed.
 
 Zed gets its languages from extensions, so install the **Lua** extension too (Zed offers it the first time you open a `.lua` file), plus **wow-toc** if you want `.toc` files analyzed. See the [extension README](https://github.com/TradeSkillMaster/wowlua-ls-zed#readme) for settings, including how to disable LuaLS on Lua buffers so diagnostics aren't reported twice.
 

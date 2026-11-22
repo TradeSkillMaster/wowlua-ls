@@ -29,7 +29,7 @@ features:
   - title: Flavor filtering
     details: "Declare target flavors (retail, classic, classic_era, forever) and get warnings on APIs that don't exist in all your targets. WOW_PROJECT_ID guards and @flavor-narrows are understood."
   - title: Your editor, plus CI
-    details: "Install from the VS Code Marketplace, Open VSX, the JetBrains Marketplace, or Zed's extensions; Neovim and any other LSP client work too. wowlua_ls check lints your addon from the command line and exits 1 on diagnostics, ready for CI."
+    details: "Install from the VS Code Marketplace, Open VSX, or the JetBrains Marketplace; Zed (as a dev extension), Neovim and any other LSP client work too. wowlua_ls check lints your addon from the command line and exits 1 on diagnostics, ready for CI."
   - title: LuaLS-compatible annotations
     details: "Uses the same ---@ annotation syntax you already know. Migrate incrementally. Your existing annotations work, and wowlua-ls adds powerful WoW-specific extensions on top."
 ---

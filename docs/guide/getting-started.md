@@ -14,7 +14,13 @@ Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plu
 
 ### Zed
 
-Install **WoW Lua Language Server** from Zed's extensions view (`zed: extensions`). It runs the server set in `lsp.wowlua-ls.binary.path`, else a `wowlua_ls` on your `$PATH`, else downloads the release binary for your platform on first use - no separate install needed.
+The extension isn't in Zed's extension registry yet, so searching the extensions view won't find it. Install it as a dev extension instead:
+
+1. Install Rust through [rustup](https://rustup.rs). Zed compiles a dev extension itself and adds the WebAssembly target it needs.
+2. Clone the extension: `git clone https://github.com/TradeSkillMaster/wowlua-ls-zed.git`
+3. In Zed, run `zed: install dev extension` from the command palette and pick the cloned directory.
+
+The extension runs the server set in `lsp.wowlua-ls.binary.path`, else a `wowlua_ls` on your `$PATH`, else downloads the release binary for your platform on first use - no separate install needed. A downloaded server stays current on its own: each Zed session checks for a newer release when it first starts the server. To update the extension itself, `git pull` the clone and run `zed: rebuild dev extension`.
 
 Zed gets its languages from extensions, so install two more:
 
