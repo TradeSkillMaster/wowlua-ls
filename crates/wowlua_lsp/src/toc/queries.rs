@@ -249,13 +249,19 @@ fn complete_file_paths(text: &str, offset: u32, toc_dir: &Path) -> Vec<TocComple
         partial
     };
 
-    // Determine which subdirectory to list
-    let (search_dir, prefix) = if let Some(last_slash) = path_part.rfind('/') {
-        let dir_part = &path_part[..last_slash];
-        (toc_dir.join(dir_part), format!("{}/", dir_part))
-    } else if let Some(last_slash) = path_part.rfind('\\') {
-        let dir_part = &path_part[..last_slash];
-        (toc_dir.join(dir_part), format!("{}/", dir_part))
+    // Use either separator to find the directory, but emit WoW TOC paths with
+    // backslashes so completion matches the format used by Windows add-ons.
+    let last_separator = path_part
+        .char_indices()
+        .rev()
+        .find(|(_, character)| *character == '/' || *character == '\\');
+    let (search_dir, prefix) = if let Some((separator_index, _)) = last_separator {
+        let dir_part = &path_part[..separator_index];
+        // Forward slashes are accepted by Path on Windows and also keep lookup
+        // portable when tests run on Unix.
+        let search_path = dir_part.replace('\\', "/");
+        let completion_prefix = format!("{}\\", dir_part.replace('/', "\\"));
+        (toc_dir.join(search_path), completion_prefix)
     } else {
         (toc_dir.to_path_buf(), String::new())
     };
@@ -270,10 +276,11 @@ fn complete_file_paths(text: &str, offset: u32, toc_dir: &Path) -> Vec<TocComple
         let name = file_name.to_string_lossy();
 
         if entry.path().is_dir() {
+            let path = format!("{}{}\\", prefix, name);
             completions.push(TocCompletion {
-                label: format!("{}{}/", prefix, name),
+                label: path.clone(),
                 detail: Some("Directory".to_string()),
-                insert_text: Some(format!("{}{}/", prefix, name)),
+                insert_text: Some(path),
             });
         } else {
             let ext = entry.path().extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -376,6 +383,78 @@ mod tests {
         let doc = parse_toc("## Interface: 110002\nCore/Init.lua\n");
         let hover = hover_at(&doc, 25).unwrap(); // in "Core/Init.lua"
         assert!(hover.type_str.contains("Core/Init.lua"));
+    }
+
+    fn completion_fixture() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "wowlua-toc-completion-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("Libs/AceAddon-3.0")).unwrap();
+        std::fs::write(root.join("Libs/Ace3.lua"), "").unwrap();
+        root
+    }
+
+    #[test]
+    fn completions_use_backslashes_for_backslash_input() {
+        let root = completion_fixture();
+        let text = "Libs\\";
+        let completions = complete_file_paths(text, text.len() as u32, &root);
+
+        let directory = completions
+            .iter()
+            .find(|item| item.detail.as_deref() == Some("Directory"))
+            .unwrap();
+        assert_eq!(directory.label, "Libs\\AceAddon-3.0\\");
+        assert_eq!(
+            directory.insert_text.as_deref(),
+            Some("Libs\\AceAddon-3.0\\")
+        );
+        assert!(
+            completions
+                .iter()
+                .any(|item| item.label == "Libs\\Ace3.lua")
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completions_use_backslashes_for_forward_slash_input() {
+        let root = completion_fixture();
+        let text = "Libs/";
+        let completions = complete_file_paths(text, text.len() as u32, &root);
+
+        assert!(
+            completions
+                .iter()
+                .any(|item| item.label == "Libs\\Ace3.lua")
+        );
+        let directory = completions
+            .iter()
+            .find(|item| item.detail.as_deref() == Some("Directory"))
+            .unwrap();
+        assert_eq!(directory.label, "Libs\\AceAddon-3.0\\");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn root_directory_completions_use_backslashes() {
+        let root = completion_fixture();
+        let completions = complete_file_paths("", 0, &root);
+
+        let directory = completions
+            .iter()
+            .find(|item| item.label == "Libs\\")
+            .unwrap();
+        assert_eq!(directory.insert_text.as_deref(), Some("Libs\\"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
