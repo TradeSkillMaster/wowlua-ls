@@ -5,20 +5,31 @@ const INSTRUCTION_LIMIT: u32 = 1_000_000;
 
 /// Create a sandboxed Lua 5.1 VM with restricted stdlib.
 ///
-/// Available: string, table, math, pairs, ipairs, next, type, tostring, tonumber,
-/// select, unpack, pcall, xpcall, error, assert, rawequal, rawget, rawset.
+/// Available: coroutine, string, table, math, pairs, ipairs, next, type,
+/// tostring, tonumber, select, unpack, pcall, xpcall, error, assert, rawequal,
+/// rawget, rawset.
 ///
-/// Removed: os, io, debug, loadfile, dofile, require, load, collectgarbage.
+/// Removed: os, io, debug, package, loadfile, dofile, require, load,
+/// collectgarbage.
 /// `print` is mapped to `log::info!`.
 pub(super) fn create_sandbox() -> Lua {
-    let lua = Lua::new();
+    // Open only libraries that cannot access the host or load more code. In
+    // particular, never open PACKAGE, IO, or OS: removing their global names
+    // after Lua initialization would leave their tables reachable through
+    // `package.loaded`.
+    let libraries = mlua::StdLib::COROUTINE
+        | mlua::StdLib::TABLE
+        | mlua::StdLib::STRING
+        | mlua::StdLib::MATH;
+    let lua = Lua::new_with(libraries, mlua::LuaOptions::default())
+        .expect("failed to create plugin sandbox");
 
     // Remove dangerous globals
     {
         let globals = lua.globals();
         for name in &[
-            "os", "io", "debug", "loadfile", "dofile", "require", "load",
-            "collectgarbage",
+            "os", "io", "debug", "package", "loadfile", "dofile", "require",
+            "load", "collectgarbage",
         ] {
             let _ = globals.set(*name, LuaNil);
         }
@@ -61,12 +72,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sandbox_removes_dangerous_globals() {
+    fn sandbox_never_opens_host_or_loader_libraries() {
         let lua = create_sandbox();
         let globals = lua.globals();
-        for name in &["os", "io", "debug", "loadfile", "dofile", "require", "load"] {
+        for name in &[
+            "os", "io", "debug", "package", "loadfile", "dofile", "require",
+            "load", "collectgarbage",
+        ] {
             let val: LuaValue = globals.get(*name).unwrap();
             assert!(val.is_nil(), "{name} should be nil in sandbox");
+        }
+
+        for expression in &[
+            "return os and os.execute",
+            "return io and io.open",
+            "return package and package.loaded and package.loaded.os",
+            "return package and package.loaded and package.loaded.io",
+            "return package and package.loadlib",
+        ] {
+            let val: LuaValue = lua.load(*expression).eval().unwrap();
+            assert!(val.is_nil(), "{expression} should be unreachable in sandbox");
         }
     }
 
@@ -74,10 +99,21 @@ mod tests {
     fn sandbox_keeps_safe_globals() {
         let lua = create_sandbox();
         let globals = lua.globals();
-        for name in &["string", "table", "math", "pairs", "ipairs", "type", "tostring", "tonumber", "pcall", "error", "assert"] {
+        for name in &[
+            "coroutine", "string", "table", "math", "pairs", "ipairs", "type",
+            "tostring", "tonumber", "pcall", "error", "assert",
+        ] {
             let val: LuaValue = globals.get(*name).unwrap();
             assert!(!val.is_nil(), "{name} should exist in sandbox");
         }
+
+        let works: bool = lua.load(
+            r#"return string.upper("ok") == "OK"
+                and table.concat({"a", "b"}, ",") == "a,b"
+                and math.floor(1.5) == 1
+                and pcall(function() return true end)"#,
+        ).eval().unwrap();
+        assert!(works, "safe standard-library operations should remain available");
     }
 
     #[test]
