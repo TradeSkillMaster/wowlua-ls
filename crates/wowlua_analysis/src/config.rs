@@ -111,9 +111,10 @@ pub struct ProjectConfig {
     /// Relative library patterns that stay within the workspace (scanned by the
     /// normal downward traversal, diagnostics suppressed).
     pub library_relative: Vec<String>,
-    /// Absolute library directories scanned as external scan targets (diagnostics
-    /// suppressed). Holds both config-supplied absolute paths and relative entries
-    /// that escape the workspace (e.g. `../shared`), resolved against the config dir.
+    /// Absolute library directories eligible as external scan targets (diagnostics
+    /// suppressed) after explicit root approval. Holds both config-supplied absolute
+    /// paths and relative entries that escape the workspace (e.g. `../shared`),
+    /// resolved against the config dir.
     pub library_absolute: Vec<String>,
     pub disabled_diagnostics: HashSet<String>,
     pub enabled_diagnostics: HashSet<String>,
@@ -159,10 +160,10 @@ pub struct ProjectConfig {
 
 
 /// Lexically normalize a path by collapsing `.` and `..` components without
-/// touching the filesystem (so symlinks are preserved — important for vendored
-/// libraries pulled in via symlink). A `..` above the root is a no-op (you
-/// can't `cd` above `/`); a leading `..` with no preceding normal component
-/// on a relative path is kept as-is.
+/// touching the filesystem. This preserves the spelling used for configuration
+/// matching; the scanner separately canonicalizes paths when enforcing external
+/// root approval. A `..` above the root is a no-op (you can't `cd` above `/`);
+/// a leading `..` with no preceding normal component on a relative path is kept.
 fn normalize_lexically(path: &Path) -> PathBuf {
     let mut out: Vec<Component> = Vec::new();
     for comp in path.components() {
@@ -414,7 +415,7 @@ impl ProjectConfigs {
     }
 
     /// Collect all absolute library directory paths from all configs.
-    /// These are external directories that should be scanned for types.
+    /// Callers must enforce external-root approval before scanning them.
     pub fn external_library_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         let mut seen = crate::collections::HashSet::default();
@@ -894,6 +895,9 @@ fn extract_toc_suffix(stem: &str) -> Option<(&str, &str, u8)> {
 /// - Per-file flavor masks derived from TOC filename suffixes,
 ///   `## AllowLoadGameType:` headers, and `[AllowLoadGameType]` per-line directives
 fn parse_toc_files(dir: &Path) -> TocParseResult {
+    const MAX_DIRECTORY_ENTRIES: usize = 4096;
+    const MAX_TOC_FILES: usize = 64;
+
     let mut saved_variables = HashSet::default();
     let mut interface_flavor = 0u8;
 
@@ -911,12 +915,18 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
     }
     let mut toc_entries: Vec<TocEntry> = Vec::new();
 
-    for entry in entries.flatten() {
+    let mut toc_files = 0usize;
+    for entry in entries.take(MAX_DIRECTORY_ENTRIES).flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "toc") {
             continue;
         }
-        let text = match std::fs::read_to_string(&path) {
+        let Ok(file_type) = entry.file_type() else { continue };
+        if !file_type.is_file() || toc_files >= MAX_TOC_FILES {
+            continue;
+        }
+        toc_files += 1;
+        let text = match crate::syntax::read_source_file(&path) {
             Ok(t) => t,
             Err(_) => continue,
         };
@@ -1177,7 +1187,7 @@ pub fn parse_toc_saved_variables(dir: &Path) -> HashSet<String> {
 /// Try to load a `.wowluarc.json` from a directory. Returns None if not found.
 pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let path = dir.join(".wowluarc.json");
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = crate::syntax::read_source_file(&path).ok()?;
     let raw: RawConfig = match serde_json::from_str(&text) {
         Ok(r) => r,
         Err(e) => {
@@ -1189,7 +1199,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let ignore = raw.ignore.unwrap_or_default();
     // Partition `library` entries into relative patterns (matched against
     // workspace-relative paths, reached by the downward directory scan) and
-    // absolute external directories (explicitly scanned). A relative path that
+    // absolute external directories (scanned only after user approval). A relative path that
     // *escapes* the config directory (e.g. `../shared`) is reachable by neither
     // path on its own, so resolve it against the config dir and treat it as an
     // external directory — this is the portable way to reference a sibling

@@ -289,7 +289,7 @@ fn parse_attr_list(value: &str) -> Vec<String> {
 
 /// Scan an XML file for frame/template declarations.
 pub fn scan_xml_file(path: &Path) -> Option<XmlScanResult> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::syntax::read_source_file(path).ok()?;
     Some(scan_xml_content(&text, path))
 }
 

@@ -3901,13 +3901,12 @@ mod tests {
         }
     }
 
-    /// A library reachable both as its own folder and via a symlink into an addon's
-    /// `Libs/` must be scanned exactly once — not once per alias — and navigation
-    /// must land in the real source, not the vendored symlink. Regression for the
-    /// duplicate-definition / divergent-cache reports on symlinked vendored libraries.
+    /// A descendant symlink into a library must be skipped, while the real directory
+    /// remains scanned normally. This prevents repository links from escaping the
+    /// workspace without losing a library that is physically present in the root.
     #[cfg(unix)]
     #[test]
-    fn symlinked_library_scanned_once() {
+    fn descendant_symlinked_library_is_skipped() {
         use std::os::unix::fs::symlink;
 
         // Per-process-unique name: concurrent worktree runs share /tmp.
@@ -3931,7 +3930,7 @@ mod tests {
         assert_eq!(
             foo.len(),
             1,
-            "symlinked library must register its @class once, not once per alias"
+            "the real library must register once while its descendant symlink is skipped"
         );
         // The retained copy is the real file, not the symlinked alias.
         let def_path = foo[0].def_path.as_ref().expect("class carries a def_path");
