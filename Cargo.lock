@@ -1448,6 +1448,7 @@ dependencies = [
  "bincode",
  "crossbeam-channel",
  "file-id",
+ "getrandom 0.3.4",
  "line-numbers",
  "log",
  "lsp-server",

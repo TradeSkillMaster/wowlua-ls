@@ -20,9 +20,10 @@ pub(super) fn stubs_dir() -> Option<std::path::PathBuf> {
 /// Directory where embedded stub files are materialized on disk so editors can
 /// open them for go-to-definition (see `resolve_external_location`).
 ///
-/// Defaults to `<temp>/wowlua-ls-stubs`, but an editor plugin can redirect it
-/// via the `WOWLUA_LS_STUB_DIR` environment variable. The JetBrains plugin does
-/// this, pointing it at a directory it also watches and loads into the VFS:
+/// Defaults to a fresh private `<temp>/wowlua-ls-stubs-<random>` directory, but
+/// an editor plugin can redirect it via the `WOWLUA_LS_STUB_DIR` environment
+/// variable. The JetBrains plugin does this, pointing it at a directory it also
+/// watches and loads into the VFS:
 /// LSP4IJ resolves go-to-definition targets through IntelliJ's VFS
 /// (`VirtualFileManager.findFileByUrl`, non-refreshing), which never sees files
 /// written under an unwatched temp directory, so navigation silently fell back
@@ -36,18 +37,77 @@ pub(super) fn stubs_dir() -> Option<std::path::PathBuf> {
 /// `(dir, relative path)` therefore maps to immutable content, the size-based
 /// skip in [`materialize_stub_file`] is an exact "already written" test.
 pub fn stub_materialize_dir() -> std::path::PathBuf {
-    stub_materialize_dir_from(std::env::var_os("WOWLUA_LS_STUB_DIR"))
+    stub_materialize_dir_from(std::env::var_os("WOWLUA_LS_STUB_DIR"), || {
+        private_stub_materialize_base().to_path_buf()
+    })
 }
 
 /// Pure core of [`stub_materialize_dir`] (testable without mutating process env):
 /// the override base directory when set and non-empty, else
-/// `<temp>/wowlua-ls-stubs`, then version-scoped by the precomputed-blob version.
-fn stub_materialize_dir_from(override_dir: Option<std::ffi::OsString>) -> std::path::PathBuf {
+/// `default_base`, then version-scoped by the precomputed-blob version.
+fn stub_materialize_dir_from(
+    override_dir: Option<std::ffi::OsString>,
+    default_base: impl FnOnce() -> std::path::PathBuf,
+) -> std::path::PathBuf {
     override_dir
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("wowlua-ls-stubs"))
+        .unwrap_or_else(default_base)
         .join(crate::pre_globals::BLOB_VERSION.to_string())
+}
+
+/// Process-private base for the default materialization path. `create` is
+/// atomic, the random suffix prevents practical pre-positioning, and Unix mode
+/// 0700 keeps other local accounts from adding entries after creation.
+fn private_stub_materialize_base() -> &'static std::path::Path {
+    static PRIVATE_BASE: OnceLock<std::path::PathBuf> = OnceLock::new();
+    PRIVATE_BASE
+        .get_or_init(|| {
+            create_private_stub_materialize_base().unwrap_or_else(|e| {
+                panic!("failed to create private stub materialization directory: {e}")
+            })
+        })
+        .as_path()
+}
+
+fn create_private_stub_materialize_base() -> std::io::Result<std::path::PathBuf> {
+    for _ in 0..16 {
+        let candidate =
+            std::env::temp_dir().join(format!("wowlua-ls-stubs-{}", random_stub_suffix()?));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let permissions = std::fs::Permissions::from_mode(0o700);
+                    if let Err(e) = std::fs::set_permissions(&candidate, permissions) {
+                        let _ = std::fs::remove_dir(&candidate);
+                        return Err(e);
+                    }
+                }
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique private stub directory",
+    ))
+}
+
+fn random_stub_suffix() -> std::io::Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| std::io::Error::other(format!("could not obtain random bytes: {e}")))?;
+    Ok(format!("{:032x}", u128::from_ne_bytes(bytes)))
 }
 
 /// Write one embedded stub file to `dir/rel`, creating parent directories as
@@ -55,24 +115,170 @@ fn stub_materialize_dir_from(override_dir: Option<std::ffi::OsString>) -> std::p
 /// ([`eager_materialize_stub_files`]) and lazy (`resolve_external_location`)
 /// materialization paths so the write/skip policy lives in one place.
 ///
-/// Skips the write when the file already exists with the expected byte length.
-/// This is exact rather than heuristic because `dir` is version-scoped (see
-/// [`stub_materialize_dir`]): a given `(dir, rel)` always maps to the same
-/// content, so a matching length means the file is already current.
+/// Skips the write when a regular file already exists with the expected byte
+/// length. Otherwise the content is staged in a new sibling and moved into
+/// place, so neither an existing destination symlink nor a partial write can
+/// redirect or replace an unrelated file. This is exact rather than heuristic
+/// because `dir` is version-scoped (see [`stub_materialize_dir`]): a given
+/// `(dir, rel)` always maps to the same content, so a matching length means the
+/// file is already current.
 pub(crate) fn materialize_stub_file(
     dir: &std::path::Path,
     rel: &str,
     content: &str,
 ) -> std::io::Result<std::path::PathBuf> {
-    let path = dir.join(rel);
-    let up_to_date = std::fs::metadata(&path).is_ok_and(|m| m.len() == content.len() as u64);
-    if !up_to_date {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, content)?;
+    let rel = std::path::Path::new(rel);
+    if rel.as_os_str().is_empty()
+        || rel
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "stub path must contain only normal relative components",
+        ));
     }
+
+    let path = dir.join(rel);
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata)
+            if metadata.file_type().is_file() && metadata.len() == content.len() as u64 =>
+        {
+            return Ok(path);
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("refusing to replace stub symlink {}", path.display()),
+            ));
+        }
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("stub destination is not a regular file: {}", path.display()),
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    let parent = path
+        .parent()
+        .expect("a non-empty relative stub path has a parent");
+    create_stub_parent_dirs(dir, rel.parent())?;
+    let staged = stage_stub_file(parent, content)?;
+    let result = replace_stub_file(&staged, &path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result?;
     Ok(path)
+}
+
+/// Create each directory below the trusted materialization root without
+/// accepting a symlink or non-directory as one of the embedded path's parents.
+fn create_stub_parent_dirs(
+    dir: &std::path::Path,
+    rel_parent: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    ensure_real_directory(dir)?;
+    let mut current = dir.to_path_buf();
+    if let Some(rel_parent) = rel_parent {
+        for component in rel_parent.components() {
+            let std::path::Component::Normal(component) = component else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "stub parent path must contain only normal relative components",
+                ));
+            };
+            current.push(component);
+            match std::fs::create_dir(&current) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            ensure_real_directory(&current)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_real_directory(path: &std::path::Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("stub parent is not a real directory: {}", path.display()),
+    ))
+}
+
+fn stage_stub_file(parent: &std::path::Path, content: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+
+    for _ in 0..16 {
+        let staged = parent.join(format!(".wowlua-stub-{}.tmp", random_stub_suffix()?));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged);
+        let mut file = match file {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        if let Err(e) = file.write_all(content.as_bytes()) {
+            drop(file);
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
+        drop(file);
+        return Ok(staged);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique staged stub file",
+    ))
+}
+
+fn replace_stub_file(
+    staged: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(destination)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to replace stub symlink {}", destination.display()),
+        ));
+    }
+
+    // Windows rename does not replace an existing file. Removing a regular file
+    // or symlink removes that directory entry itself; it never follows the link.
+    #[cfg(windows)]
+    match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_file() => std::fs::remove_file(destination)?,
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("refusing to replace stub symlink {}", destination.display()),
+            ));
+        }
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("stub destination is not a regular file: {}", destination.display()),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    std::fs::rename(staged, destination)
 }
 
 /// Pre-warm the stub-file-contents blob and, when the materialize directory has
@@ -362,7 +568,7 @@ pub(super) fn is_stub_path(uri: &lsp_types::Uri) -> bool {
             // machine).
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stubs"),
             // Directory where embedded stubs are materialized for go-to-def
-            // (temp by default, or the plugin-provided watched dir).
+            // (private temp by default, or the plugin-provided watched dir).
             stub_materialize_dir(),
         ];
         // Non-embedded-stubs deployments: stubs directory next to the executable.
@@ -373,7 +579,7 @@ pub(super) fn is_stub_path(uri: &lsp_types::Uri) -> bool {
         // Canonicalize each path so symlinks (e.g. /tmp → /private/tmp on
         // macOS) are resolved. Canonicalize the parent first (which usually
         // exists) then re-append the leaf, because the full path may not
-        // exist yet (e.g. wowlua-ls-stubs is created lazily on first
+        // exist yet (the version directory is created lazily on first
         // go-to-definition).
         v.into_iter()
             .map(|d| {
@@ -432,20 +638,24 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn materialize_dir_defaults_to_temp() {
-        let expected = std::env::temp_dir()
-            .join("wowlua-ls-stubs")
-            .join(BLOB_VERSION.to_string());
-        assert_eq!(stub_materialize_dir_from(None), expected);
+    fn materialize_dir_defaults_to_private_base() {
+        let private_base = PathBuf::from("/private/stub/root");
+        let expected = private_base.join(BLOB_VERSION.to_string());
+        assert_eq!(stub_materialize_dir_from(None, || private_base.clone()), expected);
         // An empty override is ignored (treated as unset).
-        assert_eq!(stub_materialize_dir_from(Some(OsString::new())), expected);
+        assert_eq!(
+            stub_materialize_dir_from(Some(OsString::new()), || private_base.clone()),
+            expected,
+        );
     }
 
     #[test]
     fn materialize_dir_honors_override() {
         // The JetBrains plugin points this at a directory it watches and loads into
         // the VFS so IntelliJ can navigate into materialized stub files.
-        let dir = stub_materialize_dir_from(Some(OsString::from("/custom/stub/root")));
+        let dir = stub_materialize_dir_from(Some(OsString::from("/custom/stub/root")), || {
+            panic!("an explicit override must not initialize the private fallback")
+        });
         assert_eq!(dir, PathBuf::from("/custom/stub/root").join(BLOB_VERSION.to_string()));
     }
 
@@ -454,7 +664,22 @@ mod tests {
         // A blob-version bump must land in a distinct directory so the persistent,
         // shared JetBrains materialize location never serves a previous build's
         // files (a same-length content change would slip past the size check).
-        assert!(stub_materialize_dir_from(Some(OsString::from("/x"))).ends_with(BLOB_VERSION.to_string()));
+        assert!(
+            stub_materialize_dir_from(Some(OsString::from("/x")), PathBuf::new)
+                .ends_with(BLOB_VERSION.to_string()),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_materialize_base_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = create_private_stub_materialize_base().unwrap();
+        let metadata = std::fs::symlink_metadata(&dir).unwrap();
+        assert!(metadata.file_type().is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Regression: the stub blob carried the generating machine's absolute paths
@@ -506,8 +731,7 @@ mod tests {
 
     #[test]
     fn materialize_stub_file_writes_then_skips() {
-        let dir = std::env::temp_dir().join(format!("wowlua-mat-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = create_private_stub_materialize_base().unwrap();
         // First call writes the file (and creates the nested parent).
         let path = materialize_stub_file(&dir, "a/b/T.lua", "hello").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
@@ -517,5 +741,48 @@ mod tests {
         materialize_stub_file(&dir, "a/b/T.lua", "HELLO").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "world");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_stub_file_rejects_destination_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = create_private_stub_materialize_base().unwrap();
+        let outside = create_private_stub_materialize_base().unwrap();
+        let target = outside.join("victim.lua");
+        std::fs::write(&target, "victim content").unwrap();
+        std::fs::create_dir(dir.join("a")).unwrap();
+        symlink(&target, dir.join("a/T.lua")).unwrap();
+
+        let error = materialize_stub_file(&dir, "a/T.lua", "stub content").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "victim content");
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialize_stub_file_rejects_parent_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = create_private_stub_materialize_base().unwrap();
+        let outside = create_private_stub_materialize_base().unwrap();
+        symlink(&outside, dir.join("a")).unwrap();
+
+        let error = materialize_stub_file(&dir, "a/T.lua", "stub content").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!outside.join("T.lua").exists());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn materialize_stub_file_rejects_parent_traversal() {
+        let dir = create_private_stub_materialize_base().unwrap();
+        let error = materialize_stub_file(&dir, "../outside.lua", "stub content").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
