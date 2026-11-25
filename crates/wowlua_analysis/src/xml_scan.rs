@@ -6,6 +6,14 @@ use crate::annotations::{
 };
 use crate::syntax::syntax_kind::SyntaxKind;
 
+/// Resolved XML names become Lua identifiers and are cloned into several scan
+/// structures. Keep each one small enough that substitution cannot amplify a
+/// compact XML document into a large allocation.
+const MAX_XML_GLOBAL_NAME_BYTES: usize = 1024;
+/// Bound the total generated-name storage retained while scanning one XML file.
+const MAX_XML_GENERATED_NAME_BYTES: usize = 64 * 1024;
+const PARENT_PLACEHOLDER: &[u8] = b"$parent";
+
 /// Result of scanning a single XML file.
 pub struct XmlScanResult {
     pub classes: Vec<ClassDecl>,
@@ -33,6 +41,7 @@ struct ScanContext {
     intrinsics: HashMap<String, String>,
     xml_bound_names: HashSet<String>,
     templates: HashSet<String>,
+    generated_name_bytes: usize,
 }
 
 /// Map an XML element name to the corresponding WoW Lua frame type.
@@ -131,42 +140,62 @@ pub fn is_valid_global_name(name: &str) -> bool {
 
 /// Resolve `$parent` / `$Parent` in a name attribute by replacing it with
 /// the nearest named ancestor's resolved name.
-fn resolve_parent_name(raw_name: &str, stack: &[StackEntry]) -> Option<String> {
-    // Case-insensitive check for $parent
-    let lower = raw_name.to_ascii_lowercase();
-    if !lower.contains("$parent") {
+fn resolve_parent_name(
+    raw_name: &str,
+    stack: &[StackEntry],
+    generated_name_bytes: &mut usize,
+) -> Option<String> {
+    // Raw names are attacker-controlled too. Although they are input-sized,
+    // accepting an oversized one would clone it into several retained values.
+    if raw_name.len() > MAX_XML_GLOBAL_NAME_BYTES {
+        return None;
+    }
+
+    let replacement_count = raw_name
+        .as_bytes()
+        .windows(PARENT_PLACEHOLDER.len())
+        .filter(|window| is_parent_placeholder(window))
+        .count();
+    if replacement_count == 0 {
         return Some(raw_name.to_string());
     }
 
     // Walk stack from top to find nearest non-virtual frame ancestor with a name
     for entry in stack.iter().rev() {
         if entry.is_frame {
-            // Virtual templates don't provide concrete names for $parent
-            if entry.is_virtual {
+            // Virtual templates and explicitly rejected names don't provide a
+            // concrete parent. In particular, don't reinterpret a child of a
+            // rejected frame as belonging to an earlier named ancestor.
+            if entry.is_virtual || entry.name_resolution_failed {
                 return None;
             }
             if let Some(ref parent_name) = entry.resolved_name {
-                // Replace all case-insensitive occurrences of $parent
-                let mut result = String::with_capacity(raw_name.len());
+                // Compute the exact prospective length before allocating. All
+                // arithmetic remains checked even though both inputs are capped.
+                let placeholder_bytes =
+                    replacement_count.checked_mul(PARENT_PLACEHOLDER.len())?;
+                let literal_bytes = raw_name.len().checked_sub(placeholder_bytes)?;
+                let replacement_bytes = replacement_count.checked_mul(parent_name.len())?;
+                let expanded_len = literal_bytes.checked_add(replacement_bytes)?;
+                if expanded_len > MAX_XML_GLOBAL_NAME_BYTES {
+                    return None;
+                }
+                let next_generated_bytes = generated_name_bytes.checked_add(expanded_len)?;
+                if next_generated_bytes > MAX_XML_GENERATED_NAME_BYTES {
+                    return None;
+                }
+
+                // Replace all case-insensitive occurrences of $parent only after
+                // both the per-name and per-file limits have accepted the result.
+                let mut result = String::with_capacity(expanded_len);
                 let mut remaining = raw_name;
-                while let Some(pos) = remaining
-                    .as_bytes()
-                    .iter()
-                    .position(|&b| b == b'$')
-                {
+                while let Some(pos) = find_parent_placeholder(remaining) {
                     result.push_str(&remaining[..pos]);
-                    let after_dollar = &remaining[pos + 1..];
-                    if after_dollar.len() >= 6
-                        && after_dollar[..6].eq_ignore_ascii_case("parent")
-                    {
-                        result.push_str(parent_name);
-                        remaining = &after_dollar[6..];
-                    } else {
-                        result.push('$');
-                        remaining = after_dollar;
-                    }
+                    result.push_str(parent_name);
+                    remaining = &remaining[pos + PARENT_PLACEHOLDER.len()..];
                 }
                 result.push_str(remaining);
+                *generated_name_bytes = next_generated_bytes;
                 return Some(result);
             }
         }
@@ -174,6 +203,18 @@ fn resolve_parent_name(raw_name: &str, stack: &[StackEntry]) -> Option<String> {
 
     // No named parent found (e.g. inside virtual template) — cannot resolve
     None
+}
+
+fn is_parent_placeholder(window: &[u8]) -> bool {
+    window.len() == PARENT_PLACEHOLDER.len()
+        && window[0] == b'$'
+        && window[1..].eq_ignore_ascii_case(&PARENT_PLACEHOLDER[1..])
+}
+
+fn find_parent_placeholder(name: &str) -> Option<usize> {
+    name.as_bytes()
+        .windows(PARENT_PLACEHOLDER.len())
+        .position(is_parent_placeholder)
 }
 
 /// Context for a frame-like element being parsed.
@@ -216,6 +257,9 @@ struct StackEntry {
     is_virtual: bool,
     /// Resolved name of this element (for `$parent` resolution in children).
     resolved_name: Option<String>,
+    /// An explicit name failed resolution or a resource limit, so descendants
+    /// must not fall back to a more distant named ancestor.
+    name_resolution_failed: bool,
     /// Frame context (only present for frame-like elements).
     frame: Option<FrameContext>,
     /// An `<OnLoad>` handler element, whose text is the handler's script.
@@ -263,6 +307,7 @@ pub fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         intrinsics: HashMap::default(),
         xml_bound_names: HashSet::default(),
         templates: HashSet::default(),
+        generated_name_bytes: 0,
     };
     let mut script_depth: usize = 0;
 
@@ -430,7 +475,15 @@ fn process_open_tag(
         // For intrinsic usages, the parent class is the intrinsic name itself
         // (e.g. <ItemButton name="Foo"> → parents: ["ItemButton"], not ["Button"])
         let effective_type = if is_intrinsic_usage { tag_name } else { &frame_type };
-        handle_frame_element(e, effective_type, tag_start, &mut ctx.stack, &mut ctx.intrinsics, &mut ctx.xml_bound_names);
+        handle_frame_element(
+            e,
+            effective_type,
+            tag_start,
+            &mut ctx.stack,
+            &mut ctx.intrinsics,
+            &mut ctx.xml_bound_names,
+            &mut ctx.generated_name_bytes,
+        );
         if is_empty {
             // Self-closing: immediately finalize
             if let Some(entry) = ctx.stack.pop()
@@ -447,6 +500,7 @@ fn process_open_tag(
                 is_frame: false,
                 is_virtual: false,
                 resolved_name: None,
+                name_resolution_failed: false,
                 frame: None,
                 onload: tag_name == "OnLoad",
             });
@@ -462,6 +516,7 @@ fn handle_frame_element(
     stack: &mut Vec<StackEntry>,
     intrinsics: &mut HashMap<String, String>,
     xml_bound_names: &mut HashSet<String>,
+    generated_name_bytes: &mut usize,
 ) {
     let raw_name = get_attr(e, b"name");
     let is_virtual = get_attr(e, b"virtual")
@@ -497,8 +552,12 @@ fn handle_frame_element(
         }
     }
 
-    // Resolve $parent in name
-    let resolved_name = raw_name.as_ref().and_then(|n| resolve_parent_name(n, stack));
+    // Resolve $parent in name. Remember an explicit resolution failure so a
+    // descendant cannot silently bind to a more distant ancestor instead.
+    let resolved_name = raw_name
+        .as_ref()
+        .and_then(|n| resolve_parent_name(n, stack, generated_name_bytes));
+    let name_resolution_failed = raw_name.is_some() && resolved_name.is_none();
 
     // Register as a field on the nearest frame ancestor. Only an explicit
     // `parentKey` sets a key: the game gives special children such as
@@ -541,6 +600,7 @@ fn handle_frame_element(
         is_frame: true,
         is_virtual,
         resolved_name: resolved_name.clone(),
+        name_resolution_failed,
         frame: Some(frame_ctx),
         onload: false,
     });
@@ -1464,16 +1524,72 @@ mod tests {
                 <Button name="PlayerFrame" parent="UIParent">
                     <Layers><Layer>
                         <FontString name="$parentText" parentKey="text" />
-                        <Texture name="$parentIcon" parentKey="icon" />
+                        <Texture name="$PaReNtIcon" parentKey="icon" />
                     </Layer></Layers>
+                    <Frame name="$parent$PARENTChild" />
                 </Button>
             </Ui>
         "#);
-        // PlayerFrame global + PlayerFrameText + PlayerFrameIcon
+        // Ordinary, mixed-case, and repeated substitutions all remain supported.
         let names: Vec<&str> = r.globals.iter().map(|g| g.name.as_str()).collect();
         assert!(names.contains(&"PlayerFrame"));
         assert!(names.contains(&"PlayerFrameText"));
         assert!(names.contains(&"PlayerFrameIcon"));
+        assert!(names.contains(&"PlayerFramePlayerFrameChild"));
+    }
+
+    #[test]
+    fn parent_name_expansion_limits() {
+        let parent_name = "A".repeat(MAX_XML_GLOBAL_NAME_BYTES);
+        let stack = [StackEntry {
+            is_frame: true,
+            is_virtual: false,
+            resolved_name: Some(parent_name.clone()),
+            name_resolution_failed: false,
+            frame: None,
+            onload: false,
+        }];
+
+        // An exact-limit expansion is accepted and consumes the remaining budget.
+        let mut generated_name_bytes =
+            MAX_XML_GENERATED_NAME_BYTES - MAX_XML_GLOBAL_NAME_BYTES;
+        assert_eq!(
+            resolve_parent_name("$PaReNt", &stack, &mut generated_name_bytes).as_deref(),
+            Some(parent_name.as_str())
+        );
+        assert_eq!(generated_name_bytes, MAX_XML_GENERATED_NAME_BYTES);
+
+        // The per-file budget rejects another otherwise valid generated name.
+        assert!(resolve_parent_name("$parent", &stack, &mut generated_name_bytes).is_none());
+        assert_eq!(generated_name_bytes, MAX_XML_GENERATED_NAME_BYTES);
+
+        // Prospective size is rejected before allocation or budget consumption.
+        let mut fresh_budget = 0;
+        assert!(resolve_parent_name("$parent$parent", &stack, &mut fresh_budget).is_none());
+        assert_eq!(fresh_budget, 0);
+        let oversized_raw_name = "B".repeat(MAX_XML_GLOBAL_NAME_BYTES + 1);
+        assert!(resolve_parent_name(&oversized_raw_name, &[], &mut fresh_budget).is_none());
+        assert_eq!(fresh_budget, 0);
+    }
+
+    #[test]
+    fn rejected_parent_name_blocks_descendant_resolution() {
+        let parent_name = "A".repeat(MAX_XML_GLOBAL_NAME_BYTES);
+        let r = scan(&format!(r#"
+            <Ui>
+                <Frame name="{parent_name}">
+                    <Frame name="$parent$parent">
+                        <Frame name="$parent" />
+                    </Frame>
+                </Frame>
+            </Ui>
+        "#));
+
+        // The oversized child and its descendant produce no declarations; the
+        // descendant must not reinterpret `$parent` as the outer frame's name.
+        assert_eq!(r.classes.len(), 1);
+        assert_eq!(r.globals.len(), 1);
+        assert_eq!(r.classes[0].name, parent_name);
     }
 
     #[test]
