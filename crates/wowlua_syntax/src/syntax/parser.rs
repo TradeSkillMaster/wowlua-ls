@@ -9,11 +9,15 @@ struct Tok {
     end: u32,
 }
 
+const MAX_SYNTAX_NESTING: usize = 128;
+const SYNTAX_NESTING_ERROR: &str = "maximum syntax nesting depth exceeded";
+
 pub struct Parser<'a> {
     text: &'a str,
     lexer: lexer::Lexer<'a>,
     builder: TreeBuilder,
     peek: Option<Tok>,
+    nesting_depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -23,6 +27,7 @@ impl<'a> Parser<'a> {
             lexer: lexer::Lexer::new(text),
             builder: TreeBuilder::new(text.to_string()),
             peek: None,
+            nesting_depth: 0,
         }
     }
 
@@ -147,9 +152,34 @@ impl<'a> Parser<'a> {
         self.builder.checkpoint()
     }
 
+    /// Enter a parser path that can recursively reach another block or expression.
+    /// Blocks and Pratt expressions share this budget because nested functions,
+    /// tables, arguments, and suffixes can alternate between both paths.
+    fn enter_syntax_nesting(&mut self) -> bool {
+        if self.nesting_depth >= MAX_SYNTAX_NESTING {
+            self.error_here(SYNTAX_NESTING_ERROR.to_string());
+            return false;
+        }
+        self.nesting_depth += 1;
+        true
+    }
+
+    fn leave_syntax_nesting(&mut self) {
+        debug_assert!(self.nesting_depth > 0);
+        self.nesting_depth -= 1;
+    }
+
     // ── Block ──
 
     fn parse_block(&mut self, terminator: Option<SK>) {
+        if !self.enter_syntax_nesting() {
+            return;
+        }
+        self.parse_block_inner(terminator);
+        self.leave_syntax_nesting();
+    }
+
+    fn parse_block_inner(&mut self, terminator: Option<SK>) {
         self.builder.start_node(SK::Block);
         self.skip_trivia();
         loop {
@@ -565,6 +595,15 @@ impl<'a> Parser<'a> {
 
     /// Pratt parser with checkpoint-based wrapping.
     fn parse_expr_bp(&mut self, min_bp: u8) -> bool {
+        if !self.enter_syntax_nesting() {
+            return false;
+        }
+        let parsed = self.parse_expr_bp_inner(min_bp);
+        self.leave_syntax_nesting();
+        parsed
+    }
+
+    fn parse_expr_bp_inner(&mut self, min_bp: u8) -> bool {
         self.skip_trivia();
 
         let cp = self.checkpoint();
@@ -1415,6 +1454,50 @@ mod tests {
         let tree = parse("print{1, 2}");
         let dump = dump_tree(&tree);
         assert!(dump.contains("FunctionCall"), "tree:\n{}", dump);
+    }
+
+    #[test]
+    fn test_deep_syntax_nesting_reports_limit() {
+        let depth = MAX_SYNTAX_NESTING + 1;
+        let cases = [
+            ("blocks", format!("{}{}", "do ".repeat(depth), " end".repeat(depth))),
+            ("grouped expressions", format!("local x = {}1{}", "(".repeat(depth), ")".repeat(depth))),
+            ("unary expressions", format!("local x = {}1", "-".repeat(depth))),
+            ("concatenation", format!("local x = {}1", "1 .. ".repeat(depth))),
+            ("exponentiation", format!("local x = {}1", "1 ^ ".repeat(depth))),
+            ("table constructors", format!("local x = {}1{}", "{".repeat(depth), "}".repeat(depth))),
+            (
+                "anonymous functions",
+                format!("local x = {}1{}", "function() return ".repeat(depth), " end".repeat(depth)),
+            ),
+            ("call arguments", format!("local x = {}1{}", "f(".repeat(depth), ")".repeat(depth))),
+            ("bracket suffixes", format!("local x = {}1{}", "a[".repeat(depth), "]".repeat(depth))),
+        ];
+
+        for (kind, source) in cases {
+            let tree = parse(&source);
+            assert!(
+                tree.errors.iter().any(|error| error.message == SYNTAX_NESTING_ERROR),
+                "expected a nesting error for {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nesting_below_limit_still_parses() {
+        let depth = MAX_SYNTAX_NESTING - 2;
+        let source = format!(
+            "local x = {}1{}\nlocal y = 2",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        let tree = parse(&source);
+
+        assert!(tree.errors.is_empty(), "errors: {:?}", tree.errors);
+        let locals = tree.descendants(tree.root())
+            .filter(|&id| tree.node(id).kind == SK::LocalAssignStatement)
+            .count();
+        assert_eq!(locals, 2, "the statement after the nested expression must parse");
     }
 
     #[test]
