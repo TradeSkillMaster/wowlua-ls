@@ -11,3 +11,5 @@ workspace = true
 [dependencies]
 serde = { version = "1.0.219", features = ["derive"] }
 log = "0.4"
+file-id = "0.2.3"
+rustc-hash = { workspace = true }

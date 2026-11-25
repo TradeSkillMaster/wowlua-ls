@@ -116,7 +116,7 @@ Path prefixes to exclude from scanning. Relative to the config file's directory.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths, and relative paths that point *outside* the workspace (for example `../shared`), are also supported for libraries that live next to your addon rather than inside it.
+Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths, and relative paths that point *outside* the workspace (for example `../shared`), can identify libraries that live next to your addon rather than inside it.
 
 ```json
 { "library": ["Libs/", "../shared-libs", "/home/user/shared-libs/"] }
@@ -124,13 +124,13 @@ Paths to scan for type information but with all diagnostics suppressed. Useful f
 
 Unlike `ignore` (which skips files entirely), `library` files are fully scanned and analyzed: their `@class`, `@alias`, global functions, and other type information are available throughout the workspace. Only diagnostic output is suppressed.
 
-External library directories are automatically added as extra scan directories, so libraries don't need to be inside your workspace. A relative entry that escapes the workspace root (one containing `..`) is resolved against the directory holding the `.wowluarc.json` and scanned as an external directory. Prefer this over an absolute path for libraries checked into version control, since it stays portable across machines.
+Checked-in configuration does not by itself authorize scanning outside the workspace. An external library is scanned only when its canonical path is inside an editor workspace folder or a root explicitly listed in the `WOWLUA_LS_EXTERNAL_LIBRARY_ROOTS` environment variable. The variable uses the platform path-list separator (`:` on Unix, `;` on Windows), and each entry approves that directory and its descendants. A relative entry containing `..` is still resolved against the directory holding `.wowluarc.json`, so it becomes active when that canonical root has been approved.
 
 Marking a directory as a library suppresses diagnostics for the **whole subtree**, including any nested `.wowluarc.json` files inside it. A vendored library that ships its own `.wowluarc.json` (for example one pulled in via a symlink) cannot re-enable diagnostics for itself. The parent's `library` declaration wins. See [Hierarchy behavior](#hierarchy-behavior) for how this differs from other settings.
 
-#### Symlinked or duplicated library paths are scanned once
+#### Filesystem scan boundaries
 
-If the same physical library is reachable through several workspace paths — for example a library that is both its own workspace folder *and* symlinked into each addon's `Libs/` — the language server detects the shared filesystem identity (device + inode) and analyzes it a single time. Go-to-definition, find-references, and code-lens counts resolve to the real source rather than a vendored alias, and you do **not** need to `ignore` the extra copies to avoid duplicate definitions. This applies to symlinks, hardlinks, and Windows junctions; two genuinely separate copies of a library on disk (each a real file with its own inode) are still analyzed independently.
+The scanner does not follow descendant directory symlinks, junctions, or file symlinks. An explicitly selected workspace root may itself be a symlink, and physical directory identities prevent explicitly selected aliases from being traversed repeatedly. Hardlinked regular files are deduplicated before analysis. Discovery also has fixed depth, directory, entry, file, total-byte, and elapsed-time limits plus a per-entry cancellation hook; individual source, XML, TOC, and configuration reads are limited to regular files of at most 8 MiB.
 
 ### `framexml`
 

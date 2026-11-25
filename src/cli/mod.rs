@@ -198,19 +198,35 @@ pub(crate) fn collect_lua_files(
     configs: &wowlua_ls::config::ProjectConfigs,
     respect_library: bool,
 ) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let skip = configs.is_ignored(&path) && !(respect_library && configs.is_library(&path));
-            if skip {
-                continue;
+    use wowlua_ls::syntax::{SourcePathAction, SourcePathKind, SourceScanBudget};
+
+    let mut budget = SourceScanBudget::default();
+    let result = wowlua_ls::syntax::collect_source_files(
+        dir,
+        out,
+        &mut budget,
+        &|| false,
+        |path, kind| {
+            let ignored = path != dir
+                && configs.is_ignored(path)
+                && !(respect_library && configs.is_library(path));
+            if ignored {
+                SourcePathAction::Skip
+            } else {
+                match kind {
+                    SourcePathKind::Directory => SourcePathAction::Descend,
+                    SourcePathKind::RegularFile
+                        if path.extension().is_some_and(|e| e == "lua") =>
+                    {
+                        SourcePathAction::Collect
+                    }
+                    SourcePathKind::RegularFile => SourcePathAction::Skip,
+                }
             }
-            if path.is_dir() {
-                collect_lua_files(&path, out, configs, respect_library);
-            } else if path.extension().is_some_and(|e| e == "lua") {
-                out.push(path);
-            }
-        }
+        },
+    );
+    if let Some(limit) = result {
+        log::warn!("Stopped scanning {} after reaching the {:?} limit", dir.display(), limit);
     }
 }
 

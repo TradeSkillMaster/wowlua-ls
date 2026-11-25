@@ -31,7 +31,7 @@
       "type": "array",
       "items": { "type": "string" },
       "default": [],
-      "description": "Paths to scan for types but suppress diagnostics. Useful for third-party libraries where you want type information but can't fix diagnostic issues. Relative entries use the same pattern syntax as ignore. Absolute paths and relative paths that leave the workspace (e.g. ../shared) are also supported for libraries outside the workspace."
+      "description": "Paths to scan for types but suppress diagnostics. Relative entries use the same pattern syntax as ignore. External absolute or parent-escaping paths require their canonical root to be an editor workspace folder or explicitly listed in WOWLUA_LS_EXTERNAL_LIBRARY_ROOTS. Descendant symlinks are not followed."
     },
     "framexml": {
       "type": "boolean",

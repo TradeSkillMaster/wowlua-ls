@@ -8675,56 +8675,6 @@ fn string_literal_completion_no_doubled_quote() {
     );
 }
 
-#[test]
-fn library_dirs_external() {
-    // Drop guard ensures cleanup even if the test panics
-    struct CleanupGuard(std::path::PathBuf);
-    impl Drop for CleanupGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    // Generate .wowluarc.json with absolute path to the external library directory
-    let cwd = std::env::current_dir().unwrap();
-    let extlib_abs = cwd.join("tests/library-dirs-external/extlib");
-    let addon_dir = cwd.join("tests/library-dirs-external/addon");
-    let config_path = addon_dir.join(".wowluarc.json");
-    std::fs::write(&config_path, format!(
-        r#"{{"library": ["{}/"] }}"#,
-        extlib_abs.to_string_lossy().replace('\\', "/")
-    )).unwrap();
-    let _guard = CleanupGuard(config_path);
-
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/library-dirs-external/addon/user.lua",
-        with_stubs: false,
-        scan_dir: Some("tests/library-dirs-external/addon"),
-    });
-}
-
-#[test]
-fn library_dirs_relative_escape_user() {
-    // A relative `../shared` library path that escapes the workspace root must
-    // still pull in its globals/types into user files.
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/library-dirs-relative-escape/addon/user.lua",
-        with_stubs: false,
-        scan_dir: Some("tests/library-dirs-relative-escape/addon"),
-    });
-}
-
-#[test]
-fn library_dirs_relative_escape_suppressed() {
-    // The escaped library file is scanned for types but has diagnostics
-    // suppressed (the exhaustive harness fails if any fire).
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/library-dirs-relative-escape/shared/lib.lua",
-        with_stubs: false,
-        scan_dir: Some("tests/library-dirs-relative-escape/addon"),
-    });
-}
-
 // ── Disable-directive merging (no duplicate comments) ────────────────────────
 
 /// Helper: create a fake LSP diagnostic at the given line/col range with the given code.

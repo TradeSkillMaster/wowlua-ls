@@ -283,50 +283,219 @@ pub(super) fn collect_lua_paths_filtered(
     xml_out: &mut Vec<PathBuf>,
     configs: &mut crate::config::ProjectConfigs,
 ) {
-    // Discover config and .toc SavedVariables in this directory
-    configs.try_load(dir);
-    configs.try_load_toc(dir);
+    let mut budget = crate::syntax::SourceScanBudget::default();
+    if let Some(limit) = collect_lua_paths_filtered_with_budget(
+        dir, out, xml_out, configs, &mut budget,
+    ) {
+        log::warn!("Stopped scanning {} after reaching the {:?} limit", dir.display(), limit);
+    }
+}
 
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    // Sort entries before recursing so scan order is deterministic across
-    // filesystems. `read_dir` returns entries in filesystem-dependent order,
-    // which leaks non-determinism into downstream scan/build passes that
-    // depend on class/alias/global insertion order (e.g. @defclass parent
-    // resolution, @built-name merging, duplicate-class precedence).
-    let mut sorted: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    sorted.sort_unstable();
-    for path in sorted {
-        if configs.is_ignored(&path) && !configs.is_library(&path) {
-            continue;
+fn collect_lua_paths_filtered_with_budget(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    xml_out: &mut Vec<PathBuf>,
+    configs: &mut crate::config::ProjectConfigs,
+    budget: &mut crate::syntax::SourceScanBudget,
+) -> Option<crate::syntax::SourceScanLimit> {
+    use crate::syntax::{SourcePathAction, SourcePathKind};
+
+    let mut files = Vec::new();
+    let result = crate::syntax::collect_source_files(
+        dir,
+        &mut files,
+        budget,
+        &|| false,
+        |path, kind| match kind {
+            SourcePathKind::Directory => {
+                if path != dir && configs.is_ignored(path) && !configs.is_library(path) {
+                    SourcePathAction::Skip
+                } else {
+                    configs.try_load(path);
+                    configs.try_load_toc(path);
+                    SourcePathAction::Descend
+                }
+            }
+            SourcePathKind::RegularFile => {
+                if configs.is_ignored(path) && !configs.is_library(path) {
+                    SourcePathAction::Skip
+                } else {
+                    match path.extension().and_then(|extension| extension.to_str()) {
+                        Some("lua" | "xml") => SourcePathAction::Collect,
+                        _ => SourcePathAction::Skip,
+                    }
+                }
+            }
+        },
+    );
+    for path in files {
+        if path.extension().is_some_and(|extension| extension == "lua") {
+            out.push(path);
+        } else {
+            xml_out.push(path);
         }
-        if path.is_dir() {
-            collect_lua_paths_filtered(&path, out, xml_out, configs);
-        } else if let Some(ext) = path.extension() {
-            if ext == "lua" {
-                out.push(path);
-            } else if ext == "xml" {
-                xml_out.push(path);
+    }
+    result
+}
+
+const EXTERNAL_LIBRARY_ROOTS_ENV: &str = "WOWLUA_LS_EXTERNAL_LIBRARY_ROOTS";
+
+fn external_library_approval_roots(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = dirs.to_vec();
+    if let Some(configured) = std::env::var_os(EXTERNAL_LIBRARY_ROOTS_ENV) {
+        candidates.extend(std::env::split_paths(&configured));
+    }
+    let mut roots = Vec::new();
+    for root in candidates {
+        let Ok(root) = std::fs::canonicalize(root) else { continue };
+        if root.is_dir() && !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+fn approved_external_library_dirs(
+    configs: &crate::config::ProjectConfigs,
+    approvals: &[PathBuf],
+) -> Vec<PathBuf> {
+    configs.external_library_dirs().into_iter().filter_map(|configured| {
+        let Ok(canonical) = std::fs::canonicalize(&configured) else { return None };
+        if !canonical.is_dir() {
+            return None;
+        }
+        if approvals.iter().any(|approved| canonical.starts_with(approved)) {
+            // Keep the configured spelling so absolute-library matching still
+            // suppresses diagnostics; the canonical spelling is only the boundary.
+            Some(configured)
+        } else {
+            log::warn!(
+                "Not scanning external library {}: approve its root with {}",
+                configured.display(), EXTERNAL_LIBRARY_ROOTS_ENV,
+            );
+            None
+        }
+    }).collect()
+}
+
+fn collect_workspace_source_paths(
+    dirs: &[PathBuf],
+    configs: &mut crate::config::ProjectConfigs,
+    paths: &mut Vec<PathBuf>,
+    xml_paths: &mut Vec<PathBuf>,
+) {
+    let approvals = external_library_approval_roots(dirs);
+    collect_workspace_source_paths_with_approvals(dirs, configs, paths, xml_paths, &approvals);
+}
+
+fn collect_workspace_source_paths_with_approvals(
+    dirs: &[PathBuf],
+    configs: &mut crate::config::ProjectConfigs,
+    paths: &mut Vec<PathBuf>,
+    xml_paths: &mut Vec<PathBuf>,
+    approvals: &[PathBuf],
+) {
+    let mut budget = crate::syntax::SourceScanBudget::default();
+    let mut stopped = None;
+    for dir in dirs {
+        stopped = collect_lua_paths_filtered_with_budget(
+            dir, paths, xml_paths, configs, &mut budget,
+        );
+        if stopped.is_some() {
+            break;
+        }
+    }
+    if stopped.is_none() {
+        for lib_dir in approved_external_library_dirs(configs, approvals) {
+            stopped = collect_lua_paths_filtered_with_budget(
+                &lib_dir, paths, xml_paths, configs, &mut budget,
+            );
+            if stopped.is_some() {
+                break;
             }
         }
+    }
+    if let Some(limit) = stopped {
+        log::warn!("Stopped workspace file discovery after reaching the {:?} limit", limit);
+    }
+}
+
+#[cfg(test)]
+mod filesystem_security_tests {
+    use super::*;
+
+    #[test]
+    fn external_library_requires_canonical_root_approval() {
+        let base = std::env::temp_dir().join(format!(
+            "wowlua_ls_external_approval_{}", std::process::id(),
+        ));
+        let workspace = base.join("workspace");
+        let external = base.join("external");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(workspace.join("main.lua"), "return 1").unwrap();
+        std::fs::write(
+            external.join("types.lua"),
+            "---@class ApprovedExternal\nApprovedExternal = {}\n",
+        ).unwrap();
+        std::fs::write(
+            workspace.join(".wowluarc.json"),
+            format!(
+                r#"{{"library":["{}"]}}"#,
+                external.to_string_lossy().replace('\\', "\\\\"),
+            ),
+        ).unwrap();
+
+        let workspace_approval = std::fs::canonicalize(&workspace).unwrap();
+        let external_approval = std::fs::canonicalize(&external).unwrap();
+
+        let mut unapproved_paths = Vec::new();
+        collect_workspace_source_paths_with_approvals(
+            std::slice::from_ref(&workspace),
+            &mut crate::config::ProjectConfigs::default(),
+            &mut unapproved_paths,
+            &mut Vec::new(),
+            std::slice::from_ref(&workspace_approval),
+        );
+        assert_eq!(unapproved_paths, vec![workspace.join("main.lua")]);
+
+        let mut approved_paths = Vec::new();
+        let mut approved_configs = crate::config::ProjectConfigs::default();
+        collect_workspace_source_paths_with_approvals(
+            std::slice::from_ref(&workspace),
+            &mut approved_configs,
+            &mut approved_paths,
+            &mut Vec::new(),
+            &[workspace_approval, external_approval],
+        );
+        assert!(approved_paths.contains(&workspace.join("main.lua")));
+        assert!(approved_paths.contains(&external.join("types.lua")));
+        assert!(approved_configs.is_library(&external.join("types.lua")));
+        let scan = scan_paths_with_overrides(
+            &approved_paths,
+            &crate::collections::HashSet::default(),
+            Some(&approved_configs),
+            &[],
+            &[],
+            &crate::annotations::CreatesGlobalMap::default(),
+        );
+        assert!(scan.classes.iter().any(|class| class.name == "ApprovedExternal"));
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }
 
 /// Remove duplicate paths in place, keying on each file's real filesystem identity
 /// (device + inode, or the Windows volume-serial + file-index equivalent) so a
-/// library reachable through several workspace paths — e.g. one that is both its own
-/// workspace folder *and* symlinked (or hardlinked) into `Addon/Libs/LibFoo` — is
-/// analyzed exactly once instead of once per alias. Without this, each alias scans
+/// library reachable through several explicitly selected workspace roots, or through
+/// hardlinked regular files, is analyzed exactly once instead of once per alias.
+/// Descendant symlinks never reach this stage. Without identity dedup, each alias scans
 /// as a distinct file: its `@class`/globals register N times, go-to-definition
 /// returns N sites, and every alias caches its own (divergent) analysis.
 ///
-/// Identity is a single filesystem-identity lookup per file (following
-/// symlinks/junctions), so symlinks, hardlinks, and junctions all collapse while two
+/// Identity is a single filesystem-identity lookup per file (following an explicitly
+/// selected root alias), so root aliases and hardlinks collapse while two
 /// genuinely separate on-disk copies stay distinct; a file whose identity can't be
 /// read falls back to its literal path (kept, never mis-merged). Among aliases of one
 /// file, a copy NOT reached through a symlinked directory is preferred, so navigation
@@ -825,18 +994,8 @@ pub fn scan_workspace_with_stubs(
 ) -> WorkspaceScanResult {
     let mut paths = Vec::new();
     let mut xml_paths = Vec::new();
-    for dir in dirs {
-        if dir.is_dir() {
-            collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
-        }
-    }
-    // Scan external library directories (absolute paths in `library` config)
-    for lib_dir in configs.external_library_dirs() {
-        if lib_dir.is_dir() {
-            collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
-        }
-    }
-    // Collapse aliases of the same physical file (symlinked vendored libraries)
+    collect_workspace_source_paths(dirs, configs, &mut paths, &mut xml_paths);
+    // Collapse hardlinked files and aliases from explicitly selected root paths
     // so each is scanned once — mirrors `scan_directory_pass1`.
     dedup_paths_in_place(&mut paths);
     dedup_paths_in_place(&mut xml_paths);
@@ -899,23 +1058,10 @@ pub(super) fn scan_directory_pass1(
 
     let mut paths = Vec::new();
     let mut xml_paths = Vec::new();
-    for dir in dirs {
-        if dir.is_dir() {
-            collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
-        }
-    }
-    // Scan external library directories (absolute paths in `library` config)
-    for lib_dir in configs.external_library_dirs() {
-        if lib_dir.is_dir() {
-            collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
-        }
-    }
-    // Workspace roots themselves no longer overlap (`resolve_workspace_roots`
-    // prunes nested roots), but a `library` config dir can sit inside a root and
-    // be collected by both walks. Dedup so such a file isn't *parsed* twice.
-    // (This dedups only the path lists; the extra library-dir walk can still
-    // push a duplicate `(dir, config)` entry via the non-idempotent
-    // `configs.try_load`, which is benign — consumers match the nearest entry.)
+    collect_workspace_source_paths(dirs, configs, &mut paths, &mut xml_paths);
+    // The bounded walker tracks physical directories across roots, while this
+    // file-level pass also collapses hardlinks and explicitly selected aliases
+    // before any source is parsed.
     dedup_paths_in_place(&mut paths);
     dedup_paths_in_place(&mut xml_paths);
 
