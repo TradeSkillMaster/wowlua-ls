@@ -1040,9 +1040,9 @@ impl<'a> LocationResolver<'a> {
 /// A source file's URI and line index: an open document's live text, else the
 /// file on disk (a workspace file, or the stubs checkout in dev mode), else the
 /// embedded stub content keyed by `path`, materialized to a deterministic path so
-/// the editor can open it. That defaults to a temp dir; the JetBrains plugin
-/// redirects it (via `WOWLUA_LS_STUB_DIR`) to a directory it watches and loads
-/// into the VFS so IntelliJ can navigate in.
+/// the editor can open it. That defaults to a private temp dir; the JetBrains
+/// plugin redirects it (via `WOWLUA_LS_STUB_DIR`) to a directory it watches and
+/// loads into the VFS so IntelliJ can navigate in.
 fn load_source_file<'a>(
     path: &Path,
     documents: Option<&'a HashMap<String, Document>>,
